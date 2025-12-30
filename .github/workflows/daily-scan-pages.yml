@@ -189,9 +189,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: build
-    # GitHub Pages can't be enabled for private repos on GitHub Free.
-    # Set repo variable ENABLE_PAGES=1 after Pages is enabled to deploy.
-    if: ${{ vars.ENABLE_PAGES == '1' }}
+    # Public repos deploy automatically.
+    # For private repos (paid plans where Pages is enabled), set repo variable ENABLE_PAGES=1.
+    if: ${{ vars.ENABLE_PAGES == '1' || github.event.repository.private == false }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

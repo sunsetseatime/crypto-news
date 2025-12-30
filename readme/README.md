@@ -130,7 +130,7 @@ Runs daily even when your PC is off, and publishes the latest dashboard to a URL
 
 If your repo is private and you’re on GitHub Free, Pages will prompt you to upgrade or make the repo public.
 - If you keep it private: the workflow still runs and uploads an artifact you can download (`crypto-news-site`).
-- After Pages is enabled: set repo variable `ENABLE_PAGES=1` so the workflow deploys to Pages.
+- If you’re on a paid plan and Pages is enabled for a private repo: set repo variable `ENABLE_PAGES=1` so the workflow deploys to Pages.
 
 Notes:
 - Schedule/time is configured in `.github/workflows/daily-scan-pages.yml` (cron is UTC).
