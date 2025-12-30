@@ -100,6 +100,12 @@ const DISCOVERY_QUEUE_PATH = path.join(
   "config",
   "discovery_queue.json"
 );
+const AUTO_STAGE_IGNORE_PATH = path.join(
+  __dirname,
+  "..",
+  "config",
+  "auto_stage_ignore.json"
+);
 
 const CACHE_TTL_MINUTES = Number(process.env.CACHE_TTL_MINUTES || 360);
 const CACHE_TTL_MS =
@@ -2767,6 +2773,37 @@ async function main() {
     ? watchlistStagingRaw
     : [];
 
+  const autoStageIgnoreRaw = readJsonFile(AUTO_STAGE_IGNORE_PATH, []);
+  const autoStageIgnoreIds = new Set(
+    (Array.isArray(autoStageIgnoreRaw) ? autoStageIgnoreRaw : [])
+      .map((id) => normalizeCoinGeckoId(id))
+      .filter(Boolean)
+  );
+
+  const discoveryQueueRaw = readJsonFile(DISCOVERY_QUEUE_PATH, null);
+  const discoveryCandidates = Array.isArray(discoveryQueueRaw?.candidates)
+    ? discoveryQueueRaw.candidates
+    : [];
+  const autoStaged = discoveryCandidates
+    .filter((entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      if (entry.status !== "STAGED") return false;
+      const idLower = normalizeCoinGeckoId(entry.coinGeckoId || entry.id);
+      if (!idLower || autoStageIgnoreIds.has(idLower)) return false;
+      const source = entry.staged_source || (entry.auto_staged ? "auto" : null);
+      return source === "auto";
+    })
+    .map((entry) => ({
+      symbol: entry.symbol ? String(entry.symbol).toUpperCase() : "N/A",
+      name: entry.name || entry.coinGeckoId || entry.id || "",
+      coinGeckoId: entry.coinGeckoId || entry.id || "",
+      category: "discovery:auto",
+      urls: { official: "", x: "", blog: "", github: "" },
+      notes: "",
+      auto_staged: true,
+    }))
+    .filter((entry) => typeof entry.coinGeckoId === "string" && entry.coinGeckoId.trim());
+
   const seenIds = new Set();
   const watchlist = [];
   for (const coin of watchlistMain) {
@@ -2781,12 +2818,20 @@ async function main() {
     seenIds.add(idLower);
     watchlist.push({ ...coin, watchlist_source: "staging" });
   }
+  let autoStagedAdded = 0;
+  for (const coin of autoStaged) {
+    const idLower = normalizeCoinGeckoId(coin?.coinGeckoId);
+    if (!idLower || seenIds.has(idLower)) continue;
+    seenIds.add(idLower);
+    watchlist.push({ ...coin, watchlist_source: "staging" });
+    autoStagedAdded += 1;
+  }
 
   const ids = watchlist.map((coin) => coin.coinGeckoId).filter((id) => id);
 
   console.log("Fetching market data and DefiLlama protocols...");
   console.log(
-    `Processing ${watchlistMain.length} watchlist coins + ${watchlistStaging.length} staging coins...`
+    `Processing ${watchlistMain.length} watchlist coins + ${watchlistStaging.length + autoStagedAdded} staging coins (auto-staged: ${autoStagedAdded})...`
   );
   const [marketData, btcData, defiLlamaProtocols] = await Promise.all([
     fetchMarketData(ids),

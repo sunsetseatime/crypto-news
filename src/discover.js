@@ -53,11 +53,26 @@ const CONFIG_DIR = path.join(__dirname, "..", "config");
 const WATCHLIST_PATH = path.join(CONFIG_DIR, "watchlist.json");
 const STAGING_WATCHLIST_PATH = path.join(CONFIG_DIR, "watchlist_staging.json");
 const DISCOVERY_QUEUE_PATH = path.join(CONFIG_DIR, "discovery_queue.json");
+const AUTO_STAGE_IGNORE_PATH = path.join(CONFIG_DIR, "auto_stage_ignore.json");
 
 const CACHE_TTL_MINUTES = 60; // Shorter cache for discovery (1 hour)
 const CACHE_TTL_MS = CACHE_TTL_MINUTES * 60 * 1000;
 
 const DISCOVER_MARKET_PAGES = Number(process.env.DISCOVER_MARKET_PAGES || 5);
+
+const AUTO_STAGE_DISCOVERY = process.env.AUTO_STAGE_DISCOVERY === "1";
+const AUTO_STAGE_LIMIT = clamp(envNumber("AUTO_STAGE_LIMIT", 2), 0, 10);
+const AUTO_STAGE_DISCOVERY_SCORE_MIN = envNumber(
+  "AUTO_STAGE_DISCOVERY_SCORE_MIN",
+  90
+);
+const AUTO_STAGE_VOLUME_24H_MIN = envNumber("AUTO_STAGE_VOLUME_24H_MIN", 10_000_000);
+const AUTO_STAGE_VOL_TO_MCAP_MIN = envNumber("AUTO_STAGE_VOL_TO_MCAP_MIN", 0.05);
+const AUTO_STAGE_PRICE_CHANGE_7D_MAX = envNumber(
+  "AUTO_STAGE_PRICE_CHANGE_7D_MAX",
+  60
+);
+const AUTO_STAGE_MAX_TOTAL = clamp(envNumber("AUTO_STAGE_MAX_TOTAL", 25), 0, 500);
 
 const KNOWN_STABLE_IDS = new Set(
   [
@@ -90,6 +105,15 @@ function num(value) {
 
 function clamp(value, minValue, maxValue) {
   return Math.min(maxValue, Math.max(minValue, value));
+}
+
+function envNumber(name, fallbackValue) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return fallbackValue;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallbackValue;
 }
 
 function formatUsd(value) {
@@ -405,6 +429,81 @@ function computeDiscoveryScore(coin, gates, meta) {
   );
 }
 
+function isEligibleForAutoStage(candidate) {
+  if (!candidate || typeof candidate !== "object") return false;
+  const score = num(candidate.discovery_score);
+  if (score === null || score < AUTO_STAGE_DISCOVERY_SCORE_MIN) return false;
+
+  const volume24h = num(candidate.total_volume);
+  if (volume24h === null || volume24h < AUTO_STAGE_VOLUME_24H_MIN) return false;
+
+  const volToMcap = num(candidate.volume_to_mcap);
+  if (volToMcap === null || volToMcap < AUTO_STAGE_VOL_TO_MCAP_MIN) return false;
+
+  const priceChange7d = num(candidate.price_change_percentage_7d);
+  if (
+    priceChange7d === null ||
+    priceChange7d > AUTO_STAGE_PRICE_CHANGE_7D_MAX
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function autoStageCandidates({ candidates, queueById, generatedAt }) {
+  if (!AUTO_STAGE_DISCOVERY) {
+    return { staged: [], skipped_reason: "disabled" };
+  }
+
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return { staged: [], skipped_reason: "no_candidates" };
+  }
+
+  const existingAutoStaged = Array.from(queueById.values()).filter(
+    (entry) =>
+      entry &&
+      entry.status === "STAGED" &&
+      (entry.staged_source || "manual") === "auto"
+  ).length;
+
+  const remainingCapacity = Math.max(0, AUTO_STAGE_MAX_TOTAL - existingAutoStaged);
+  const targetCount = Math.min(AUTO_STAGE_LIMIT, remainingCapacity);
+  if (targetCount <= 0) {
+    return { staged: [], skipped_reason: "at_capacity" };
+  }
+
+  const staged = [];
+  for (const candidate of candidates) {
+    if (staged.length >= targetCount) break;
+    if (!isEligibleForAutoStage(candidate)) continue;
+
+    const idLower = normalizeCoinGeckoId(candidate.id);
+    if (!idLower) continue;
+
+    const entry = queueById.get(idLower);
+    if (!entry) continue;
+
+    const status = entry.status || "";
+    if (status === "IGNORED" || status === "PROMOTED") continue;
+    if (status === "STAGED") continue;
+
+    entry.status = "STAGED";
+    entry.staged_source = "auto";
+    entry.staged_at = entry.staged_at || generatedAt;
+    entry.auto_staged = true;
+
+    staged.push({
+      coinGeckoId: entry.coinGeckoId || entry.id || candidate.id,
+      symbol: entry.symbol || candidate.symbol,
+      name: entry.name || candidate.name,
+      discovery_score: entry.discovery_score ?? candidate.discovery_score ?? null,
+    });
+  }
+
+  return { staged, skipped_reason: staged.length ? null : "no_eligible" };
+}
+
 async function main() {
   ensureDir(REPORTS_DIR);
   ensureDir(CACHE_DIR);
@@ -415,6 +514,12 @@ async function main() {
   // Load existing watchlists + queue to avoid re-suggesting ignored/promoted items.
   const watchlist = readJsonFile(WATCHLIST_PATH, []);
   const stagingWatchlist = readJsonFile(STAGING_WATCHLIST_PATH, []);
+  const autoStageIgnoreRaw = readJsonFile(AUTO_STAGE_IGNORE_PATH, []);
+  const autoStageIgnoreIds = new Set(
+    (Array.isArray(autoStageIgnoreRaw) ? autoStageIgnoreRaw : [])
+      .map((id) => normalizeCoinGeckoId(id))
+      .filter(Boolean)
+  );
   const watchlistIds = new Set(
     watchlist.map((c) => normalizeCoinGeckoId(c?.coinGeckoId)).filter(Boolean)
   );
@@ -440,6 +545,9 @@ async function main() {
     if (status !== "IGNORED" && status !== "PROMOTED") continue;
     const idLower = normalizeCoinGeckoId(entry?.coinGeckoId || entry?.id);
     if (idLower) suppressedByQueue.add(idLower);
+  }
+  for (const idLower of autoStageIgnoreIds) {
+    suppressedByQueue.add(idLower);
   }
 
   const gates = {
@@ -568,8 +676,19 @@ async function main() {
   for (const [idLower, entry] of queueById.entries()) {
     if (watchlistIds.has(idLower)) {
       entry.status = "PROMOTED";
+      delete entry.staged_source;
+      delete entry.staged_at;
+      delete entry.auto_staged;
     } else if (stagingIds.has(idLower)) {
       entry.status = "STAGED";
+      if ((entry.staged_source || "manual") !== "auto") {
+        entry.staged_source = "manual";
+        entry.staged_at = entry.staged_at || generatedAt;
+      }
+    } else if (entry.status === "STAGED" && (entry.staged_source || "manual") !== "auto") {
+      entry.status = "NEW";
+      delete entry.staged_source;
+      delete entry.staged_at;
     }
     if (!entry.coinGeckoId && entry.id) {
       entry.coinGeckoId = entry.id;
@@ -617,11 +736,31 @@ async function main() {
         market_cap_rank: c.market_cap_rank,
         source: c.source,
         status: stagingIds.has(idLower) ? "STAGED" : "NEW",
+        staged_source: stagingIds.has(idLower) ? "manual" : undefined,
+        staged_at: stagingIds.has(idLower) ? generatedAt : undefined,
         notes: "",
         first_seen_at: generatedAt,
         last_seen_at: generatedAt,
       });
     }
+  }
+
+  const autoStageResult = autoStageCandidates({
+    candidates,
+    queueById,
+    generatedAt,
+  });
+  if (autoStageResult.staged.length > 0) {
+    console.log(`\nAuto-staged ${autoStageResult.staged.length} discovery coins:`);
+    for (const item of autoStageResult.staged) {
+      const score =
+        typeof item.discovery_score === "number" && Number.isFinite(item.discovery_score)
+          ? item.discovery_score.toFixed(1)
+          : "n/a";
+      console.log(`- ${item.coinGeckoId} | ${item.symbol || "n/a"} | ${item.name || "n/a"} | score=${score}`);
+    }
+  } else if (AUTO_STAGE_DISCOVERY && autoStageResult.skipped_reason) {
+    console.log(`\nAuto-stage: ${autoStageResult.skipped_reason} (0 coins staged).`);
   }
 
   const updatedQueue = {

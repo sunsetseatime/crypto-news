@@ -66,6 +66,7 @@ jobs:
       - name: Run discovery
         if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.skip_discovery == 'true') }}
         env:
+          AUTO_STAGE_DISCOVERY: "1"
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           COINGECKO_API_KEY_HEADER: ${{ secrets.COINGECKO_API_KEY_HEADER }}
           COINGECKO_BASE_URL: ${{ secrets.COINGECKO_BASE_URL }}

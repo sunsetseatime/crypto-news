@@ -177,6 +177,10 @@ Use `config/watchlist_staging.json` as a safe sandbox for newly discovered coins
 - The scanner reads **both** lists on each run.
 - `reports/Summary.md` shows **Watchlist** and **Staging Watchlist** separately so your main list stays clean.
 
+Optional:
+- Enable discovery auto-staging (so top discovery picks get scanned daily in the staging section) via `AUTO_STAGE_DISCOVERY=1`.
+- Block specific CoinGecko IDs from being auto-staged by adding them to `config/auto_stage_ignore.json`.
+
 **Important**: 
 - Fill in the `github` URL for catalyst detection (GitHub releases)
 - Fill in the `blog` URL for RSS feed catalyst detection (the scanner will try common RSS paths like `/feed`, `/rss`, `/feed.xml`)
@@ -217,6 +221,19 @@ ALERT_DISCOVERY_SCORE_THRESHOLD=80
 ALERT_ACTIONABLE=1
 # - Windows popup when NEW alerts appear (deduped via reports/alert_state.json). Set 1 to enable.
 ALERT_POPUP=0
+
+# Discovery auto-stage (optional)
+# - Adds top discovery picks into the staging scan automatically.
+AUTO_STAGE_DISCOVERY=1
+# - Stage up to N coins per run
+AUTO_STAGE_LIMIT=2
+# - Only stage when score/flow is strong (defaults shown)
+AUTO_STAGE_DISCOVERY_SCORE_MIN=90
+AUTO_STAGE_VOLUME_24H_MIN=10000000
+AUTO_STAGE_VOL_TO_MCAP_MIN=0.05
+AUTO_STAGE_PRICE_CHANGE_7D_MAX=60
+# - Cap total auto-staged coins (prevents watchlist bloat)
+AUTO_STAGE_MAX_TOTAL=25
 
 # Advanced CoinGecko config (usually auto-detected)
 COINGECKO_API_KEY_HEADER=x_cg_demo_api_key
