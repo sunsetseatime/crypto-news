@@ -1,0 +1,11 @@
+# Crypto Watchlist Daily Scanner
+
+Full documentation: `readme/README.md`.
+
+## GitHub Actions + GitHub Pages (runs when your PC is off)
+
+This repo includes a scheduled workflow that runs the scanner daily and publishes the latest dashboard to GitHub Pages:
+
+- Workflow: `.github/workflows/daily-scan-pages.yml`
+- Dashboard URL: `https://<your-user>.github.io/<your-repo>/`
+

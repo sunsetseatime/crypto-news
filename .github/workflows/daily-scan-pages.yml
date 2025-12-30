@@ -1,0 +1,190 @@
+name: Daily Scan (Pages)
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_discovery:
+        description: "Skip discovery (src/discover.js)"
+        type: boolean
+        default: false
+      skip_defi:
+        description: "Skip DeFi scan (src/defi_scan.js)"
+        type: boolean
+        default: false
+      skip_watchlist:
+        description: "Skip watchlist scan (src/index.js)"
+        type: boolean
+        default: false
+  schedule:
+    # GitHub Actions schedules are in UTC. Change this to your preferred time.
+    - cron: "0 13 * * *"
+
+concurrency:
+  group: crypto-news-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  # Optional, but recommended to match your locale. Example: America/New_York
+  TZ: UTC
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Prepare state directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports/backtest reports/defi/snapshots reports/history/watchlist
+
+      - name: Restore state cache (history/backtest/queue)
+        uses: actions/cache@v4
+        with:
+          path: |
+            config/discovery_queue.json
+            reports/backtest
+            reports/defi/snapshots
+            reports/history/watchlist
+          key: crypto-news-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            crypto-news-state-${{ runner.os }}-${{ github.ref_name }}-
+
+      - name: Run discovery
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.skip_discovery == 'true') }}
+        env:
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+          COINGECKO_API_KEY_HEADER: ${{ secrets.COINGECKO_API_KEY_HEADER }}
+          COINGECKO_BASE_URL: ${{ secrets.COINGECKO_BASE_URL }}
+        run: node src/discover.js
+
+      - name: Run DeFi scan
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.skip_defi == 'true') }}
+        env:
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+          COINGECKO_API_KEY_HEADER: ${{ secrets.COINGECKO_API_KEY_HEADER }}
+          COINGECKO_BASE_URL: ${{ secrets.COINGECKO_BASE_URL }}
+        run: node src/defi_scan.js
+
+      - name: Run watchlist scan
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.skip_watchlist == 'true') }}
+        env:
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+          COINGECKO_API_KEY_HEADER: ${{ secrets.COINGECKO_API_KEY_HEADER }}
+          COINGECKO_BASE_URL: ${{ secrets.COINGECKO_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL_SUPERVISOR: ${{ secrets.OPENAI_MODEL_SUPERVISOR }}
+          ETHPLORER_API_KEY: ${{ secrets.ETHPLORER_API_KEY }}
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+          BSCSCAN_API_KEY: ${{ secrets.BSCSCAN_API_KEY }}
+          POLYGONSCAN_API_KEY: ${{ secrets.POLYGONSCAN_API_KEY }}
+          ARBISCAN_API_KEY: ${{ secrets.ARBISCAN_API_KEY }}
+          OPTIMISM_API_KEY: ${{ secrets.OPTIMISM_API_KEY }}
+          BASESCAN_API_KEY: ${{ secrets.BASESCAN_API_KEY }}
+          COVALENT_API_KEY: ${{ secrets.COVALENT_API_KEY }}
+        run: node src/index.js
+
+      - name: Prune state (keep caches small)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Keep last 60 watchlist runs (each run writes multiple files with the same prefix).
+          if [ -d "reports/history/watchlist" ]; then
+            mapfile -t layer1 < <(ls -1 "reports/history/watchlist"/*_Layer1Report.json 2>/dev/null | sort -r || true)
+            if [ "${#layer1[@]}" -gt 60 ]; then
+              for old in "${layer1[@]:60}"; do
+                prefix="${old%_Layer1Report.json}"
+                rm -f "${prefix}_Layer1Report.json" \
+                      "${prefix}_Summary.md" \
+                      "${prefix}_DiffReport.json" \
+                      "${prefix}_Dashboard.html" \
+                      "${prefix}_SupervisorSummary.json" \
+                      "${prefix}_Alerts.json" \
+                      "${prefix}_Alerts.md" || true
+              done
+            fi
+          fi
+
+          # Keep last 60 DeFi snapshots.
+          if [ -d "reports/defi/snapshots" ]; then
+            mapfile -t snaps < <(ls -1 "reports/defi/snapshots"/*.json 2>/dev/null | sort -r || true)
+            if [ "${#snaps[@]}" -gt 60 ]; then
+              for old in "${snaps[@]:60}"; do
+                rm -f "$old" || true
+              done
+            fi
+          fi
+
+      - name: Build Pages site (latest reports)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf site
+          mkdir -p site/backtest site/defi
+
+          # Dashboard
+          if [ -f "reports/Dashboard.html" ]; then
+            cp "reports/Dashboard.html" "site/Dashboard.html"
+            cp "reports/Dashboard.html" "site/index.html"
+          else
+            printf '%s\n' "<!doctype html><meta charset='utf-8'><title>Crypto Scanner</title><p>No dashboard generated.</p>" > "site/index.html"
+          fi
+
+          # Core report files (copy if present)
+          for f in \
+            "Summary.md" \
+            "Layer1Report.json" \
+            "Alerts.md" \
+            "Alerts.json" \
+            "DiffReport.json" \
+            "SupervisorSummary.json" \
+            "DiscoveryReport.md" \
+            "DiscoveryReport.json"
+          do
+            if [ -f "reports/$f" ]; then
+              cp "reports/$f" "site/$f"
+            fi
+          done
+
+          # Backtest + DeFi (copy if present)
+          if [ -f "reports/backtest/BacktestReport.md" ]; then
+            cp "reports/backtest/BacktestReport.md" "site/backtest/BacktestReport.md"
+          fi
+          if [ -f "reports/backtest/BacktestReport.json" ]; then
+            cp "reports/backtest/BacktestReport.json" "site/backtest/BacktestReport.json"
+          fi
+          if [ -f "reports/defi/Latest.md" ]; then
+            cp "reports/defi/Latest.md" "site/defi/Latest.md"
+          fi
+          if [ -f "reports/defi/Latest.json" ]; then
+            cp "reports/defi/Latest.json" "site/defi/Latest.json"
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

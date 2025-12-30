@@ -1,0 +1,15 @@
+[
+  {
+    "symbol": "SQD",
+    "name": "SQD",
+    "coinGeckoId": "subsquid",
+    "category": "discovery",
+    "urls": {
+      "official": "",
+      "x": "",
+      "blog": "",
+      "github": ""
+    },
+    "notes": ""
+  }
+]

@@ -1,0 +1,197 @@
+[
+  {
+    "symbol": "UDS",
+    "name": "Undeads Games",
+    "coinGeckoId": "undeads-games",
+    "category": "gaming",
+    "urls": {
+      "official": "https://undeads.com",
+      "x": "https://twitter.com/UndeadsGames",
+      "blog": "",
+      "github": ""
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "ZK",
+    "name": "zkSync",
+    "coinGeckoId": "zksync",
+    "category": "L2",
+    "urls": {
+      "official": "https://zksync.io",
+      "x": "https://twitter.com/zksync",
+      "blog": "https://blog.zksync.io",
+      "github": "https://github.com/matter-labs/zksync-era"
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "ZRO",
+    "name": "LayerZero",
+    "coinGeckoId": "layerzero",
+    "category": "infra",
+    "urls": {
+      "official": "https://layerzero.network",
+      "x": "https://twitter.com/LayerZero_Labs",
+      "blog": "https://blog.layerzero.network",
+      "github": "https://github.com/LayerZero-Labs"
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "TAIKO",
+    "name": "Taiko",
+    "coinGeckoId": "taiko",
+    "category": "L2",
+    "urls": {
+      "official": "https://taiko.xyz",
+      "x": "https://twitter.com/taikoxyz",
+      "blog": "https://taiko.mirror.xyz",
+      "github": "https://github.com/taikoxyz"
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "ATH",
+    "name": "Aethir",
+    "coinGeckoId": "aethir",
+    "category": "infra",
+    "urls": {
+      "official": "",
+      "x": "",
+      "blog": "",
+      "github": ""
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "IO",
+    "name": "io.net",
+    "coinGeckoId": "io",
+    "category": "infra",
+    "urls": {
+      "official": "https://io.net",
+      "x": "https://twitter.com/ionaboreal",
+      "blog": "https://io.net/blog",
+      "github": ""
+    },
+    "notes": "Decentralized GPU network for AI/ML"
+  },
+  {
+    "symbol": "NOT",
+    "name": "Notcoin",
+    "coinGeckoId": "notcoin",
+    "category": "gaming",
+    "urls": {
+      "official": "",
+      "x": "",
+      "blog": "",
+      "github": ""
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "EIGEN",
+    "name": "EigenLayer",
+    "coinGeckoId": "eigenlayer",
+    "category": "restaking",
+    "urls": {
+      "official": "https://www.eigenlayer.xyz",
+      "x": "https://twitter.com/eigenlayer",
+      "blog": "https://blog.eigenlayer.xyz",
+      "github": "https://github.com/Layr-Labs"
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "MORPHO",
+    "name": "Morpho",
+    "coinGeckoId": "morpho",
+    "category": "DeFi",
+    "urls": {
+      "official": "https://www.morpho.org",
+      "x": "https://twitter.com/Morpho_Labs",
+      "blog": "https://medium.com/morpho-labs",
+      "github": "https://github.com/morpho-org"
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "SWELL",
+    "name": "Swell Network",
+    "coinGeckoId": "swell-network",
+    "category": "staking",
+    "urls": {
+      "official": "https://www.swellnetwork.io",
+      "x": "https://twitter.com/swellnetworkio",
+      "blog": "https://swellnetwork.io/blog",
+      "github": "https://github.com/SwellNetwork"
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "USUAL",
+    "name": "Usual",
+    "coinGeckoId": "usual",
+    "category": "DeFi",
+    "urls": {
+      "official": "",
+      "x": "",
+      "blog": "",
+      "github": ""
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "GALA",
+    "name": "Gala",
+    "coinGeckoId": "gala",
+    "category": "gaming",
+    "urls": {
+      "official": "",
+      "x": "",
+      "blog": "",
+      "github": ""
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "LPT",
+    "name": "Livepeer",
+    "coinGeckoId": "livepeer",
+    "category": "infra",
+    "urls": {
+      "official": "https://livepeer.org",
+      "x": "https://twitter.com/LivepeerOrg",
+      "blog": "https://medium.com/livepeer-blog",
+      "github": "https://github.com/livepeer"
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "GLM",
+    "name": "Golem",
+    "coinGeckoId": "golem",
+    "category": "infra",
+    "urls": {
+      "official": "https://www.golem.network",
+      "x": "https://twitter.com/golemproject",
+      "blog": "https://blog.golem.network",
+      "github": "https://github.com/golemfactory"
+    },
+    "notes": ""
+  },
+  {
+    "symbol": "ICP",
+    "name": "Internet Computer",
+    "coinGeckoId": "internet-computer",
+    "category": "L1",
+    "urls": {
+      "official": "https://internetcomputer.org",
+      "x": "https://twitter.com/dfinity",
+      "blog": "https://medium.com/dfinity",
+      "github": "https://github.com/dfinity"
+    },
+    "notes": ""
+  }
+]
