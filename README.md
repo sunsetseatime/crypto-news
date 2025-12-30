@@ -9,3 +9,4 @@ This repo includes a scheduled workflow that runs the scanner daily and publishe
 - Workflow: `.github/workflows/daily-scan-pages.yml`
 - Dashboard URL: `https://<your-user>.github.io/<your-repo>/`
 
+If the repo is private on GitHub Free, Pages requires upgrading or making the repo public. In that case the workflow still uploads a downloadable artifact named `crypto-news-site`.

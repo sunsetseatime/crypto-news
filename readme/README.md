@@ -128,6 +128,10 @@ Runs daily even when your PC is off, and publishes the latest dashboard to a URL
    - Optional: `OPENAI_API_KEY` (enables `SupervisorSummary.json`)
 4) Run the workflow once: **Actions → “Daily Scan (Pages)” → Run workflow**
 
+If your repo is private and you’re on GitHub Free, Pages will prompt you to upgrade or make the repo public.
+- If you keep it private: the workflow still runs and uploads an artifact you can download (`crypto-news-site`).
+- After Pages is enabled: set repo variable `ENABLE_PAGES=1` so the workflow deploys to Pages.
+
 Notes:
 - Schedule/time is configured in `.github/workflows/daily-scan-pages.yml` (cron is UTC).
 - The workflow keeps small state (history/backtest/discovery queue) via Actions cache so “Diff”/backtests work across runs.

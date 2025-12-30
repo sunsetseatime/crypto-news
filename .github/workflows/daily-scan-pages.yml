@@ -179,9 +179,19 @@ jobs:
         with:
           path: site
 
+      - name: Upload site artifact (downloadable)
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypto-news-site
+          path: site
+          if-no-files-found: error
+
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    # GitHub Pages can't be enabled for private repos on GitHub Free.
+    # Set repo variable ENABLE_PAGES=1 after Pages is enabled to deploy.
+    if: ${{ vars.ENABLE_PAGES == '1' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
