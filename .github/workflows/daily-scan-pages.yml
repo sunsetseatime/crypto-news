@@ -16,8 +16,8 @@ on:
         type: boolean
         default: false
   schedule:
-    # GitHub Actions schedules are in UTC. Change this to your preferred time.
-    - cron: "0 13 * * *"
+    # GitHub Actions schedules are in UTC. 07:00 Africa/Johannesburg (SAST, UTC+2) = 05:00 UTC.
+    - cron: "0 5 * * *"
 
 concurrency:
   group: crypto-news-pages
@@ -29,8 +29,8 @@ permissions:
   id-token: write
 
 env:
-  # Optional, but recommended to match your locale. Example: America/New_York
-  TZ: UTC
+  # Match your locale for report timestamps (e.g., Summary.md uses toLocaleString()).
+  TZ: Africa/Johannesburg
 
 jobs:
   build:
