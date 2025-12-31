@@ -135,7 +135,7 @@ Oldest prediction: 2024-12-01
 
 ## Worst Predictions (14d)
 1. XYZ: KEEP → -25% (unlock risk triggered after scan)
-2. ABC: WATCH-ONLY → -18% (whale dump)
+2. ABC: WATCH-ONLY → -18% (large holder sell-off)
 ```
 
 ### CLI Command (Optional)

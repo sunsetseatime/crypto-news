@@ -181,6 +181,26 @@ Optional:
 - Enable discovery auto-staging (so top discovery picks get scanned daily in the staging section) via `AUTO_STAGE_DISCOVERY=1`.
 - Block specific CoinGecko IDs from being auto-staged by adding them to `config/auto_stage_ignore.json`.
 
+### Address Book (Optional: Label Exchange Wallets)
+If a big holder is an exchange wallet, that can look like “one whale” even though it may represent many customers.
+
+You can label known wallets (like exchanges) so reports are clearer:
+- File: `config/address_book.json`
+- Format:
+
+```json
+{
+  "entries": [
+    {
+      "chain": "ethereum",
+      "address": "0x1111111111111111111111111111111111111111",
+      "label": "Example Exchange (exchange)",
+      "category": "exchange"
+    }
+  ]
+}
+```
+
 **Important**: 
 - Fill in the `github` URL for catalyst detection (GitHub releases)
 - Fill in the `blog` URL for RSS feed catalyst detection (the scanner will try common RSS paths like `/feed`, `/rss`, `/feed.xml`)
@@ -211,6 +231,10 @@ BASESCAN_API_KEY=your_key_here
 #
 # Covalent/GoldRush (multi-chain holders; trial then paid)
 COVALENT_API_KEY=your_key_here
+
+# Optional: label known wallets (exchanges, burn wallets, etc.)
+# Defaults to config/address_book.json if unset.
+ADDRESS_BOOK_PATH=.\config\address_book.json
 
 # Alerts (local-only)
 # - DeFi protocol alert threshold (score out of 100). Set to "off" to disable.
@@ -270,8 +294,8 @@ The scanner now includes:
 - **On-chain analysis** uses Ethplorer (Ethereum) and explorer APIs where supported; if a holder endpoint is unavailable, use Covalent/GoldRush as the fallback.
 - On-chain holder analysis currently supports EVM chains (Ethereum/BSC/Polygon/Arbitrum/Optimism/Base). Solana token holder analysis is not included in v1.
 - The system tries free explorers first, then falls back to Covalent if you have that key set
-- Holder concentration risk flags coins where top 10 wallets hold >50% or top 20 hold >70% of supply
-- `reports/Summary.md` includes an “On-chain Holder Snapshot” section when data is available (top holders + EOA/contract hints).
+- Ownership concentration is graded **Low / Medium / High / Unknown** based on how much supply the top holders control (and what type of holders they are).
+- `reports/Summary.md` includes an “On-chain Holder Snapshot” section when data is available (top holders + wallet/smart contract hints).
 - **Free tier limits**: 5 calls/sec, 100k calls/day per explorer (plenty for daily scanning)
 
 ## Creating a Desktop Shortcut (If Needed)

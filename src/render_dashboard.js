@@ -77,15 +77,19 @@ function severityClass(severity) {
 
 function notesForCoin(coin) {
   const notes = [];
-  if (coin?.chasing) notes.push("chasing");
-  if (coin?.thin_fragile) notes.push("thin");
-  if (coin?.high_dilution_risk) notes.push("dilution");
-  if (coin?.low_liquidity) notes.push("low_liq");
-  if (coin?.unlock_confidence === "UNKNOWN") notes.push("unlock_unk");
-  if (coin?.unlock_risk_flag) notes.push("unlock_risk");
-  if (coin?.has_clean_catalyst) notes.push("catalyst");
-  if (coin?.traction_status === "OK") notes.push("traction");
-  if (coin?.high_concentration_risk) notes.push("whale_risk");
+  if (coin?.chasing) notes.push("price chasing");
+  if (coin?.thin_fragile) notes.push("volume fading");
+  if (coin?.high_dilution_risk) notes.push("dilution risk");
+  if (coin?.low_liquidity) notes.push("low liquidity");
+  if (coin?.unlock_confidence === "UNKNOWN") notes.push("unlock info missing");
+  if (coin?.unlock_risk_flag) notes.push("unlock risk");
+  if (coin?.has_clean_catalyst) notes.push("recent catalyst");
+  if (coin?.traction_status === "OK") notes.push("traction ok");
+  if (coin?.holder_concentration_level === "HIGH") {
+    notes.push("ownership very concentrated");
+  } else if (coin?.holder_concentration_level === "UNKNOWN") {
+    notes.push("ownership data missing");
+  }
   return notes;
 }
 
@@ -400,12 +404,12 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
           <thead>
             <tr>
               <th>Coin</th>
-              <th>Label</th>
+              <th>Decision</th>
               <th class="num">Price</th>
               <th class="num">7d</th>
               <th class="num">vs BTC (7d)</th>
-              <th class="num">Vol 24h</th>
-              <th>Flags</th>
+              <th class="num">Volume (24h)</th>
+              <th>Notes</th>
             </tr>
           </thead>
           <tbody>
@@ -438,8 +442,25 @@ function buildOnchainHtml(coins) {
       const contractAddr = coin.onchain.contract_address || null;
       const top10 = formatPct(num(coin.top_10_holder_percent), 2);
       const top20 = formatPct(num(coin.top_20_holder_percent), 2);
-      const risk = coin.high_concentration_risk ? "HIGH" : "OK";
-      const riskBadge = badge(risk, coin.high_concentration_risk ? "badge-warning" : "badge-positive");
+      const level = coin.holder_concentration_level || "UNKNOWN";
+      const levelLabel =
+        level === "HIGH"
+          ? "High"
+          : level === "MEDIUM"
+            ? "Medium"
+            : level === "LOW"
+              ? "Low"
+              : "Unknown";
+      const riskBadge = badge(
+        levelLabel,
+        level === "HIGH"
+          ? "badge-warning"
+          : level === "MEDIUM"
+            ? "badge-info"
+            : level === "LOW"
+              ? "badge-positive"
+              : "badge-muted"
+      );
 
       const holders = coin.onchain.top_holders.slice(0, 10);
       const rows = holders
@@ -447,13 +468,23 @@ function buildOnchainHtml(coins) {
           const addr = h.address || "";
           const addrShort =
             addr && addr.length > 10 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr || "n/a";
+          const displayName = h.holder_label
+            ? `${h.holder_label} (${addrShort})`
+            : addrShort;
           const link = h.address_url
             ? `<a href="${escapeHtml(h.address_url)}" target="_blank" rel="noreferrer">${escapeHtml(
-                addrShort
+                displayName
               )}</a>`
-            : escapeHtml(addrShort);
+            : escapeHtml(displayName);
+          const holderKind =
+            h.holder_kind ||
+            (h.address_type === "CONTRACT"
+              ? "Smart contract"
+              : h.address_type === "EOA"
+                ? "Wallet"
+                : "Unknown");
           return `<tr><td class="num">${escapeHtml(h.rank)}</td><td>${link}</td><td>${escapeHtml(
-            h.address_type || "UNKNOWN"
+            holderKind
           )}</td><td class="num">${escapeHtml(formatPct(num(h.percent_of_supply), 2))}</td></tr>`;
         })
         .join("");
@@ -466,6 +497,22 @@ function buildOnchainHtml(coins) {
           : escapeHtml(contractAddr || "n/a");
 
       const tag = coin.watchlist_source === "staging" ? " (staging)" : "";
+      const breakdown = [];
+      if (Number.isFinite(num(coin.top_10_wallet_percent)) && num(coin.top_10_wallet_percent) > 0) {
+        breakdown.push(`wallets ${formatPct(num(coin.top_10_wallet_percent), 2)}`);
+      }
+      if (
+        Number.isFinite(num(coin.top_10_exchange_percent)) &&
+        num(coin.top_10_exchange_percent) > 0
+      ) {
+        breakdown.push(`exchanges ${formatPct(num(coin.top_10_exchange_percent), 2)}`);
+      }
+      if (
+        Number.isFinite(num(coin.top_10_contract_percent)) &&
+        num(coin.top_10_contract_percent) > 0
+      ) {
+        breakdown.push(`smart contracts ${formatPct(num(coin.top_10_contract_percent), 2)}`);
+      }
       return `
         <details class="details">
           <summary>
@@ -478,7 +525,7 @@ function buildOnchainHtml(coins) {
           <div class="details-body">
             <div class="muted small">Contract: ${contractHtml} • Source: ${escapeHtml(
         coin.onchain.source || "unknown"
-      )}</div>
+      )}${breakdown.length > 0 ? ` • Top10 breakdown: ${escapeHtml(breakdown.join(", "))}` : ""}</div>
             <div class="table-wrap">
               <table class="table">
                 <thead><tr><th class="num">#</th><th>Holder</th><th>Type</th><th class="num">% Supply</th></tr></thead>
@@ -616,7 +663,7 @@ function buildBacktestHtml(backtestStats) {
         <table class="table">
           <thead>
             <tr>
-              <th>Label</th>
+              <th>Decision</th>
               <th class="num">Count</th>
               <th class="num">Avg 7d</th>
               <th class="num">Avg 14d</th>

@@ -758,7 +758,7 @@ function buildProtocolReasons(proto) {
   if (proto.flags.tvl_collapse) flags.push("TVL collapsing");
   if (proto.flags.liquidity_trap) flags.push("liquidity trap");
   if (proto.flags.dead_dev) flags.push("dead dev");
-  if (proto.flags.whale_concentration) flags.push("whale concentration");
+  if (proto.flags.whale_concentration) flags.push("ownership concentrated");
   if (flags.length) {
     reasons.push(`Red flags: ${flags.join(", ")}`);
   }
@@ -844,7 +844,7 @@ function buildMarkdownReport({ snapshot, previousSnapshot }) {
     if (p.dev.commit_count_4_weeks === null) notes.push("dev unk");
     if (p.security.audit_status === "UNKNOWN") notes.push("audit unk");
     if (p.security.hack_count > 0) notes.push("hacks");
-    if (p.flags.whale_concentration) notes.push("whale risk");
+    if (p.flags.whale_concentration) notes.push("ownership concentrated");
     lines.push(
       `| ${idx + 1} | ${link} | ${formatUsd(p.tvl.focus_current)} | ${formatPct(
         p.tvl.change_30d_pct
@@ -880,13 +880,13 @@ function buildMarkdownReport({ snapshot, previousSnapshot }) {
               p.onchain.high_concentration_risk ? "HIGH" : "OK"
             })`
           : "n/a";
-      const notes = [];
-      if (p.flags.whale_concentration) notes.push("whale risk");
-      if (p.flags.liquidity_trap) notes.push("liquidity trap");
-      if (p.flags.tvl_collapse) notes.push("TVL collapsing");
-      lines.push(
-        `| ${idx + 1} | ${link} | ${token} | ${volToMcapPct} | ${holdersTop10} | ${p.scores.total.toFixed(
-          1
+       const notes = [];
+       if (p.flags.whale_concentration) notes.push("ownership concentrated");
+       if (p.flags.liquidity_trap) notes.push("liquidity trap");
+       if (p.flags.tvl_collapse) notes.push("TVL collapsing");
+       lines.push(
+         `| ${idx + 1} | ${link} | ${token} | ${volToMcapPct} | ${holdersTop10} | ${p.scores.total.toFixed(
+           1
         )} | ${notes.join(", ") || "-"} |`
       );
     });

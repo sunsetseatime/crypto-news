@@ -106,6 +106,9 @@ const AUTO_STAGE_IGNORE_PATH = path.join(
   "config",
   "auto_stage_ignore.json"
 );
+const ADDRESS_BOOK_PATH =
+  process.env.ADDRESS_BOOK_PATH ||
+  path.join(__dirname, "..", "config", "address_book.json");
 
 const CACHE_TTL_MINUTES = Number(process.env.CACHE_TTL_MINUTES || 360);
 const CACHE_TTL_MS =
@@ -389,15 +392,16 @@ async function runSupervisor(layer1Report) {
   const systemMsg =
     "You are a strict crypto research supervisor. " +
     "Do not hype. Do not invent facts. " +
+    "Use plain English and avoid jargon. " +
     "Only use the provided JSON. " +
     "Do not claim a clean catalyst unless it is dated within 14 days and linked. " +
     "If unlock data is UNKNOWN/LOW, mark not actionable and say it needs verification. " +
-    "For on-chain: do not guess address identity (exchange/whale/team). Only summarize chain, holder concentration %, and EOA vs CONTRACT counts when available.";
+    "For on-chain: do not guess address identity (exchange/person/team). Only summarize chain, holder concentration %, and wallet vs smart-contract counts when available.";
 
   const userMsg =
     "Summarize today's scan strictly using the provided JSON only. " +
     "Return JSON matching the schema. " +
-    "Include up to 5 on-chain highlights focusing on coins where `high_concentration_risk=true`; otherwise include any with on-chain data. " +
+    "Include up to 5 on-chain highlights focusing on coins where ownership concentration is HIGH (`holder_concentration_level=HIGH`); otherwise include any with on-chain data. " +
     "Do not include raw addresses in the highlight facts.\n\n" +
     JSON.stringify(layer1Report);
 
@@ -582,12 +586,13 @@ function evaluateGates(coin) {
   const liquidity = coin.volume_24h !== null && coin.volume_24h >= VOLUME_LOW;
   const unlockTransparency = coin.unlock_confidence !== "UNKNOWN";
   const traction = coin.traction_status === "OK";
-  
-  // Concentration risk gate: fails if high concentration detected
-  // If data unavailable, don't fail the gate (graceful degradation)
-  const concentrationRisk = coin.holder_confidence === "MEDIUM" 
-    ? !coin.high_concentration_risk 
-    : true; // Pass if data unavailable
+
+  // Ownership concentration gate:
+  // - HIGH fails
+  // - UNKNOWN does not count as a pass (so coins don't look "clean" just because data is missing)
+  const concentrationRisk =
+    coin.holder_concentration_level === "LOW" ||
+    coin.holder_concentration_level === "MEDIUM";
 
   return {
     trackable_data: trackableData,
@@ -609,9 +614,9 @@ function decideLabel(coin, gates) {
 
   let label = "WATCH-ONLY";
   const severeLiquidity = coin.volume_24h !== null && coin.volume_24h < VOLUME_DROP;
-  
-  // High concentration risk is a severe warning
-  const severeConcentrationRisk = coin.high_concentration_risk === true;
+
+  const severeConcentrationRisk = coin.holder_concentration_level === "HIGH";
+  const unknownConcentration = coin.holder_concentration_level === "UNKNOWN";
 
   if (!gates.trackable_data || severeLiquidity) {
     label = "DROP";
@@ -622,8 +627,13 @@ function decideLabel(coin, gates) {
   if (label === "KEEP" && coin.unlock_confidence === "UNKNOWN") {
     label = "WATCH-ONLY";
   }
-  
-  // High concentration risk downgrades to WATCH-ONLY even if other gates pass
+
+  // Missing concentration data -> not actionable (keep it on the watchlist, but don't mark as KEEP)
+  if (label === "KEEP" && unknownConcentration) {
+    label = "WATCH-ONLY";
+  }
+
+  // High concentration risk downgrades to WATCH-ONLY even if other gates pass.
   if (label === "KEEP" && severeConcentrationRisk) {
     label = "WATCH-ONLY";
   }
@@ -807,6 +817,53 @@ function normalizeContractAddress(address) {
     return null;
   }
   return trimmed;
+}
+
+function normalizeEvmAddress(address) {
+  if (!address) return null;
+  const value = String(address).trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(value)) {
+    return null;
+  }
+  if (value.toLowerCase() === "0x0000000000000000000000000000000000000000") {
+    return null;
+  }
+  return value.toLowerCase();
+}
+
+function loadAddressBook(filePath) {
+  const raw = readJsonFile(filePath, null);
+  const entries = Array.isArray(raw?.entries) ? raw.entries : [];
+  const byChain = new Map();
+  let count = 0;
+
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const chain = String(entry.chain || "").trim().toLowerCase();
+    const address = normalizeEvmAddress(entry.address);
+    const label = typeof entry.label === "string" ? entry.label.trim() : "";
+    const category =
+      typeof entry.category === "string" ? entry.category.trim().toLowerCase() : "";
+    if (!chain || !address || !label) continue;
+
+    if (!byChain.has(chain)) {
+      byChain.set(chain, new Map());
+    }
+    byChain.get(chain).set(address, { label, category: category || null });
+    count += 1;
+  }
+
+  return { byChain, count };
+}
+
+function getAddressBookEntry(addressBook, chain, address) {
+  if (!addressBook?.byChain) return null;
+  const chainKey = String(chain || "").trim().toLowerCase();
+  const normalized = normalizeEvmAddress(address);
+  if (!chainKey || !normalized) return null;
+  const chainMap = addressBook.byChain.get(chainKey);
+  if (!chainMap) return null;
+  return chainMap.get(normalized) || null;
 }
 
 // Extract primary contract address from CoinGecko (platforms/detail_platforms)
@@ -1076,73 +1133,115 @@ async function fetchExplorerAddressType(explorerConfig, address) {
   }
 }
 
-async function buildOnchainDetails({
-  holdersData,
-  contractInfo,
-  supplyUsed,
-  top10HolderPercent,
-  highConcentrationRisk,
-}) {
-  if (!holdersData || !Array.isArray(holdersData?.items) || !contractInfo) {
+function parseRpcHexToBigInt(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "0x") return null;
+  if (!/^0x[0-9a-fA-F]+$/.test(trimmed)) return null;
+  try {
+    return BigInt(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchEvmCallHex(explorerConfig, toAddress, data) {
+  if (!explorerConfig || !toAddress || !data) {
     return null;
   }
 
-  const explorerConfig = getExplorerConfig(contractInfo.chain);
-  const contractUrl = explorerConfig
-    ? getExplorerAddressUrl(explorerConfig, contractInfo.address)
-    : null;
-  const shouldDetectContracts =
-    Boolean(explorerConfig?.rpcUrl) ||
-    highConcentrationRisk === true ||
-    (typeof top10HolderPercent === "number" &&
-      Number.isFinite(top10HolderPercent) &&
-      top10HolderPercent >= 30);
-
-  const topRaw = holdersData.items.slice(0, 10);
-  const top = topRaw.map((holder, idx) => {
-    const balanceTokens = normalizeHolderBalance(
-      holder?.balance,
-      holdersData.source,
-      contractInfo.decimals ?? null
-    );
-    const percent =
-      typeof supplyUsed === "number" &&
-      Number.isFinite(supplyUsed) &&
-      supplyUsed > 0 &&
-      typeof balanceTokens === "number" &&
-      Number.isFinite(balanceTokens) &&
-      balanceTokens >= 0
-        ? (balanceTokens / supplyUsed) * 100
-        : null;
-    const address = holder?.address || null;
-    return {
-      rank: holder?.rank || idx + 1,
-      address,
-      address_url: explorerConfig ? getExplorerAddressUrl(explorerConfig, address) : null,
-      address_type: null,
-      percent_of_supply: percent,
-    };
-  });
-
-  if (shouldDetectContracts && (explorerConfig?.rpcUrl || explorerConfig?.apiKey)) {
-    for (let i = 0; i < Math.min(top.length, 5); i++) {
-      const holder = top[i];
-      if (!holder.address) continue;
-      holder.address_type = await fetchExplorerAddressType(
-        explorerConfig,
-        holder.address
-      );
-      await sleep(220);
+  try {
+    if (explorerConfig.rpcUrl) {
+      const response = await fetch(explorerConfig.rpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_call",
+          params: [{ to: toAddress, data }, "latest"],
+        }),
+      });
+      if (response.ok) {
+        const payload = await response.json();
+        const result = typeof payload?.result === "string" ? payload.result : null;
+        if (result && /^0x[0-9a-fA-F]*$/.test(result.trim())) {
+          return result.trim();
+        }
+      }
     }
+
+    if (explorerConfig.apiKey && explorerConfig.baseUrl) {
+      const url =
+        `${explorerConfig.baseUrl}?module=proxy&action=eth_call` +
+        `&to=${encodeURIComponent(toAddress)}` +
+        `&data=${encodeURIComponent(data)}` +
+        `&tag=latest&apikey=${encodeURIComponent(explorerConfig.apiKey)}`;
+      const payload = await fetchJson(url, {}, 1);
+      const result = typeof payload?.result === "string" ? payload.result : null;
+      if (result && /^0x[0-9a-fA-F]*$/.test(result.trim())) {
+        return result.trim();
+      }
+    }
+  } catch {
+    // ignore
   }
 
-  return {
-    chain: contractInfo.chain || null,
-    contract_address: contractInfo.address || null,
-    contract_url: contractUrl,
-    source: formatOnChainSource(holdersData.source),
-    top_holders: top,
+  return null;
+}
+
+async function fetchErc20Metadata(explorerConfig, contractAddress) {
+  if (!explorerConfig || !contractAddress) {
+    return null;
+  }
+
+  const contract = String(contractAddress).trim();
+  if (!contract) return null;
+
+  const cachePath = path.join(
+    CACHE_DIR,
+    `erc20_meta_${explorerConfig.explorer}_${contract.toLowerCase()}.json`
+  );
+  const cached = readCache(cachePath);
+  if (
+    cached &&
+    (cached.decimals === null || Number.isFinite(cached.decimals)) &&
+    (cached.total_supply_base_units === null ||
+      typeof cached.total_supply_base_units === "string")
+  ) {
+    return cached;
+  }
+
+  const decimalsHex = await fetchEvmCallHex(
+    explorerConfig,
+    contract,
+    "0x313ce567"
+  );
+  const supplyHex = await fetchEvmCallHex(
+    explorerConfig,
+    contract,
+    "0x18160ddd"
+  );
+
+  const decimalsBig = parseRpcHexToBigInt(decimalsHex);
+  const supplyBig = parseRpcHexToBigInt(supplyHex);
+
+  const decimals =
+    decimalsBig !== null &&
+    decimalsBig >= 0n &&
+    decimalsBig <= 255n &&
+    Number.isFinite(Number(decimalsBig))
+      ? Number(decimalsBig)
+      : null;
+
+  const result = {
+    decimals,
+    total_supply_base_units: supplyBig !== null ? supplyBig.toString() : null,
+    source: explorerConfig.rpcUrl ? "rpc" : "explorer_proxy",
   };
+
+  writeCache(cachePath, result);
+  return result;
 }
 
 async function fetchEthplorerTokenHolders(contractAddress, limit = 20) {
@@ -1348,53 +1447,299 @@ async function fetchTokenHoldersMultiSource(geckoChain, contractAddress) {
   return null;
 }
 
-// Evaluate holder concentration risk
-function evaluateHolderConcentration(holdersData, totalSupply, tokenDecimals = null) {
-  if (!holdersData || !Array.isArray(holdersData?.items)) {
-    return {
-      top_10_holder_percent: null,
-      top_20_holder_percent: null,
-      high_concentration_risk: false,
-      holder_confidence: "UNKNOWN",
-    };
+function parseDecimalStringToBigInt(value) {
+  if (typeof value === "bigint") return value;
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/,/g, "").trim();
+  if (!/^\d+$/.test(cleaned)) return null;
+  try {
+    return BigInt(cleaned);
+  } catch {
+    return null;
   }
-  
-  const holders = holdersData.items.slice(0, 20); // Top 20 holders
-  let top10Total = 0;
-  let top20Total = 0;
-  
-  for (let i = 0; i < holders.length; i++) {
-    const balance = normalizeHolderBalance(
-      holders[i]?.balance,
-      holdersData.source,
-      tokenDecimals
-    );
-    
-    if (balance !== null && Number.isFinite(balance) && balance > 0) {
-      if (i < 10) {
-        top10Total += balance;
+}
+
+function percentFromBaseUnits(balanceBaseUnits, totalSupplyBaseUnits) {
+  if (balanceBaseUnits === null || totalSupplyBaseUnits === null) return null;
+  if (totalSupplyBaseUnits <= 0n) return null;
+  if (balanceBaseUnits < 0n) return null;
+  const bps = (balanceBaseUnits * 10000n) / totalSupplyBaseUnits; // 0.01%
+  return Number(bps) / 100;
+}
+
+function concentrationLevelFromTotals(top10Percent, top20Percent) {
+  const top10 = num(top10Percent);
+  const top20 = num(top20Percent);
+  if (top10 === null && top20 === null) return "UNKNOWN";
+  if ((top10 !== null && top10 > 50) || (top20 !== null && top20 > 70)) return "HIGH";
+  if ((top10 !== null && top10 >= 30) || (top20 !== null && top20 >= 45)) return "MEDIUM";
+  return "LOW";
+}
+
+function clampPct(value) {
+  if (!Number.isFinite(value)) return null;
+  if (value < 0) return 0;
+  if (value > 100) return 100;
+  return value;
+}
+
+function buildConcentrationSummary({
+  top10Percent,
+  top20Percent,
+  level,
+  confidence,
+  walletTop10,
+  exchangeTop10,
+  contractTop10,
+  supplyBasis,
+}) {
+  const pieces = [];
+  if (top10Percent !== null) pieces.push(`Top 10 holders: ${formatPct(top10Percent)}`);
+  if (top20Percent !== null) pieces.push(`Top 20 holders: ${formatPct(top20Percent)}`);
+  if (pieces.length === 0) pieces.push("Top holders: n/a");
+  pieces.push(`Concentration: ${level === "UNKNOWN" ? "Unknown" : level.toLowerCase()}`);
+  pieces.push(`Data quality: ${confidence === "UNKNOWN" ? "unknown" : confidence.toLowerCase()}`);
+  if (supplyBasis) pieces.push(`Supply basis: ${supplyBasis}`);
+
+  const breakdown = [];
+  if (walletTop10 !== null && walletTop10 > 0) {
+    breakdown.push(`wallets ${formatPct(walletTop10)}`);
+  }
+  if (exchangeTop10 !== null && exchangeTop10 > 0) {
+    breakdown.push(`exchanges ${formatPct(exchangeTop10)}`);
+  }
+  if (contractTop10 !== null && contractTop10 > 0) {
+    breakdown.push(`smart contracts ${formatPct(contractTop10)}`);
+  }
+  if (breakdown.length > 0) {
+    pieces.push(`Top 10 breakdown: ${breakdown.join(", ")}`);
+  }
+
+  return pieces.join(" | ");
+}
+
+async function analyzeHolderConcentration({
+  holdersData,
+  contractInfo,
+  supplyFallbackTokens,
+  addressBook,
+}) {
+  const empty = {
+    top_10_holder_percent: null,
+    top_20_holder_percent: null,
+    top_10_wallet_percent: null,
+    top_10_exchange_percent: null,
+    top_10_contract_percent: null,
+    holder_concentration_level: "UNKNOWN",
+    high_concentration_risk: false,
+    holder_confidence: "UNKNOWN",
+    holder_concentration_summary: "No on-chain holder data.",
+    onchain: null,
+  };
+
+  if (!holdersData || !Array.isArray(holdersData?.items) || !contractInfo) {
+    return empty;
+  }
+
+  const items = holdersData.items.slice(0, 20);
+  if (items.length === 0) {
+    return empty;
+  }
+
+  const explorerConfig = getExplorerConfig(contractInfo.chain);
+  const contractUrl = explorerConfig
+    ? getExplorerAddressUrl(explorerConfig, contractInfo.address)
+    : null;
+
+  const erc20Meta =
+    explorerConfig && contractInfo.address
+      ? await fetchErc20Metadata(explorerConfig, contractInfo.address)
+      : null;
+
+  const tokenDecimals =
+    typeof erc20Meta?.decimals === "number" && Number.isFinite(erc20Meta.decimals)
+      ? erc20Meta.decimals
+      : typeof contractInfo.decimals === "number" && Number.isFinite(contractInfo.decimals)
+        ? contractInfo.decimals
+        : null;
+
+  const totalSupplyBaseUnits =
+    typeof erc20Meta?.total_supply_base_units === "string" &&
+    /^\d+$/.test(erc20Meta.total_supply_base_units)
+      ? BigInt(erc20Meta.total_supply_base_units)
+      : null;
+
+  const supplyFallback =
+    Number.isFinite(supplyFallbackTokens) && supplyFallbackTokens > 0
+      ? supplyFallbackTokens
+      : null;
+
+  const sourceKey = String(holdersData.source || "").toLowerCase();
+  const canUseBaseUnits =
+    (sourceKey === "ethplorer" || sourceKey === "covalent") &&
+    totalSupplyBaseUnits !== null;
+
+  const computed = items.map((holder, idx) => {
+    const share = clampPct(num(holder?.percent));
+    if (share !== null) {
+      return { holder, rank: holder?.rank || idx + 1, percent: share, method: "provider_share" };
+    }
+
+    if (canUseBaseUnits) {
+      const balanceBase = parseDecimalStringToBigInt(holder?.balance);
+      const pct = balanceBase !== null ? percentFromBaseUnits(balanceBase, totalSupplyBaseUnits) : null;
+      if (pct !== null) {
+        return { holder, rank: holder?.rank || idx + 1, percent: clampPct(pct), method: "rpc_total_supply" };
       }
-      top20Total += balance;
+    }
+
+    if (supplyFallback !== null) {
+      const balance = normalizeHolderBalance(holder?.balance, holdersData.source, tokenDecimals);
+      if (balance !== null && Number.isFinite(balance) && balance >= 0) {
+        const pct = (balance / supplyFallback) * 100;
+        return { holder, rank: holder?.rank || idx + 1, percent: clampPct(pct), method: "fallback_supply" };
+      }
+    }
+
+    return { holder, rank: holder?.rank || idx + 1, percent: null, method: null };
+  });
+
+  const top10 = computed.slice(0, 10);
+  const top20 = computed.slice(0, 20);
+
+  const sumPercent = (rows, requiredCount) => {
+    const percents = rows.map((r) => r.percent).filter((v) => v !== null);
+    if (percents.length < requiredCount) return null;
+    return percents.reduce((sum, v) => sum + v, 0);
+  };
+
+  const top10Percent = sumPercent(top10, Math.min(10, top10.length));
+  const top20Percent = sumPercent(top20, Math.min(20, top20.length));
+
+  const supplyBasis = totalSupplyBaseUnits !== null
+    ? "on-chain total supply"
+    : supplyFallback !== null
+      ? "CoinGecko supply"
+      : null;
+
+  const methodsUsed = new Set(
+    top10.map((r) => r.method).filter((m) => typeof m === "string")
+  );
+  const holderConfidence = methodsUsed.has("rpc_total_supply")
+    ? methodsUsed.has("fallback_supply")
+      ? "MEDIUM"
+      : "HIGH"
+    : methodsUsed.has("provider_share")
+      ? "MEDIUM"
+      : methodsUsed.has("fallback_supply")
+        ? "LOW"
+        : "UNKNOWN";
+
+  const onchainTop = top10.map((row) => {
+    const holder = row.holder || {};
+    const address = holder?.address || null;
+    const tag = address ? getAddressBookEntry(addressBook, contractInfo.chain, address) : null;
+    return {
+      rank: row.rank,
+      address,
+      address_url:
+        explorerConfig && address ? getExplorerAddressUrl(explorerConfig, address) : null,
+      address_type: null,
+      holder_label: tag?.label || null,
+      holder_category: tag?.category || null,
+      holder_kind: "Unknown",
+      percent_of_supply: row.percent,
+    };
+  });
+
+  if (explorerConfig && (explorerConfig.rpcUrl || explorerConfig.apiKey)) {
+    for (let i = 0; i < Math.min(onchainTop.length, 10); i++) {
+      const holder = onchainTop[i];
+      if (!holder.address) continue;
+      holder.address_type = await fetchExplorerAddressType(explorerConfig, holder.address);
+      await sleep(220);
     }
   }
-  
-  const top10Percent = totalSupply && totalSupply > 0 
-    ? (top10Total / totalSupply) * 100 
-    : null;
-  const top20Percent = totalSupply && totalSupply > 0 
-    ? (top20Total / totalSupply) * 100 
-    : null;
-  
-  // Flag high concentration: top 10 hold >50% OR top 20 hold >70%
-  const highConcentrationRisk = 
-    (top10Percent !== null && top10Percent > 50) ||
-    (top20Percent !== null && top20Percent > 70);
-  
+
+  for (const holder of onchainTop) {
+    const category = holder.holder_category;
+    if (category === "exchange") {
+      holder.holder_kind = "Exchange wallet";
+    } else if (holder.address_type === "CONTRACT") {
+      holder.holder_kind = "Smart contract";
+    } else if (holder.address_type === "EOA") {
+      holder.holder_kind = "Wallet";
+    } else {
+      holder.holder_kind = "Unknown";
+    }
+  }
+
+  let breakdownHasAny = false;
+  let walletTop10Sum = 0;
+  let exchangeTop10Sum = 0;
+  let contractTop10Sum = 0;
+
+  for (const holder of onchainTop) {
+    const pct = num(holder.percent_of_supply);
+    if (pct === null) continue;
+    breakdownHasAny = true;
+    if (holder.holder_kind === "Exchange wallet") {
+      exchangeTop10Sum += pct;
+    } else if (holder.holder_kind === "Smart contract") {
+      contractTop10Sum += pct;
+    } else if (holder.holder_kind === "Wallet") {
+      walletTop10Sum += pct;
+    }
+  }
+
+  const walletTop10 = breakdownHasAny ? walletTop10Sum : null;
+  const exchangeTop10 = breakdownHasAny ? exchangeTop10Sum : null;
+  const contractTop10 = breakdownHasAny ? contractTop10Sum : null;
+
+  let level = concentrationLevelFromTotals(top10Percent, top20Percent);
+
+  // If most of the concentration is explained by exchanges/contracts, lower the warning.
+  if (level === "HIGH" && walletTop10 !== null && top10Percent !== null) {
+    const nonWallet = (exchangeTop10 || 0) + (contractTop10 || 0);
+    if (walletTop10 <= 20 && nonWallet >= 30) {
+      level = "MEDIUM";
+    }
+  } else if (level === "MEDIUM" && walletTop10 !== null && top10Percent !== null) {
+    const nonWallet = (exchangeTop10 || 0) + (contractTop10 || 0);
+    if (walletTop10 <= 10 && nonWallet >= 20) {
+      level = "LOW";
+    }
+  }
+
+  const summary = buildConcentrationSummary({
+    top10Percent,
+    top20Percent,
+    level,
+    confidence: holderConfidence,
+    walletTop10,
+    exchangeTop10,
+    contractTop10,
+    supplyBasis,
+  });
+
   return {
     top_10_holder_percent: top10Percent,
     top_20_holder_percent: top20Percent,
-    high_concentration_risk: highConcentrationRisk,
-    holder_confidence: "MEDIUM",
+    top_10_wallet_percent: walletTop10,
+    top_10_exchange_percent: exchangeTop10,
+    top_10_contract_percent: contractTop10,
+    holder_concentration_level: level,
+    high_concentration_risk: level === "HIGH",
+    holder_confidence: holderConfidence,
+    holder_concentration_summary: summary,
+    onchain: {
+      chain: contractInfo.chain || null,
+      contract_address: contractInfo.address || null,
+      contract_url: contractUrl,
+      source: formatOnChainSource(holdersData.source),
+      supply_basis: supplyBasis,
+      top_holders: onchainTop,
+    },
   };
 }
 
@@ -1837,6 +2182,13 @@ function buildDiffReport(previousReport, currentReport) {
     "low_liquidity",
     "high_dilution_risk",
   ];
+  const flagLabels = {
+    chasing: "price chasing",
+    unlock_risk_flag: "unlock risk",
+    high_concentration_risk: "ownership very concentrated",
+    low_liquidity: "low liquidity",
+    high_dilution_risk: "dilution risk",
+  };
 
   const changes = [];
   for (const key of allKeys) {
@@ -1908,13 +2260,97 @@ function buildDiffReport(previousReport, currentReport) {
         watchlist_source: watchlistSource,
         severity: downgrade ? "CRITICAL" : upgrade ? "POSITIVE" : "WARNING",
         type: downgrade ? "LABEL_DOWNGRADE" : upgrade ? "LABEL_UPGRADE" : "LABEL_CHANGE",
-        description: `Label changed ${prev.hygiene_label} → ${curr.hygiene_label}`,
+        description: `Label changed from ${prev.hygiene_label} to ${curr.hygiene_label}`,
         details: {
           previous_label: prev.hygiene_label,
           current_label: curr.hygiene_label,
         },
       });
     }
+
+    // Ownership concentration deltas (top holders %)
+    const prevTop10 = num(prev.top_10_holder_percent);
+    const currTop10 = num(curr.top_10_holder_percent);
+    const prevTop20 = num(prev.top_20_holder_percent);
+    const currTop20 = num(curr.top_20_holder_percent);
+
+    const prevLevel =
+      typeof prev.holder_concentration_level === "string"
+        ? prev.holder_concentration_level
+        : concentrationLevelFromTotals(prevTop10, prevTop20);
+    const currLevel =
+      typeof curr.holder_concentration_level === "string"
+        ? curr.holder_concentration_level
+        : concentrationLevelFromTotals(currTop10, currTop20);
+
+    const levelRank = (level) => {
+      switch (String(level || "").toUpperCase()) {
+        case "LOW":
+          return 1;
+        case "MEDIUM":
+          return 2;
+        case "HIGH":
+          return 3;
+        default:
+          return 0;
+      }
+    };
+
+    if (prevLevel !== currLevel) {
+      const prevR = levelRank(prevLevel);
+      const currR = levelRank(currLevel);
+      const upgraded = currR > prevR;
+      const downgraded = currR < prevR;
+      const severity = upgraded
+        ? currLevel === "HIGH"
+          ? "CRITICAL"
+          : "WARNING"
+        : downgraded
+          ? "POSITIVE"
+          : "INFO";
+
+      const pretty = (value) => {
+        const v = String(value || "").toUpperCase();
+        return v === "UNKNOWN" || !v ? "Unknown" : `${v[0]}${v.slice(1).toLowerCase()}`;
+      };
+
+      changes.push({
+        key,
+        symbol,
+        name,
+        watchlist_source: watchlistSource,
+        severity,
+        type: "CONCENTRATION_LEVEL_CHANGED",
+        description: `Ownership concentration is now ${pretty(currLevel)} (was ${pretty(prevLevel)})`,
+        details: { previous_level: prevLevel, current_level: currLevel },
+      });
+    }
+
+    const pushPctDelta = (label, prevVal, currVal) => {
+      if (prevVal === null || currVal === null) return;
+      const delta = currVal - prevVal;
+      if (!Number.isFinite(delta) || Math.abs(delta) < 5) return; // 5 percentage points
+      const increased = delta > 0;
+      const severity = increased ? "WARNING" : "POSITIVE";
+      changes.push({
+        key,
+        symbol,
+        name,
+        watchlist_source: watchlistSource,
+        severity,
+        type: "CONCENTRATION_PCT_CHANGED",
+        description: `Ownership concentration changed: ${label} ${formatPct(currVal)} (was ${formatPct(prevVal)})`,
+        details: {
+          label,
+          previous_percent: prevVal,
+          current_percent: currVal,
+          delta_points: delta,
+        },
+      });
+    };
+
+    pushPctDelta("Top 10 holders", prevTop10, currTop10);
+    pushPctDelta("Top 20 holders", prevTop20, currTop20);
 
     for (const flag of riskFlags) {
       const prevVal = prev[flag] === true;
@@ -1938,7 +2374,7 @@ function buildDiffReport(previousReport, currentReport) {
         watchlist_source: watchlistSource,
         severity,
         type: triggered ? "FLAG_TRIGGERED" : "FLAG_CLEARED",
-        description: `${triggered ? "New" : "Cleared"} flag: ${flag}`,
+        description: `${triggered ? "New" : "Cleared"} flag: ${flagLabels[flag] || flag}`,
         details: { flag, previous: prevVal, current: currVal },
       });
     }
@@ -2517,8 +2953,10 @@ function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) 
         const symbol = item?.symbol || "n/a";
         const chain = item?.chain || "unknown";
         const risk = item?.risk || "UNKNOWN";
+        const riskLabel =
+          risk === "HIGH" ? "High risk" : risk === "OK" ? "No red flag" : "Unknown";
         const facts = Array.isArray(item?.facts) ? item.facts.filter(Boolean) : [];
-        lines.push(`- ${symbol} (${chain}) [${risk}]: ${facts.join(" | ")}`);
+        lines.push(`- ${symbol} (${chain}) [${riskLabel}]: ${facts.join(" | ")}`);
       }
       lines.push("");
     }
@@ -2626,7 +3064,7 @@ function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) 
   } else {
     for (const coin of layer1Report.ranking.top_avoid) {
       const tag = coin.watchlist_source === "staging" ? " (staging)" : "";
-      lines.push(`- ${coin.symbol}${tag}: chasing=true`);
+      lines.push(`- ${coin.symbol}${tag}: price chasing`);
     }
   }
   lines.push("");
@@ -2635,7 +3073,7 @@ function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) 
   if (layer1Report.btc_reference) {
     const btc = layer1Report.btc_reference;
     lines.push("## BTC Reference");
-    lines.push(`BTC 7d: ${formatPct(btc.price_change_7d)} | Coins outperforming BTC are marked with ✓`);
+    lines.push(`BTC 7d: ${formatPct(btc.price_change_7d)} | Coins beating BTC are marked with ✓`);
     lines.push("");
   }
 
@@ -2649,39 +3087,41 @@ function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) 
 
   function pushCoinTable(title, coins) {
     lines.push(title);
-    lines.push("| Symbol | Label | Price | 7d | vs BTC | Vol 24h | Notes |");
+    lines.push("| Symbol | Decision | Price | 7-day | vs BTC (7-day) | Volume (24h) | Notes |");
     lines.push("| --- | --- | --- | --- | --- | --- | --- |");
     for (const coin of coins) {
       const notes = [];
       if (coin.watchlist_source === "staging") {
-        notes.push("staging");
+        notes.push("staging list");
       }
       if (coin.chasing) {
-        notes.push("chasing");
+        notes.push("price chasing");
       }
       if (coin.thin_fragile) {
-        notes.push("thin");
+        notes.push("volume fading");
       }
       if (coin.high_dilution_risk) {
-        notes.push("dilution");
+        notes.push("dilution risk");
       }
       if (coin.low_liquidity) {
-        notes.push("low_liq");
+        notes.push("low liquidity");
       }
       if (coin.unlock_confidence === "UNKNOWN") {
-        notes.push("unlock_unk");
+        notes.push("unlock info missing");
       }
       if (coin.unlock_risk_flag) {
-        notes.push("unlock_risk");
+        notes.push("unlock risk");
       }
       if (coin.has_clean_catalyst) {
-        notes.push("catalyst");
+        notes.push("recent catalyst");
       }
       if (coin.traction_status === "OK") {
-        notes.push("traction");
+        notes.push("traction ok");
       }
-      if (coin.high_concentration_risk) {
-        notes.push("whale_risk");
+      if (coin.holder_concentration_level === "HIGH") {
+        notes.push("ownership very concentrated");
+      } else if (coin.holder_concentration_level === "UNKNOWN") {
+        notes.push("ownership data missing");
       }
 
       // Relative strength indicator
@@ -2721,7 +3161,12 @@ function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) 
     );
     lines.push("");
   } else {
-    lines.push("- Shows top holders with `EOA` vs `CONTRACT` when available.");
+    lines.push(
+      "- Shows top holders and whether each is a wallet or a smart contract (when available)."
+    );
+    lines.push(
+      "- Exchange wallets are only labeled if you add them to `config/address_book.json`."
+    );
     lines.push("");
     for (const coin of onchainCoins) {
       const chainLabel = coin.onchain.chain ? ` (${coin.onchain.chain})` : "";
@@ -2729,10 +3174,37 @@ function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) 
       lines.push(`### ${coin.symbol}${tag}${chainLabel}`);
       const top10 = formatPct(coin.top_10_holder_percent);
       const top20 = formatPct(coin.top_20_holder_percent);
-      const risk = coin.high_concentration_risk ? "HIGH" : "OK";
+      const level = coin.holder_concentration_level || "UNKNOWN";
+      const levelLabel =
+        level === "UNKNOWN" ? "Unknown" : `${level[0]}${level.slice(1).toLowerCase()}`;
+      const confidence = coin.holder_confidence || "UNKNOWN";
+      const confidenceLabel =
+        confidence === "UNKNOWN"
+          ? "Unknown"
+          : `${confidence[0]}${confidence.slice(1).toLowerCase()}`;
       lines.push(
-        `Top 10: ${top10} | Top 20: ${top20} | Risk: ${risk} | Source: ${coin.onchain.source}`
+        `Top 10 holders: ${top10} | Top 20 holders: ${top20} | Concentration: ${levelLabel} | Data quality: ${confidenceLabel} | Source: ${coin.onchain.source}`
       );
+
+      const breakdown = [];
+      if (Number.isFinite(coin.top_10_wallet_percent) && coin.top_10_wallet_percent > 0) {
+        breakdown.push(`wallets ${formatPct(coin.top_10_wallet_percent)}`);
+      }
+      if (
+        Number.isFinite(coin.top_10_exchange_percent) &&
+        coin.top_10_exchange_percent > 0
+      ) {
+        breakdown.push(`exchanges ${formatPct(coin.top_10_exchange_percent)}`);
+      }
+      if (
+        Number.isFinite(coin.top_10_contract_percent) &&
+        coin.top_10_contract_percent > 0
+      ) {
+        breakdown.push(`smart contracts ${formatPct(coin.top_10_contract_percent)}`);
+      }
+      if (breakdown.length > 0) {
+        lines.push(`Top 10 breakdown: ${breakdown.join(" | ")}`);
+      }
       if (coin.onchain.contract_address && coin.onchain.contract_url) {
         lines.push(
           `Contract: [${shortAddress(coin.onchain.contract_address)}](${coin.onchain.contract_url})`
@@ -2742,13 +3214,22 @@ function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) 
       lines.push("| Rank | Holder | Type | % Supply |");
       lines.push("| --- | --- | --- | --- |");
       for (const holder of coin.onchain.top_holders.slice(0, 5)) {
+        const holderName =
+          holder.holder_label ||
+          (holder.address ? shortAddress(holder.address) : "n/a");
         const holderLink =
           holder.address && holder.address_url
-            ? `[${shortAddress(holder.address)}](${holder.address_url})`
+            ? `[${holderName}](${holder.address_url})`
             : holder.address
-              ? shortAddress(holder.address)
+              ? holderName
               : "n/a";
-        const holderType = holder.address_type || "UNKNOWN";
+        const holderType =
+          holder.holder_kind ||
+          (holder.address_type === "CONTRACT"
+            ? "Smart contract"
+            : holder.address_type === "EOA"
+              ? "Wallet"
+              : "Unknown");
         lines.push(
           `| ${holder.rank} | ${holderLink} | ${holderType} | ${formatPct(
             holder.percent_of_supply
@@ -2765,6 +3246,11 @@ function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) 
 async function main() {
   ensureDir(REPORTS_DIR);
   ensureDir(CACHE_DIR);
+
+  const addressBook = loadAddressBook(ADDRESS_BOOK_PATH);
+  if (addressBook.count > 0) {
+    console.log(`Loaded address book entries: ${addressBook.count}`);
+  }
 
   const watchlistMainRaw = readJsonFile(WATCHLIST_PATH, []);
   const watchlistStagingRaw = readJsonFile(STAGING_WATCHLIST_PATH, []);
@@ -2948,19 +3434,13 @@ async function main() {
         : dilution.circulating !== null && dilution.circulating > 0
           ? dilution.circulating
           : null;
-    const holderInfo = evaluateHolderConcentration(
-      holdersData,
-      supplyForConcentration,
-      contractInfo?.decimals ?? null
-    );
-
-    const onchainDetails = await buildOnchainDetails({
+    const holderInfo = await analyzeHolderConcentration({
       holdersData,
       contractInfo,
-      supplyUsed: supplyForConcentration,
-      top10HolderPercent: holderInfo.top_10_holder_percent,
-      highConcentrationRisk: holderInfo.high_concentration_risk,
+      supplyFallbackTokens: supplyForConcentration,
+      addressBook,
     });
+    const onchainDetails = holderInfo.onchain;
     
     // Update data sources tracking
     if (tvlData && dataSources.tvl === "NONE") dataSources.tvl = "DefiLlama";
@@ -3070,8 +3550,13 @@ async function main() {
       traction_signals: tractionInfo.traction_signals,
       top_10_holder_percent: holderInfo.top_10_holder_percent,
       top_20_holder_percent: holderInfo.top_20_holder_percent,
+      top_10_wallet_percent: holderInfo.top_10_wallet_percent,
+      top_10_exchange_percent: holderInfo.top_10_exchange_percent,
+      top_10_contract_percent: holderInfo.top_10_contract_percent,
       high_concentration_risk: holderInfo.high_concentration_risk,
+      holder_concentration_level: holderInfo.holder_concentration_level,
       holder_confidence: holderInfo.holder_confidence,
+      holder_concentration_summary: holderInfo.holder_concentration_summary,
       onchain: onchainDetails,
     };
 

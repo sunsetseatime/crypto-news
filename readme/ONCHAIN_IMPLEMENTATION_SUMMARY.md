@@ -13,16 +13,18 @@ All on-chain intelligence features have been successfully integrated into your c
 - ✅ Chain mapping (Ethereum, BSC, Polygon, etc. → Covalent chain names)
 
 ### 2. **Holder Concentration Analysis**
-- ✅ Calculates percentage of supply held by top 10 wallets
-- ✅ Calculates percentage of supply held by top 20 wallets
-- ✅ Flags high concentration risk:
-  - **Top 10 hold >50%** = High Risk
-  - **Top 20 hold >70%** = High Risk
+- ✅ Calculates percentage of supply held by the top 10 holders
+- ✅ Calculates percentage of supply held by the top 20 holders
+- ✅ Assigns a simple, plain-English level: **Low / Medium / High / Unknown**
+- ✅ Breaks down the top 10 into:
+  - **Wallets**
+  - **Smart contracts**
+  - **Exchange wallets** (only when you tag them in `config/address_book.json`)
 
-### 3. **New Gate: Concentration Risk**
-- ✅ Added 5th gate to hygiene evaluation
-- ✅ High concentration risk downgrades coins from `KEEP` → `WATCH-ONLY`
-- ✅ Graceful degradation: if on-chain data unavailable, gate passes (doesn't block)
+### 3. **New Gate: Ownership Concentration**
+- ✅ Added a 5th gate to hygiene evaluation
+- ✅ High ownership concentration downgrades coins from `KEEP` → `WATCH-ONLY`
+- ✅ Missing ownership data is treated as **Unknown**, which prevents `KEEP` (so coins don’t look “clean” due to missing data)
 
 ### 4. **Report Integration**
 - ✅ Added holder data to `Layer1Report.json`:
@@ -30,7 +32,7 @@ All on-chain intelligence features have been successfully integrated into your c
   - `top_20_holder_percent`
   - `high_concentration_risk` (boolean)
   - `holder_confidence` (MEDIUM/UNKNOWN)
-- ✅ Added "whale_risk" note in `Summary.md` table
+- ✅ Added plain-English notes in `Summary.md` (e.g., "ownership very concentrated", "ownership data missing")
 - ✅ Updated data sources tracking to show `OnChain=Covalent/GoldRush`
 
 ## How to Enable
@@ -56,10 +58,10 @@ You should see `OnChain=Covalent/GoldRush` in the data sources output.
 
 ## What This Detects
 
-**High Concentration Risk Examples:**
-- 🚨 **Top 10 wallets hold 60%** → Flagged as `whale_risk`
-- 🚨 **Top 20 wallets hold 75%** → Flagged as `whale_risk`
-- ✅ **Top 10 wallets hold 30%** → No flag (healthy distribution)
+**High Concentration Examples:**
+- 🚨 **Top 10 holders have 60%** → Marked as **High** concentration
+- 🚨 **Top 20 holders have 75%** → Marked as **High** concentration
+- ✅ **Top 10 holders have 30%** → Usually **Medium** or **Low** depending on holder types
 
 ## Why This Matters
 
@@ -121,10 +123,6 @@ GET https://api.goldrush.dev/v1/{chain}/tokens/{address}/token_holders/?key={api
 ## Questions?
 
 - See `COVALENT_API_SETUP.md` for detailed setup instructions
-- Check GoldRush docs: https://goldrush.dev/docs/
-- Join Discord: https://discord.gg/8ZWgu2pWY4
-
----
-
-**This is a game-changing feature!** Your scanner now has professional-grade on-chain intelligence that most retail tools lack. 🚀
+- Tag known exchange wallets (optional): `config/address_book.json`
+- GoldRush docs: https://goldrush.dev/docs/
 

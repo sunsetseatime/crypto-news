@@ -41,8 +41,9 @@ If the API key is working, you'll see `OnChain=Covalent/GoldRush` in the data so
 With the Covalent API key, your scanner will now:
 - ✅ Fetch token holder data from the blockchain
 - ✅ Calculate holder concentration (top 10, top 20 wallets)
-- ✅ Flag coins with high whale concentration risk (>50% in top 10 wallets)
-- ✅ Add a new "concentration_risk" gate to the hygiene evaluation
+  - ✅ Flag coins with high ownership concentration (top holders control too much supply)
+  - ✅ Add a new "ownership concentration" gate to the hygiene evaluation
+  - ✅ Optional: label exchange wallets via `config/address_book.json`
 
 ## Free Tier Limits
 
