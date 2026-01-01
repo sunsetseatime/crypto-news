@@ -1,0 +1,20 @@
+{
+  "name": "crypto-news",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "scan:watchlist": "node src/index.js",
+    "scan:discovery": "node src/discover.js",
+    "scan:defi": "node src/defi_scan.js"
+  },
+  "dependencies": {
+    "next": "16.1.1",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

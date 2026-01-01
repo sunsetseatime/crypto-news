@@ -136,6 +136,33 @@ Notes:
 - Schedule/time is configured in `.github/workflows/daily-scan-pages.yml` (cron is UTC).
 - The workflow keeps small state (history/backtest/discovery queue) via Actions cache so “Diff”/backtests work across runs.
 
+### Option 7: Host the Dashboard on Vercel (with a Chat Panel)
+
+If you already use Vercel, this repo also includes a small Next.js app that:
+- Shows the latest dashboard UI by loading it from your GitHub Pages site
+- Adds a chat panel so you can ask questions in plain English (coin-by-coin or general)
+
+You still keep GitHub Actions as the “daily engine” that generates the reports. Vercel is just the nicer UI host.
+
+**1) Create a Vercel project**
+- Import this GitHub repo into Vercel
+
+**2) Set Vercel Environment Variables**
+- `REPORTS_BASE_URL` = your GitHub Pages site URL (no trailing slash)  
+  Example: `https://<your-user>.github.io/<your-repo>`
+- `OPENAI_API_KEY` = your OpenAI key (server-side only)
+- `CHAT_PASSWORD` = a strong private password (required, prevents public abuse)
+- Optional: `OPENAI_MODEL_CHAT` = defaults to `gpt-4o-mini`
+
+**3) Deploy**
+- Open your Vercel URL and click **Chat** (bottom-right)
+- Paste the same `CHAT_PASSWORD` into the chat panel once (it saves in your browser)
+- Click a coin row to auto-select it, then ask follow-up questions
+
+Notes:
+- The chat is education-focused and will not pretend to know facts that are not in your reports.
+- Exchange wallets are treated as lower “single whale” risk, but only when the report explicitly labels them as an exchange.
+
 ## Output
 
 | File | Description |
