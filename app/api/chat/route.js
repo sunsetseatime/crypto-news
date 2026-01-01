@@ -95,17 +95,21 @@ async function loadReports() {
     alerts: `${baseUrl}/Alerts.json`,
     discovery: `${baseUrl}/DiscoveryReport.json`,
     defi: `${baseUrl}/defi/Latest.json`,
+    supervisor: `${baseUrl}/SupervisorSummary.json`,
+    backtest: `${baseUrl}/backtest/BacktestReport.json`,
   };
 
-  const [layer1, diff, alerts, discovery, defi] = await Promise.all([
+  const [layer1, diff, alerts, discovery, defi, supervisor, backtest] = await Promise.all([
     fetchJson(urls.layer1),
     fetchJson(urls.diff),
     fetchJson(urls.alerts),
     fetchJson(urls.discovery),
     fetchJson(urls.defi),
+    fetchJson(urls.supervisor),
+    fetchJson(urls.backtest),
   ]);
 
-  const data = { baseUrl, layer1, diff, alerts, discovery, defi };
+  const data = { baseUrl, layer1, diff, alerts, discovery, defi, supervisor, backtest };
   reportCache.data = data;
   reportCache.fetchedAt = now;
   return data;
@@ -290,6 +294,31 @@ function summarizeGlobal(reports) {
         }))
     : [];
 
+  const supervisor = reports?.supervisor
+    ? {
+        actionable_today: Boolean(reports.supervisor.actionable_today),
+        executive_summary: safeText(reports.supervisor.executive_summary, 1200) || null,
+        watch_closely: Array.isArray(reports.supervisor.watch_closely)
+          ? reports.supervisor.watch_closely.slice(0, 10).map((w) => ({
+              symbol: w.symbol || null,
+              verdict: w.verdict || null,
+              why: safeText(w.why, 200) || null,
+            }))
+          : [],
+      }
+    : null;
+
+  const backtest = reports?.backtest
+    ? {
+        generated_at: reports.backtest.generated_at || null,
+        predictions_tracked:
+          typeof reports.backtest.predictions_tracked === 'number'
+            ? reports.backtest.predictions_tracked
+            : null,
+        accuracy_by_label: reports.backtest.accuracy_by_label || null,
+      }
+    : null;
+
   return {
     reports_generated_at: {
       watchlist: reports?.layer1?.generated_at || null,
@@ -297,11 +326,15 @@ function summarizeGlobal(reports) {
       defi: reports?.defi?.generated_at || null,
       alerts: reports?.alerts?.generated_at || null,
       diff: reports?.diff?.current_scan_date || null,
+      supervisor: reports?.supervisor?.generated_at || null,
+      backtest: reports?.backtest?.generated_at || null,
     },
     alerts,
     diffTop,
     discoveryTop,
     defiTop,
+    supervisor,
+    backtest,
   };
 }
 
@@ -475,4 +508,3 @@ export async function POST(req) {
     );
   }
 }
-
