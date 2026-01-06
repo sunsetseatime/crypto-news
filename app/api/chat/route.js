@@ -68,11 +68,26 @@ function pct(value) {
   return `${sign}${value.toFixed(2)}%`;
 }
 
+function volumeToMcapPct(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return `${(value * 100).toFixed(1)}%`;
+}
+
 function safeText(value, maxLen = 1200) {
   const s = String(value ?? '').trim();
   if (!s) return '';
   if (s.length <= maxLen) return s;
-  return `${s.slice(0, maxLen)}…`;
+  return `${s.slice(0, maxLen)}...`;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function includesWord(haystackLower, wordLower) {
+  if (!wordLower) return false;
+  const re = new RegExp(`\\b${escapeRegExp(wordLower)}\\b`, 'i');
+  return re.test(haystackLower);
 }
 
 async function fetchJson(url) {
@@ -99,17 +114,27 @@ async function loadReports() {
     backtest: `${baseUrl}/backtest/BacktestReport.json`,
   };
 
-  const [layer1, diff, alerts, discovery, defi, supervisor, backtest] = await Promise.all([
-    fetchJson(urls.layer1),
-    fetchJson(urls.diff),
-    fetchJson(urls.alerts),
-    fetchJson(urls.discovery),
-    fetchJson(urls.defi),
-    fetchJson(urls.supervisor),
-    fetchJson(urls.backtest),
-  ]);
+  const [layer1, diff, alerts, discovery, defi, supervisor, backtest] =
+    await Promise.all([
+      fetchJson(urls.layer1),
+      fetchJson(urls.diff),
+      fetchJson(urls.alerts),
+      fetchJson(urls.discovery),
+      fetchJson(urls.defi),
+      fetchJson(urls.supervisor),
+      fetchJson(urls.backtest),
+    ]);
 
-  const data = { baseUrl, layer1, diff, alerts, discovery, defi, supervisor, backtest };
+  const data = {
+    baseUrl,
+    layer1,
+    diff,
+    alerts,
+    discovery,
+    defi,
+    supervisor,
+    backtest,
+  };
   reportCache.data = data;
   reportCache.fetchedAt = now;
   return data;
@@ -138,6 +163,37 @@ function findCoin(layer1, coin) {
   const name = String(coin?.name || '').trim().toLowerCase();
   if (name) {
     const hit = coins.find(
+      (c) => String(c?.name || '').trim().toLowerCase() === name,
+    );
+    if (hit) return hit;
+  }
+
+  return null;
+}
+
+function findDiscoveryCandidate(discovery, coin) {
+  const candidates = Array.isArray(discovery?.candidates) ? discovery.candidates : [];
+  if (!candidates.length) return null;
+
+  const id = String(coin?.id || '').trim().toLowerCase();
+  if (id) {
+    const hit = candidates.find(
+      (c) => String(c?.id || '').trim().toLowerCase() === id,
+    );
+    if (hit) return hit;
+  }
+
+  const symbol = String(coin?.symbol || '').trim().toLowerCase();
+  if (symbol) {
+    const hit = candidates.find(
+      (c) => String(c?.symbol || '').trim().toLowerCase() === symbol,
+    );
+    if (hit) return hit;
+  }
+
+  const name = String(coin?.name || '').trim().toLowerCase();
+  if (name) {
+    const hit = candidates.find(
       (c) => String(c?.name || '').trim().toLowerCase() === name,
     );
     if (hit) return hit;
@@ -196,12 +252,34 @@ function summarizeCoin(coinEntry, reports) {
       )
     : null;
 
+  const gateFailuresRaw = Array.isArray(coinEntry.gates_failed)
+    ? coinEntry.gates_failed
+    : [];
+  const gateFailures = gateFailuresRaw
+    .map((g) => String(g || '').trim())
+    .filter(Boolean)
+    .map((g) => {
+      switch (g) {
+        case 'trackable_data':
+          return 'Some basic market data is missing';
+        case 'liquidity':
+          return 'Trading activity looks too low';
+        case 'unlock_transparency':
+          return 'Token unlock schedule info is missing';
+        case 'traction':
+          return 'Traction signals are missing or weak';
+        case 'concentration_risk':
+          return 'Ownership looks too concentrated';
+        default:
+          return g;
+      }
+    });
+
   return {
     id: coinEntry.coin_gecko_id || null,
     symbol: coinEntry.symbol || null,
     name: coinEntry.name || null,
-    list:
-      coinEntry.watchlist_source === 'staging' ? 'Staging watchlist' : 'Watchlist',
+    list: coinEntry.watchlist_source === 'staging' ? 'Staging watchlist' : 'Watchlist',
     decision: coinEntry.hygiene_label || null,
     price: typeof coinEntry.price === 'number' ? `$${coinEntry.price}` : null,
     price_change_24h: pct(coinEntry.price_change_24h),
@@ -231,6 +309,7 @@ function summarizeCoin(coinEntry, reports) {
         ? 'Some of the biggest holders are labeled exchange wallets (often lower whale risk because they can represent many customers).'
         : 'No holders are labeled as exchange wallets in the report (unknown exchange exposure).',
     key_risks: riskFlags,
+    why_decision: gateFailures,
     diff_notes: diffForCoin.slice(0, 10).map((c) => safeText(c?.description, 240)),
     discovery: discoveryForCoin
       ? {
@@ -241,9 +320,65 @@ function summarizeCoin(coinEntry, reports) {
               : null,
           market_cap: shortUsd(discoveryForCoin.market_cap),
           volume_24h: shortUsd(discoveryForCoin.volume_24h),
+          volume_to_mcap: volumeToMcapPct(discoveryForCoin.volume_to_mcap),
           price_change_7d: pct(discoveryForCoin.price_change_7d),
+          source: discoveryForCoin.source || null,
         }
       : null,
+  };
+}
+
+function summarizeDiscoveryCandidate(candidate, reports) {
+  if (!candidate) return null;
+  const criteria = reports?.discovery?.criteria || null;
+  const why = [];
+
+  if (candidate.source) {
+    why.push(`It appeared via the discovery feed: ${String(candidate.source)}`);
+  }
+  if (criteria?.min_volume_24h && typeof candidate.volume_24h === 'number') {
+    why.push(
+      `24h trading activity: ${shortUsd(candidate.volume_24h)} (rule: at least ${criteria.min_volume_24h})`,
+    );
+  }
+  if (
+    criteria?.min_market_cap &&
+    criteria?.max_market_cap &&
+    typeof candidate.market_cap === 'number'
+  ) {
+    why.push(
+      `Market size: ${shortUsd(candidate.market_cap)} (rule: between ${criteria.min_market_cap} and ${criteria.max_market_cap})`,
+    );
+  }
+  if (criteria?.price_change_7d_range && typeof candidate.price_change_7d === 'number') {
+    why.push(
+      `7-day move: ${pct(candidate.price_change_7d)} (rule: ${criteria.price_change_7d_range})`,
+    );
+  }
+  if (typeof candidate.volume_to_mcap === 'number') {
+    why.push(
+      `24h trading activity vs size: ${volumeToMcapPct(candidate.volume_to_mcap)} (higher usually means more attention)`,
+    );
+  }
+
+  return {
+    id: candidate.id || null,
+    symbol: candidate.symbol ? String(candidate.symbol).toUpperCase() : null,
+    name: candidate.name || null,
+    status: candidate.status || null,
+    discovery_score:
+      typeof candidate.discovery_score === 'number'
+        ? Number(candidate.discovery_score.toFixed(1))
+        : null,
+    market_cap: shortUsd(candidate.market_cap),
+    volume_24h: shortUsd(candidate.volume_24h),
+    volume_to_mcap: volumeToMcapPct(candidate.volume_to_mcap),
+    price_change_7d: pct(candidate.price_change_7d),
+    market_cap_rank:
+      typeof candidate.market_cap_rank === 'number' ? candidate.market_cap_rank : null,
+    first_seen_at: candidate.first_seen_at || null,
+    last_seen_at: candidate.last_seen_at || null,
+    why_in_discovery: why,
   };
 }
 
@@ -254,6 +389,15 @@ function summarizeGlobal(reports) {
         symbol: a.symbol || null,
         title: a.title || null,
         score: typeof a.score === 'number' ? Number(a.score.toFixed(1)) : null,
+        details:
+          a?.source === 'discovery' && a?.details
+            ? {
+                status: a.details.status || null,
+                market_cap: shortUsd(Number(a.details.market_cap)),
+                volume_24h: shortUsd(Number(a.details.volume_24h)),
+                price_change_7d: pct(Number(a.details.price_change_7d)),
+              }
+            : null,
       }))
     : [];
 
@@ -270,13 +414,18 @@ function summarizeGlobal(reports) {
     ? reports.discovery.candidates
         .slice()
         .sort((a, b) => (Number(b.discovery_score) || 0) - (Number(a.discovery_score) || 0))
-        .slice(0, 10)
+        .slice(0, 25)
         .map((c) => ({
           id: c.id || null,
           symbol: c.symbol ? String(c.symbol).toUpperCase() : null,
           name: c.name || null,
           status: c.status || null,
           score: typeof c.discovery_score === 'number' ? Number(c.discovery_score.toFixed(1)) : null,
+          market_cap: shortUsd(c.market_cap),
+          volume_24h: shortUsd(c.volume_24h),
+          volume_to_mcap: volumeToMcapPct(c.volume_to_mcap),
+          price_change_7d: pct(c.price_change_7d),
+          source: c.source || null,
         }))
     : [];
 
@@ -329,6 +478,11 @@ function summarizeGlobal(reports) {
       supervisor: reports?.supervisor?.generated_at || null,
       backtest: reports?.backtest?.generated_at || null,
     },
+    discovery_criteria: reports?.discovery?.criteria || null,
+    discovery_total_candidates:
+      typeof reports?.discovery?.total_candidates === 'number'
+        ? reports.discovery.total_candidates
+        : null,
     alerts,
     diffTop,
     discoveryTop,
@@ -336,6 +490,66 @@ function summarizeGlobal(reports) {
     supervisor,
     backtest,
   };
+}
+
+function collectMentionedItems({ conversation, reports, selectedItem }) {
+  const text = conversation
+    .map((m) => String(m?.content || ''))
+    .join('\n')
+    .slice(-8000)
+    .toLowerCase();
+
+  const hits = [];
+  const seen = new Set();
+
+  function push(kind, data) {
+    const key = `${kind}:${String(data?.id || data?.symbol || data?.name || '')}`;
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    hits.push({ kind, data });
+  }
+
+  if (selectedItem?.kind && selectedItem?.data) {
+    push(selectedItem.kind, selectedItem.data);
+  }
+
+  const layerCoins = Array.isArray(reports?.layer1?.coins) ? reports.layer1.coins : [];
+  for (const c of layerCoins) {
+    const id = String(c?.coin_gecko_id || '').trim().toLowerCase();
+    const name = String(c?.name || '').trim().toLowerCase();
+    const symbol = String(c?.symbol || '').trim().toLowerCase();
+
+    const match =
+      (id && text.includes(id)) ||
+      (name && text.includes(name)) ||
+      (symbol && symbol.length >= 3 && includesWord(text, symbol));
+    if (!match) continue;
+
+    const summary = summarizeCoin(c, reports);
+    if (summary) push('watchlist_coin', summary);
+    if (hits.length >= 6) break;
+  }
+
+  const discoveryCandidates = Array.isArray(reports?.discovery?.candidates)
+    ? reports.discovery.candidates
+    : [];
+  for (const c of discoveryCandidates) {
+    const id = String(c?.id || '').trim().toLowerCase();
+    const name = String(c?.name || '').trim().toLowerCase();
+    const symbol = String(c?.symbol || '').trim().toLowerCase();
+
+    const match =
+      (id && text.includes(id)) ||
+      (name && text.includes(name)) ||
+      (symbol && symbol.length >= 4 && includesWord(text, symbol));
+    if (!match) continue;
+
+    const summary = summarizeDiscoveryCandidate(c, reports);
+    if (summary) push('discovery_candidate', summary);
+    if (hits.length >= 6) break;
+  }
+
+  return hits.slice(0, 6);
 }
 
 function buildSystemPrompt() {
@@ -348,6 +562,10 @@ function buildSystemPrompt() {
     '- Use ONLY the report context provided. If something is not in the context, say you do not know.',
     '- Use plain English. Avoid jargon and acronyms. If you must use an acronym (like FDV), define it first.',
     '- Do not give financial advice. Do not tell the user to buy/sell. Focus on education and explaining risk signals.',
+    '- Discovery results are NOT recommendations. Discovery is just a shortlist that passed the discovery filters (volume, size, and recent move). Meme coins can appear if they match the numbers.',
+    '- If the user asks "why was this chosen?", explain whether it was:',
+    '  - on the Watchlist/Staging list (manually added or staged), and why it got its decision label, OR',
+    '  - on the Discovery list (passed the discovery filters), and show the key numbers that triggered it.',
     '- When discussing big holders:',
     '  - Exchange wallets can look huge but often represent many customers, so they are usually lower "single whale" risk.',
     '  - Never guess whether an address is an exchange. Only call it an exchange if the report explicitly labels it as an exchange.',
@@ -395,14 +613,12 @@ export async function POST(req) {
   }
 
   const provided =
-    req.headers.get('x-chat-password') ||
-    req.headers.get('x-access-key') ||
-    '';
+    req.headers.get('x-chat-password') || req.headers.get('x-access-key') || '';
   if (String(provided) !== password) {
-    return new Response(
-      JSON.stringify({ error: 'Access key required.' }),
-      { status: 401, headers: { 'content-type': 'application/json' } },
-    );
+    return new Response(JSON.stringify({ error: 'Access key required.' }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    });
   }
 
   const ip =
@@ -418,10 +634,10 @@ export async function POST(req) {
 
   const apiKey = getOpenAiKey();
   if (!apiKey) {
-    return new Response(
-      JSON.stringify({ error: 'Missing OPENAI_API_KEY on the server.' }),
-      { status: 500, headers: { 'content-type': 'application/json' } },
-    );
+    return new Response(JSON.stringify({ error: 'Missing OPENAI_API_KEY on the server.' }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' },
+    });
   }
 
   let body;
@@ -436,8 +652,7 @@ export async function POST(req) {
 
   const coin = body?.coin || null;
   const incomingMessages = Array.isArray(body?.messages) ? body.messages : null;
-  const singleMessage =
-    typeof body?.message === 'string' ? body.message.trim() : '';
+  const singleMessage = typeof body?.message === 'string' ? body.message.trim() : '';
 
   const conversation = incomingMessages
     ? incomingMessages
@@ -449,10 +664,10 @@ export async function POST(req) {
       : [];
 
   if (conversation.length === 0) {
-    return new Response(
-      JSON.stringify({ error: 'No message provided.' }),
-      { status: 400, headers: { 'content-type': 'application/json' } },
-    );
+    return new Response(JSON.stringify({ error: 'No message provided.' }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    });
   }
 
   let reports;
@@ -469,13 +684,31 @@ export async function POST(req) {
   }
 
   const selectedCoin = findCoin(reports.layer1, coin);
+  const selectedDiscovery = selectedCoin
+    ? null
+    : findDiscoveryCandidate(reports.discovery, coin);
+
   const coinSummary = summarizeCoin(selectedCoin, reports);
+  const discoverySummary = summarizeDiscoveryCandidate(selectedDiscovery, reports);
+
+  const selectedItem = coinSummary
+    ? { kind: 'watchlist_coin', data: coinSummary }
+    : discoverySummary
+      ? { kind: 'discovery_candidate', data: discoverySummary }
+      : null;
+
   const globalSummary = summarizeGlobal(reports);
+  const mentionedItems = collectMentionedItems({
+    conversation,
+    reports,
+    selectedItem,
+  });
 
   const system = buildSystemPrompt();
   const context = {
     reports_base_url: reports.baseUrl,
-    selected_coin: coinSummary,
+    selected_item: selectedItem,
+    mentioned_items: mentionedItems,
     global: globalSummary,
   };
 
@@ -483,7 +716,7 @@ export async function POST(req) {
     { role: 'system', content: system },
     {
       role: 'system',
-      content: `Report context (JSON):\n${safeText(JSON.stringify(context, null, 2), 12000)}`,
+      content: `Report context (JSON):\n${safeText(JSON.stringify(context, null, 2), 16000)}`,
     },
     ...conversation,
   ];
@@ -508,3 +741,4 @@ export async function POST(req) {
     );
   }
 }
+
