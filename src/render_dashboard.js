@@ -47,7 +47,7 @@ function formatSignedUsdCompact(value) {
   return `${sign}${formatUsdCompact(Math.abs(value))}`;
 }
 
-function buildSparkline(values, width = 160, height = 36) {
+function buildSparkline(values, width = 160, height = 36, ariaLabel = "Trend") {
   const nums = (values || []).filter((v) => Number.isFinite(v));
   if (nums.length < 2) return "";
   const min = Math.min(...nums);
@@ -65,7 +65,7 @@ function buildSparkline(values, width = 160, height = 36) {
     const zeroY = height - ((0 - min) / range) * height;
     zeroLine = `<line x1="0" y1="${zeroY.toFixed(1)}" x2="${width}" y2="${zeroY.toFixed(1)}" stroke="rgba(255,255,255,0.25)" stroke-width="1" />`;
   }
-  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="ETF flow trend">${zeroLine}<polyline fill="none" stroke="rgba(125,211,252,0.9)" stroke-width="2" points="${points}" /></svg>`;
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(ariaLabel)}">${zeroLine}<polyline fill="none" stroke="rgba(125,211,252,0.9)" stroke-width="2" points="${points}" /></svg>`;
 }
 
 function formatSignedPct(value, digits = 1) {
@@ -138,34 +138,34 @@ function notesForCoin(coin) {
   }
   // GitHub activity notes
   if (coin?.github_archived) {
-    notes.push("⚠️ repo archived");
+    notes.push("repo archived");
   } else if (coin?.github_stale) {
-    notes.push("⚠️ code stale (6mo+)");
+    notes.push("code stale (6mo+)");
   } else if (coin?.github_active) {
-    notes.push("✓ code active");
+    notes.push("code active");
   }
   // DeFi knowledge notes (from DeFi scan)
   if (coin?.defi_matched) {
     if (coin?.defi_hack_count > 0) {
-      notes.push(`🚨 ${coin.defi_hack_count} past hacks`);
+      notes.push(`${coin.defi_hack_count} past hacks`);
     }
     if (coin?.defi_audit_status === "NO") {
-      notes.push("⚠️ no audit");
+      notes.push("no audit");
     } else if (coin?.defi_audit_status === "YES") {
-      notes.push("✓ audited");
+      notes.push("audited");
     }
     if (coin?.defi_flags?.tvl_collapse) {
-      notes.push("⚠️ TVL collapsing");
+      notes.push("money leaving protocol");
     }
     if (coin?.defi_flags?.liquidity_trap) {
-      notes.push("⚠️ liquidity trap");
+      notes.push("liquidity risk");
     }
   }
   // Entry signal notes
   if (coin?.entry_signal === "strong_buy") {
-    notes.push("🎯 strong entry");
+    notes.push("good entry");
   } else if (coin?.entry_signal === "overbought") {
-    notes.push("⚠️ overbought");
+    notes.push("overbought");
   }
   // News signal notes (plain English)
   const newsActivity = coin?.news_activity;
@@ -191,16 +191,16 @@ function notesForCoin(coin) {
   // Take-profit notes
   const tp = coin?.take_profit;
   if (tp?.signal === "moon") {
-    notes.push(`dYOT +${tp.profit_pct}%`);
+    notes.push(`target 3 hit (+${Number(tp.profit_pct).toFixed(1)}%)`);
   } else if (tp?.signal === "take_profit_2") {
-    notes.push(`dY'u +${tp.profit_pct}%`);
+    notes.push(`target 2 hit (+${Number(tp.profit_pct).toFixed(1)}%)`);
   } else if (tp?.signal === "take_profit_1") {
-    notes.push(`dY"^ +${tp.profit_pct}%`);
+    notes.push(`target 1 hit (+${Number(tp.profit_pct).toFixed(1)}%)`);
   } else if (tp?.signal === "approaching_target") {
     const level = tp?.approaching_target_level || tp?.highest_target_hit + 1 || 1;
     notes.push(`close to target ${level}`);
   } else if (tp?.signal === "deep_loss") {
-    notes.push(`dY"� ${tp.profit_pct}%`);
+    notes.push(`down ${Number(tp.profit_pct).toFixed(1)}%`);
   }
   return notes;
 }
@@ -255,22 +255,22 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
   
   // Market condition takes priority
   if (marketSignals?.market_phase === "accumulation") {
-    verdict = "🟢 ACCUMULATION ZONE — Good time to buy";
+    verdict = "ACCUMULATION ZONE - Good time to buy";
     verdictClass = "badge-positive";
   } else if (marketSignals?.market_phase === "run" && marketSignals?.warnings?.length === 0) {
-    verdict = "🚀 MARKET RUNNING — Momentum plays available";
+    verdict = "MARKET RUNNING - Momentum plays available";
     verdictClass = "badge-positive";
   } else if (marketSignals?.market_phase === "caution") {
-    verdict = "⚠️ MARKET OVERHEATED — Consider taking profits";
+    verdict = "MARKET OVERHEATED - Consider taking profits";
     verdictClass = "badge-warning";
   } else if (keepCount > 0) {
     verdict = `${keepCount} coin${keepCount > 1 ? 's' : ''} look${keepCount === 1 ? 's' : ''} good to buy`;
     verdictClass = "badge-positive";
   } else if (criticalChanges > 0) {
-    verdict = "Nothing actionable — check the warnings";
+    verdict = "Nothing actionable - check the warnings";
     verdictClass = "badge-warning";
   } else {
-    verdict = "No strong buy signals today — keep watching";
+    verdict = "No strong buy signals today - keep watching";
     verdictClass = "badge-muted";
   }
   
@@ -280,43 +280,41 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
   // Market condition highlights (priority)
   if (marketSignals?.accumulation?.length > 0) {
     for (const sig of marketSignals.accumulation.slice(0, 2)) {
-      const emoji = sig.strength === "strong" ? "🟢💰" : "🟡";
-      highlights.push(`${emoji} <strong>Buy signal:</strong> ${sig.message}`);
+      highlights.push(`<strongBuy signal:</strong> ${sig.message}`);
     }
   }
   
   if (marketSignals?.run?.length > 0) {
     for (const sig of marketSignals.run.slice(0, 2)) {
-      const emoji = sig.strength === "strong" ? "🚀" : "📈";
-      highlights.push(`${emoji} <strong>Run signal:</strong> ${sig.message}`);
+      highlights.push(`<strongRun signal:</strong> ${sig.message}`);
     }
   }
   
   if (marketSignals?.warnings?.length > 0) {
     for (const sig of marketSignals.warnings) {
-      highlights.push(`⚠️ <strong>Warning:</strong> ${sig.message}`);
+      highlights.push(`<strongWarning:</strong> ${sig.message}`);
     }
   }
   
   if (topPerformers.length > 0) {
-    highlights.push(`📈 <strong>Beating the market:</strong> ${topPerformers.map(c => c.symbol).join(", ")} outperformed Bitcoin this week`);
+    highlights.push(`<strongBeating the market:</strong> ${topPerformers.map(c => c.symbol).join(", ")} outperformed Bitcoin this week`);
   }
   
   if (withCatalysts.length > 0) {
-    highlights.push(`🚀 <strong>Recent news:</strong> ${withCatalysts.map(c => c.symbol).join(", ")} had project updates in the last 2 weeks`);
+    highlights.push(`<strongRecent news:</strong> ${withCatalysts.map(c => c.symbol).join(", ")} had project updates in the last 2 weeks`);
   }
   
   if (highRisk.length > 0) {
     const riskSymbols = highRisk.slice(0, 3).map(c => c.symbol).join(", ");
-    highlights.push(`⚠️ <strong>Be careful:</strong> ${riskSymbols}${highRisk.length > 3 ? ` +${highRisk.length - 3} more` : ""} have warning signs`);
+    highlights.push(`<strongBe careful:</strong> ${riskSymbols}${highRisk.length > 3 ? ` +${highRisk.length - 3} more` : ""} have warning signs`);
   }
   
   if (discoveryCount > 0) {
-    highlights.push(`🔍 <strong>New discoveries:</strong> Found ${discoveryCount} trending coins worth researching`);
+    highlights.push(`<strongNew discoveries:</strong> Found ${discoveryCount} trending coins worth researching`);
   }
   
   if (topDefi) {
-    highlights.push(`🏦 <strong>Top DeFi pick:</strong> ${topDefi.name} (${topDefi.market.token_symbol}) with ${formatUsd(num(topDefi.tvl?.focus_current))} locked`);
+    highlights.push(`<strongTop DeFi pick:</strong> ${topDefi.name} (${topDefi.market.token_symbol}) with ${formatUsd(num(topDefi.tvl?.focus_current))} locked`);
   }
   
   const highlightsHtml = highlights.length > 0 
@@ -348,6 +346,14 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       ? `BTC ${btcMomentum >= 0 ? "+" : ""}${btcMomentum.toFixed(1)}% this week` 
       : "";
     
+    const fgHistory = Array.isArray(fearGreed.history) ? fearGreed.history : [];
+    const fgValues10d = fgHistory
+      .slice(-10)
+      .map((d) => Number(d.value))
+      .filter((v) => Number.isFinite(v));
+    const fgSpark = fgValues10d.length >= 2
+      ? buildSparkline(fgValues10d, 140, 28, "Sentiment (10 days)")
+      : "";
     marketGaugeHtml = `
       <div class="market-gauge" style="margin-bottom: 16px; padding: 12px; background: var(--bg-card); border-radius: 8px; border-left: 4px solid ${fgColor};">
         <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
@@ -356,7 +362,8 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
             <span style="color: var(--muted); margin-left: 8px;">${fgLabel}</span>
           </div>
           <div style="font-size: 13px; color: var(--muted);">
-            Fear & Greed Index • Trend: ${fearGreed.trend || "stable"}${btcMomentumText ? ` • ${btcMomentumText}` : ""}
+            Fear & Greed Index - Trend: ${fearGreed.trend || "stable"}${btcMomentumText ? ` - ${btcMomentumText}` : ""}
+            ${fgSpark ? `<div class="muted small" style="margin-top:6px;">Sentiment (10d)</div><div class="sparkline">${fgSpark}</div>` : ""}
           </div>
         </div>
       </div>
@@ -365,7 +372,7 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
   
   return `
     <div class="card daily-summary">
-      <h2>📋 Today's Summary</h2>
+      <h2>Today's Summary</h2>
       ${marketGaugeHtml}
       <div class="verdict-box">
         <span class="badge ${verdictClass}" style="font-size: 14px; padding: 6px 12px;">${verdict}</span>
@@ -397,15 +404,17 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
 function buildPortfolioGuidanceHtml(guidance) {
   if (!guidance) return "";
 
-  const portfolioSize = Number.isFinite(guidance.portfolio_size_usd)
-    ? formatUsd(guidance.portfolio_size_usd)
-    : "n/a";
+  const phase = guidance.market_phase || "neutral";
+  const basePct = Number.isFinite(guidance.base_position_pct) ? guidance.base_position_pct : null;
+  const defaultPortfolio = Number.isFinite(guidance.portfolio_size_usd) ? guidance.portfolio_size_usd : 5000;
+
   const keepCap = Number.isFinite(guidance.suggested_max_buy_keep_usd)
     ? formatUsd(guidance.suggested_max_buy_keep_usd)
     : "n/a";
   const watchCap = Number.isFinite(guidance.suggested_max_buy_watch_usd)
     ? formatUsd(guidance.suggested_max_buy_watch_usd)
     : "n/a";
+
   const volumeLow = Number.isFinite(guidance.volume_low_threshold_usd)
     ? formatUsdCompact(guidance.volume_low_threshold_usd)
     : "n/a";
@@ -420,24 +429,32 @@ function buildPortfolioGuidanceHtml(guidance) {
       : "";
 
   return `
-    <div class="card">
+    <div class="card" id="positionSizingCard" ${basePct !== null ? `data-base-pct="${basePct}"` : ""} data-phase="${escapeHtml(phase)}">
       <div class="row space-between">
         <h2>Position Sizing</h2>
-        <div class="muted small" title="Set PORTFOLIO_SIZE in .env to match your trading bankroll.">Portfolio: ${escapeHtml(portfolioSize)}</div>
+        <div class="muted small">Market phase: ${escapeHtml(phase)}</div>
       </div>
-      <p class="muted small">Rough safety caps per coin based on your portfolio size, market phase, and basic risk flags.</p>
-      <div style="display:flex; gap:18px; flex-wrap: wrap; margin-top: 10px;">
+      <p class="muted small">This is a rough cap per coin. It updates max-buy guidance only; verdicts update on the next scan.</p>
+      <div class="row" style="gap: 12px; flex-wrap: wrap; margin-top: 10px;">
+        <label class="muted small" style="display:flex; align-items:center; gap:8px;">
+          Portfolio size ($):
+          <input id="portfolioSizeInput" type="number" min="0" step="100" value="${escapeHtml(defaultPortfolio)}" style="width: 140px; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--border); background: rgba(0,0,0,0.20); color: var(--text);" />
+        </label>
+        <span class="muted small">Saved in your browser</span>
+      </div>
+
+      <div style="display:flex; gap:18px; flex-wrap: wrap; margin-top: 12px;">
         <div>
-          <div class="muted small">Typical max buy (KEEP)</div>
-          <div style="font-weight: 700; font-size: 18px;">${escapeHtml(keepCap)}</div>
+          <div class="muted small">Typical max buy (Buy)</div>
+          <div id="keepCapValue" style="font-weight: 700; font-size: 18px;">${escapeHtml(keepCap)}</div>
         </div>
         <div>
-          <div class="muted small">Typical max buy (WATCH)</div>
-          <div style="font-weight: 700; font-size: 18px;">${escapeHtml(watchCap)}</div>
+          <div class="muted small">Typical max buy (Watch)</div>
+          <div id="watchCapValue" style="font-weight: 700; font-size: 18px;">${escapeHtml(watchCap)}</div>
         </div>
-        <div title="Liquidity thresholds scale down automatically for smaller portfolios.">
+        <div title="Liquidity targets scale down for smaller portfolios.">
           <div class="muted small">Liquidity targets</div>
-          <div class="muted small">Low: ${escapeHtml(volumeLow)} / Drop: ${escapeHtml(volumeDrop)}</div>
+          <div class="muted small">Low: <span id="volumeLowValue">${escapeHtml(volumeLow)}</span> / Drop: <span id="volumeDropValue">${escapeHtml(volumeDrop)}</span></div>
         </div>
       </div>
       ${notesHtml}
@@ -446,7 +463,6 @@ function buildPortfolioGuidanceHtml(guidance) {
 }
 
 // Build "What to Play" recommendations card
-
 function buildDataFreshnessHtml(layer1Report) {
   if (!layer1Report) return "";
   const freshness = layer1Report?.data_freshness || {};
@@ -631,186 +647,176 @@ function buildPlayRecommendationsHtml(playRecs) {
   if (!playRecs) {
     return "";
   }
-  
+
   const phase = playRecs.market_phase || "neutral";
   const phaseLabels = {
-    accumulation: { emoji: "🟢", label: "ACCUMULATION", color: "var(--keep)", desc: "Buy quality coins for long-term holds" },
-    run: { emoji: "🚀", label: "RUN", color: "#60a5fa", desc: "Quick momentum plays available" },
-    caution: { emoji: "⚠️", label: "CAUTION", color: "var(--warning)", desc: "Consider taking profits" },
-    neutral: { emoji: "⏸️", label: "NEUTRAL", color: "var(--muted)", desc: "No strong signals - hold or wait" },
+    accumulation: { label: "Accumulation", color: "var(--keep)", desc: "Often a good time to slowly buy quality coins" },
+    run: { label: "Run", color: "#60a5fa", desc: "Momentum plays may work, but moves can reverse" },
+    caution: { label: "Caution", color: "var(--warning)", desc: "Market looks hot - consider taking profits and sizing down" },
+    neutral: { label: "Neutral", color: "var(--muted)", desc: "No strong market signal - hold or wait" },
   };
   const phaseInfo = phaseLabels[phase] || phaseLabels.neutral;
-  
-  // Build sections
+
+  const renderItems = (items, extraClass, actionOverride, limit = 5) => {
+    const list = Array.isArray(items) ? items : [];
+    return list.slice(0, limit).map((rec) => {
+      const actionText = actionOverride || rec?.action || "";
+      return `
+        <div class="play-item ${extraClass}">
+          <span class="play-symbol">${escapeHtml(rec.symbol)}</span>
+          <span class="play-action">${escapeHtml(actionText)}</span>
+          <span class="play-reason">${escapeHtml(rec.reason || "")}</span>
+        </div>
+      `;
+    }).join("");
+  };
+
   let sectionsHtml = "";
-  
+
   // TAKE PROFITS (highest priority - money on the table)
   if (playRecs.take_profits?.length > 0) {
-    const items = playRecs.take_profits.slice(0, 5).map(rec => `
-      <div class="play-item play-sell">
-        <span class="play-symbol">${escapeHtml(rec.symbol)}</span>
-        <span class="play-action">💰 ${escapeHtml(rec.action)}</span>
-        <span class="play-reason">${escapeHtml(rec.reason)}</span>
-      </div>
-    `).join("");
+    const items = renderItems(playRecs.take_profits, "play-sell", null, 5);
     sectionsHtml += `
       <div class="play-section">
-        <h4>💰 Take Profits</h4>
-        <p class="play-desc">You're up on these - consider selling some</p>
+        <h4>Take Profits</h4>
+        <p class="play-desc">You are up on these - consider selling some</p>
         ${items}
       </div>
     `;
   }
-  
-  // BEST BUYS (during accumulation or run)
+
+  // BEST BUYS
   if (playRecs.best_buys?.length > 0) {
-    const items = playRecs.best_buys.slice(0, 5).map(rec => `
-      <div class="play-item play-buy">
-        <span class="play-symbol">${escapeHtml(rec.symbol)}</span>
-        <span class="play-action">🟢 ${escapeHtml(rec.action)}</span>
-        <span class="play-reason">${escapeHtml(rec.reason)}</span>
-      </div>
-    `).join("");
+    const items = renderItems(playRecs.best_buys, "play-buy", null, 5);
     sectionsHtml += `
       <div class="play-section">
-        <h4>🟢 Best Buys</h4>
-        <p class="play-desc">Strong fundamentals, good entry point</p>
+        <h4>Best Buys</h4>
+        <p class="play-desc">Strong fundamentals and a decent entry price</p>
         ${items}
       </div>
     `;
   }
-  
-  // MOMENTUM PLAYS (during runs)
+
+  // MOMENTUM PLAYS
   if (playRecs.momentum_plays?.length > 0) {
-    const items = playRecs.momentum_plays.slice(0, 5).map(rec => `
-      <div class="play-item play-momentum">
-        <span class="play-symbol">${escapeHtml(rec.symbol)}</span>
-        <span class="play-action">🚀 ${escapeHtml(rec.action)}</span>
-        <span class="play-reason">${escapeHtml(rec.reason)}</span>
-      </div>
-    `).join("");
+    const items = renderItems(playRecs.momentum_plays, "play-momentum", null, 5);
     sectionsHtml += `
       <div class="play-section">
-        <h4>🚀 Momentum Plays</h4>
-        <p class="play-desc">Leading the rally - quick trades (5-10% target)</p>
+        <h4>Momentum Plays</h4>
+        <p class="play-desc">Quick trades - be strict with risk</p>
         ${items}
       </div>
     `;
   }
-  
-  // WATCH FOR DIP
+
+  // GOOD COINS, NOT AN ENTRY YET
   if (playRecs.watch_for_dip?.length > 0) {
-    const items = playRecs.watch_for_dip.slice(0, 3).map(rec => `
-      <div class="play-item play-wait">
-        <span class="play-symbol">${escapeHtml(rec.symbol)}</span>
-        <span class="play-action">⏸️ ${escapeHtml(rec.action)}</span>
-        <span class="play-reason">${escapeHtml(rec.reason)}</span>
-      </div>
-    `).join("");
+    const items = renderItems(playRecs.watch_for_dip, "play-wait", null, 3);
     sectionsHtml += `
       <div class="play-section">
-        <h4>⏸️ Wait for Better Entry</h4>
-        <p class="play-desc">Good coins but not the right time yet</p>
+        <h4>Good Coins, But Not an Entry Yet</h4>
+        <p class="play-desc">Worth watching, but wait for a better price</p>
         ${items}
       </div>
     `;
   }
-  
+
   // AVOID
   if (playRecs.avoid?.length > 0) {
-    const items = playRecs.avoid.slice(0, 3).map(rec => `
-      <div class="play-item play-avoid">
-        <span class="play-symbol">${escapeHtml(rec.symbol)}</span>
-        <span class="play-action">❌ Avoid</span>
-        <span class="play-reason">${escapeHtml(rec.reason)}</span>
-      </div>
-    `).join("");
+    const items = renderItems(playRecs.avoid, "play-avoid", "Avoid", 3);
     sectionsHtml += `
       <div class="play-section">
-        <h4>❌ Stay Away</h4>
-        <p class="play-desc">Red flags - don't buy these right now</p>
+        <h4>Avoid</h4>
+        <p class="play-desc">Red flags - do not buy these right now</p>
         ${items}
       </div>
     `;
   }
-  
+
   if (!sectionsHtml) {
     sectionsHtml = `<p class="muted">No specific recommendations right now. Keep watching.</p>`;
   }
-  
+
   return `
     <div class="card play-recommendations">
-      <h2>🎯 What to Play</h2>
+      <h2>What to Play</h2>
       <div class="phase-banner" style="background: ${phaseInfo.color}20; border-left: 4px solid ${phaseInfo.color}; padding: 12px; margin-bottom: 16px; border-radius: 4px;">
-        <span style="font-size: 18px;">${phaseInfo.emoji} <strong>${phaseInfo.label}</strong></span>
-        <span style="color: var(--muted); margin-left: 12px;">${phaseInfo.desc}</span>
+        <span style="font-size: 18px;"><strong>${escapeHtml(phaseInfo.label)}</strong></span>
+        <span style="color: var(--muted); margin-left: 12px;">${escapeHtml(phaseInfo.desc)}</span>
       </div>
       ${sectionsHtml}
     </div>
   `;
 }
-
-// Build Best Entries Today card
 function buildBestEntriesHtml(bestEntriesData) {
   if (!bestEntriesData) {
     return "";
   }
   
-  const entries = bestEntriesData.best_entries || [];
+  const entries = Array.isArray(bestEntriesData.best_entries) ? bestEntriesData.best_entries : [];
+  const waitList = Array.isArray(bestEntriesData.wait_list) ? bestEntriesData.wait_list : [];
   const phase = bestEntriesData.market_phase || "neutral";
   
-  if (entries.length === 0) {
+  const phaseBadge = phase === "accumulation" 
+    ? `<span class="badge badge-positive" style="margin-left: 8px;">Accumulation phase</span>`
+    : phase === "run"
+      ? `<span class="badge badge-info" style="margin-left: 8px;">Run phase</span>`
+      : phase === "caution"
+        ? `<span class="badge badge-warning" style="margin-left: 8px;">Caution phase</span>`
+        : "";
+  
+  if (entries.length === 0 && waitList.length === 0) {
     return `
       <div class="card best-entries">
-        <h2>🎯 Best Entries Today</h2>
-        <p class="muted">No strong entry opportunities in your watchlist right now.</p>
-        <p class="small muted">Entry signals update when coins hit RSI oversold or pull back from highs.</p>
+        <h2>Best Entries Today ${phaseBadge}</h2>
+        <p class="muted">No buy entries in your watchlist right now.</p>
+        <p class="small muted">Tip: check "What to Play" for setups and watch-for-dip ideas.</p>
       </div>
     `;
   }
   
-  const phaseBadge = phase === "accumulation" 
-    ? `<span class="badge badge-positive" style="margin-left: 8px;">Accumulation Phase = Buy</span>`
-    : phase === "run"
-      ? `<span class="badge badge-momentum" style="margin-left: 8px;">Run Phase = Quick trades</span>`
-      : "";
-  
-  const entriesHtml = entries.map(entry => {
-    const entryClass = entry.entry_signal === "strong_buy" ? "play-buy" : "play-momentum";
-    const entryEmoji = entry.entry_signal === "strong_buy" ? "🟢" : "🔵";
-    const rsiText = entry.rsi ? `RSI ${Math.round(entry.rsi)}` : "";
-    const dipText = entry.distance_from_high ? `${entry.distance_from_high.toFixed(0)}% from high` : "";
+  const buildItem = (entry, kind) => {
+    const entryClass = kind === "wait" ? "play-wait" : (entry.entry_signal === "strong_buy" ? "play-buy" : "play-momentum");
+    const action = kind === "wait" ? "Wait for dip" : (entry.entry_signal === "strong_buy" ? "Buy entry" : "Buy entry");
+    const rsiText = Number.isFinite(entry.rsi) ? `RSI ${Math.round(entry.rsi)}` : "";
+    const dipText = Number.isFinite(entry.distance_from_high) ? `${entry.distance_from_high.toFixed(0)}% off 30d high` : "";
     const statsText = [rsiText, dipText].filter(Boolean).join(" | ");
-    const reasonsText = entry.reasons.length > 0 ? entry.reasons.slice(0, 2).join(", ") : "Technical entry";
-    const labelBadge = entry.hygiene_label === "KEEP" 
-      ? `<span class="badge badge-positive" style="font-size:9px;">KEEP</span>` 
-      : "";
-    
+    const reasonsText = Array.isArray(entry.reasons) && entry.reasons.length > 0 ? entry.reasons.slice(0, 2).join(", ") : (kind === "wait" ? "Good coin, but not a buy entry yet" : "Technical entry");
+    const label = entry.hygiene_label || null;
+    const labelBadge = label ? `<span style="margin-left: 6px;">${badge(label, labelClass(label))}</span>` : "";
     return `
       <div class="play-item ${entryClass}">
-        <span class="play-symbol">${escapeHtml(entry.symbol)} ${labelBadge}</span>
-        <span class="play-action">${entryEmoji} ${entry.action}</span>
-        <span class="play-reason">${escapeHtml(reasonsText)}${statsText ? ` | ${statsText}` : ""}</span>
+        <span class="play-symbol">${escapeHtml(entry.symbol || "")} ${labelBadge}</span>
+        <span class="play-action">${escapeHtml(action)}</span>
+        <span class="play-reason">${escapeHtml(reasonsText)}${statsText ? ` | ${escapeHtml(statsText)}` : ""}</span>
       </div>
     `;
-  }).join("");
+  };
+  
+  const entriesHtml = entries.slice(0, 5).map((e) => buildItem(e, "buy")).join("");
+  const waitHtml = waitList.slice(0, 5).map((e) => buildItem(e, "wait")).join("");
+  
+  const waitSection = waitList.length > 0
+    ? `
+      <div class="play-section" style="margin-top: 14px;">
+        <h4>Good Coins, But Not an Entry Yet</h4>
+        <p class="play-desc">These are solid coins, but entry timing says to wait for a better dip.</p>
+        ${waitHtml}
+      </div>
+    `
+    : "";
   
   return `
     <div class="card best-entries">
-      <h2>🎯 Best Entries Today ${phaseBadge}</h2>
-      <p class="small muted" style="margin-bottom: 12px;">
-        Your watchlist coins ranked by entry quality (RSI, dip from high, fundamentals)
-      </p>
+      <h2>Best Entries Today ${phaseBadge}</h2>
+      <p class="small muted" style="margin-bottom: 12px;">Buy entries (Good/Great) from your watchlist, based on price pullbacks + safety checks.</p>
       <div class="play-section">
         ${entriesHtml}
       </div>
-      <p class="small muted" style="margin-top: 12px;">
-        💡 Entry score combines: RSI, dip from 30d high, dev activity, volume trend, news activity, hygiene checks
-      </p>
+      ${waitSection}
     </div>
   `;
 }
-
 // Build Blue Chip Opportunities card
 function buildBlueChipOpportunitiesHtml(blueChipData) {
   if (!blueChipData) {
@@ -825,7 +831,7 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
   if (opportunities.length === 0 && waitList.length === 0) {
     return `
       <div class="card blue-chips">
-        <h2>dY'Z Blue Chip Scanner</h2>
+        <h2>Blue Chip Dip Opportunities</h2>
         <p class="muted">Scanned top ${scannedCount} cryptos by market cap - no strong dip opportunities right now.</p>
         <p class="small muted">Blue chips are safer mainly because they have higher liquidity. This section only highlights dips with signs of stabilizing.</p>
       </div>
@@ -896,7 +902,7 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
   
   return `
     <div class="card blue-chips">
-      <h2>dY'Z Blue Chip Scanner ${fearBadge}</h2>
+      <h2>Blue Chip Dip Opportunities ${fearBadge}</h2>
       <p class="small muted" style="margin-bottom: 12px;">Top ${scannedCount} cryptos by market cap - safer mainly because they have higher liquidity</p>
       ${buySection}
       ${waitSection}
@@ -908,8 +914,8 @@ function buildDiffHtml(diffReport) {
   if (!diffReport) {
     return `
       <div class="card">
-        <h2>🔄 What Changed Today</h2>
-        <p class="muted">This is your first scan — future runs will show what's changed.</p>
+        <h2>What Changed Today</h2>
+        <p class="muted">This is your first scan - future runs will show what's changed.</p>
       </div>
     `;
   }
@@ -926,9 +932,9 @@ function buildDiffHtml(diffReport) {
   }
 
   const sections = [
-    { key: "CRITICAL", title: "🚨 Needs Attention", emoji: "🚨" },
-    { key: "WARNING", title: "⚠️ Worth Watching", emoji: "⚠️" },
-    { key: "POSITIVE", title: "✅ Good News", emoji: "✅" },
+    { key: "CRITICAL", title: "Needs Attention" },
+    { key: "WARNING", title: "Worth Watching" },
+    { key: "POSITIVE", title: "Good News" },
   ];
 
   const prev = formatUtc(diffReport.previous_scan_date);
@@ -958,7 +964,7 @@ function buildDiffHtml(diffReport) {
   return `
     <div class="card">
       <div class="row space-between">
-        <h2>🔄 What Changed Today</h2>
+        <h2>What Changed Today</h2>
         <div class="muted">Since ${escapeHtml(prev)}</div>
       </div>
       ${
@@ -974,7 +980,7 @@ function buildSupervisorHtml(supervisorResult) {
   if (!supervisorResult || supervisorResult.status !== "ok") {
     return `
       <div class="card">
-        <h2>🤖 AI Analysis</h2>
+        <h2>AI Analysis</h2>
         <p class="muted">AI analysis not available. Set OPENAI_API_KEY to enable this feature.</p>
       </div>
     `;
@@ -997,19 +1003,19 @@ function buildSupervisorHtml(supervisorResult) {
     highlights.length === 0
       ? ""
       : `
-        <h3>🔍 Who Owns These Coins?</h3>
-        <p class="muted small">Coins where a few wallets hold most of the supply can be risky — big holders can dump and crash the price.</p>
+        <h3>Who Owns These Coins?</h3>
+        <p class="muted small">Coins where a few wallets hold most of the supply can be risky - big holders can dump and crash the price.</p>
         <ul class="compact">
           ${highlights
             .map((h) => {
               const facts = Array.isArray(h?.facts) ? h.facts.filter(Boolean) : [];
-              const factsText = facts.length ? facts.join(" • ") : "";
+              const factsText = facts.length ? facts.join(" - ") : "";
               const risk = h?.risk || "UNKNOWN";
               const riskBadge =
                 risk === "HIGH"
-                  ? badge("⚠️ RISKY", "badge-warning")
+                  ? badge("RISKY", "badge-warning")
                   : risk === "OK"
-                    ? badge("✓ OK", "badge-positive")
+                    ? badge("OK", "badge-positive")
                     : badge("?", "badge-muted");
               return `<li><strong>${escapeHtml(h?.symbol || "n/a")}</strong> ${riskBadge}: ${escapeHtml(
                 factsText
@@ -1022,12 +1028,12 @@ function buildSupervisorHtml(supervisorResult) {
   function listVerdicts(title, emoji, items, explanation) {
     if (!items.length) return "";
     return `
-      <h3>${emoji} ${escapeHtml(title)}</h3>
+      <h3>${escapeHtml(title)}</h3>
       ${explanation ? `<p class="muted small">${explanation}</p>` : ""}
       <ul class="compact">
         ${items
           .map((i) => {
-            const why = i?.why ? ` — ${i.why}` : "";
+            const why = i?.why ? ` - ${i.why}` : "";
             return `<li><strong>${escapeHtml(i?.symbol || "n/a")}</strong>${escapeHtml(why)}</li>`;
           })
           .join("")}
@@ -1039,7 +1045,7 @@ function buildSupervisorHtml(supervisorResult) {
     manual.length === 0
       ? ""
       : `
-        <h3>📋 Need More Research</h3>
+        <h3>Need More Research</h3>
         <p class="muted small">These coins need you to manually check recent news or announcements.</p>
         <ul class="compact">
           ${manual.map((m) => `<li>${escapeHtml(m)}</li>`).join("")}
@@ -1048,11 +1054,11 @@ function buildSupervisorHtml(supervisorResult) {
 
   return `
     <div class="card">
-      <h2>🤖 AI Analysis</h2>
+      <h2>AI Analysis</h2>
       <p>${escapeHtml(supervisorResult.executive_summary || "No summary provided.")}</p>
       ${highlightsHtml}
-      ${listVerdicts("Be Careful With", "⚠️", watchClosely, "These coins have warning signs — don't buy without doing more research.")}
-      ${listVerdicts("Don't Chase", "🛑", avoidChasing, "These already pumped big without a clear reason — buying now is risky.")}
+      ${listVerdicts("Be Careful With", "", watchClosely, "These coins have warning signs - don't buy without doing more research.")}
+      ${listVerdicts("Don't Chase", "", avoidChasing, "These already pumped big without a clear reason - buying now is risky.")}
       ${manualHtml}
     </div>
   `;
@@ -1062,7 +1068,7 @@ function buildAlertsHtml(alertsReport) {
   if (!alertsReport) {
     return `
       <div class="card">
-        <h2>dY"" Important Alerts</h2>
+        <h2>Important Alerts</h2>
         <p class="muted">Alerts will appear here after running the scanner.</p>
       </div>
     `;
@@ -1087,6 +1093,11 @@ function buildAlertsHtml(alertsReport) {
         return badge("Volume + news", "badge-muted");
       case "BEST_ENTRY":
         return badge("Best entry", "badge-positive");
+      case "IMPROVING":
+        return badge("Improving", "badge-positive");
+      case "TAKE_PROFIT":
+      case "TAKE_PROFIT_APPROACHING":
+        return badge("Take profit", "badge-warning");
       default:
         if (key.startsWith("MARKET_")) return badge("Market", "badge-muted");
         return badge(key || "ALERT", "badge-muted");
@@ -1143,7 +1154,7 @@ function buildAlertsHtml(alertsReport) {
   return `
     <div class="card">
       <div class="row space-between">
-        <h2>dY"" Important Alerts</h2>
+        <h2>Important Alerts</h2>
         <div class="muted"><a href="Alerts.md">See all</a></div>
       </div>
       <p class="muted small">Click an alert to see why it fired and what could go wrong.</p>
@@ -1157,7 +1168,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
     return `
       <div class="card">
         <h2>${escapeHtml(title)}</h2>
-        <p class="muted">No coins here yet. Add coins to your watchlist to track them.</p>
+        <p class="muted">No coins here yet.</p>
       </div>
     `;
   }
@@ -1169,115 +1180,26 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
     return String(a.symbol).localeCompare(String(b.symbol));
   });
 
-  // Helper to make decision more readable
   function friendlyLabel(label) {
     switch (label) {
-      case "KEEP": return "✅ Buy";
-      case "WATCH-ONLY": return "👀 Watch";
-      case "DROP": return "🚫 Avoid";
-      default: return "❓ Unknown";
+      case "KEEP": return "Buy";
+      case "WATCH-ONLY": return "Watch";
+      case "DROP": return "Avoid";
+      default: return "Unknown";
     }
   }
 
-  const rows = sorted
-    .map((coin) => {
-      const label = coin.hygiene_label || "UNKNOWN";
-      const friendlyLabelText = friendlyLabel(label);
-      const labelBadge = badge(friendlyLabelText, labelClass(label));
-      const price = formatUsd(num(coin.price));
-      const ch7d = num(coin.price_change_7d);
-      const ch7dDisplay = ch7d !== null 
-        ? `<span style="color: ${ch7d >= 0 ? 'var(--keep)' : 'var(--drop)'}">${formatSignedPct(ch7d, 1)}</span>`
-        : "n/a";
-      const rs7d = num(coin.relative_strength_7d);
-      const beatsBtc = coin.outperforming_btc === true;
-      const rsDisplay = beatsBtc 
-        ? `<span style="color: var(--keep);">✓ Yes</span>` 
-        : `<span class="muted">No</span>`;
-
-      const notes = notesForCoin(coin);
-      // Show ALL notes - no truncation
-      const notesHtml =
-        notes.length === 0
-          ? `<span class="muted">All clear ✓</span>`
-          : notes.map((n) => badge(n, "badge-muted")).join(" ");
-
-      // Entry signal display - simplified and clear
-      const entrySignal = coin.entry_signal;
-      const rsi = coin.rsi_14d;
-      const distFromHigh = num(coin.distance_from_high);
-      let entryHtml = '<span class="muted">-</span>';
-      if (entrySignal) {
-        // Simplified entry display with clear meaning
-        let entryText = "";
-        let entryColor = "var(--muted)";
-        
-        if (entrySignal === "strong_buy") {
-          entryText = "Great";
-          entryColor = "var(--keep)";
-        } else if (entrySignal === "buy") {
-          entryText = "Good";
-          entryColor = "var(--keep)";
-        } else if (entrySignal === "overbought") {
-          entryText = "Wait";
-          entryColor = "var(--drop)";
-        } else {
-          entryText = "Okay";
-          entryColor = "var(--muted)";
-        }
-        
-        // Show RSI in plain language
-        let rsiNote = "";
-        if (rsi !== null) {
-          if (rsi < 30) rsiNote = "oversold";
-          else if (rsi > 70) rsiNote = "overbought";
-        }
-        
-        // Show dip from high if significant
-        let dipNote = "";
-        if (distFromHigh !== null && distFromHigh > 15) {
-          dipNote = `${Math.round(distFromHigh)}% off high`;
-        }
-        
-        const subNote = [rsiNote, dipNote].filter(Boolean).join(", ");
-        entryHtml = `<span style="color: ${entryColor}; font-weight: 500;">${entryText}</span>` +
-                   (subNote ? `<div class="muted small">${escapeHtml(subNote)}</div>` : "");
-      }
-
-      const coinId = coin.coin_gecko_id ? String(coin.coin_gecko_id) : "";
-      const geckoUrl = coinId
-        ? `https://www.coingecko.com/en/coins/${encodeURIComponent(coinId)}`
-        : null;
-      const symbolHtml = geckoUrl
-        ? `<a href="${escapeHtml(geckoUrl)}" target="_blank" rel="noreferrer"><strong>${escapeHtml(
-            coin.symbol
-          )}</strong></a>`
-        : `<strong>${escapeHtml(coin.symbol)}</strong>`;
-
-      return `
-        <tr data-symbol="${escapeHtml(coin.symbol)}" data-name="${escapeHtml(
-        coin.name || ""
-      )}">
-          <td class="col-symbol">${symbolHtml}<div class="muted small">${escapeHtml(
-        coin.name || ""
-      )}</div></td>
-          <td>${labelBadge}</td>
-          <td class="num">${escapeHtml(price)}</td>
-          <td class="num">${ch7dDisplay}</td>
-          <td class="num">${rsDisplay}</td>
-          <td class="num">${entryHtml}</td>
-          <td>${notesHtml}</td>
-        </tr>
-      `;
-    })
-    .join("");
+  function explainList(items) {
+    const list = Array.isArray(items) ? items.filter(Boolean) : [];
+    if (list.length === 0) return `<div class="muted small">n/a</div>`;
+    return `<ul class="compact">${list.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`;
+  }
 
   function renderChecklist(items) {
     const list = Array.isArray(items) ? items : [];
     if (list.length === 0) {
       return `<div class="muted small">No checklist data.</div>`;
     }
-
     return list
       .map((item) => {
         const status = item?.status === "pass" ? "pass" : "fail";
@@ -1297,124 +1219,138 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       .join("");
   }
 
-  function confidenceLine(confBlock, label) {
-    if (!confBlock) return null;
-    const conf = confBlock.confidence || "unknown";
-    const sample = typeof confBlock.sample_min === "number" ? confBlock.sample_min : null;
-    if (conf === "high") return `${label}: high confidence${sample !== null ? ` (${sample} examples)` : ""}`;
-    if (conf === "medium") return `${label}: medium confidence${sample !== null ? ` (${sample} examples)` : ""}`;
-    if (sample !== null && sample > 0) return `${label}: low confidence (${sample} examples so far)`;
-    return `${label}: low confidence (not enough history yet)`;
-  }
-
-  const explainersHtml = sorted
+  const rows = sorted
     .map((coin) => {
-      const explain = coin?.explain;
-      if (!explain) return "";
+      const label = coin.hygiene_label || "UNKNOWN";
+      const labelBadge = badge(friendlyLabel(label), labelClass(label));
+      const price = formatUsd(num(coin.price));
+      const ch7d = num(coin.price_change_7d);
+      const ch7dDisplay = ch7d !== null 
+        ? `<span style="color: ${ch7d >= 0 ? "var(--keep)" : "var(--drop)"}">${formatSignedPct(ch7d, 1)}</span>`
+        : "n/a";
+      const beatsBtc = coin.outperforming_btc === true;
+      const rsDisplay = beatsBtc ? `<span style="color: var(--keep);">Yes</span>` : `<span class="muted">No</span>`;
 
-      const verdict = coin?.hygiene_label || "UNKNOWN";
-      const verdictPlain =
-        verdict === "KEEP" ? "Buy" : verdict === "WATCH-ONLY" ? "Watch" : verdict === "DROP" ? "Avoid" : "Unknown";
+      const notes = notesForCoin(coin);
+      const notesHtml = notes.length === 0
+        ? `<span class="muted">All clear</span>`
+        : notes.map((n) => badge(n, "badge-muted")).join(" ");
 
-      const why = Array.isArray(explain?.why) ? explain.why : [];
-      const risks = Array.isArray(explain?.risks) ? explain.risks : [];
-      const headline = explain?.headline ? String(explain.headline) : "";
-      const holderNote = explain?.holder_note ? String(explain.holder_note) : "";
+      const entrySignal = coin.entry_signal;
+      const rsi = coin.rsi_14d;
+      const distFromHigh = num(coin.distance_from_high);
+      let entryHtml = `<span class="muted">-</span>`;
+      if (entrySignal) {
+        let entryText = "Okay";
+        let entryColor = "var(--muted)";
+        if (entrySignal === "strong_buy") { entryText = "Great"; entryColor = "var(--keep)"; }
+        else if (entrySignal === "buy") { entryText = "Good"; entryColor = "var(--keep)"; }
+        else if (entrySignal === "overbought") { entryText = "Wait"; entryColor = "var(--drop)"; }
+        else if (entrySignal === "wait") { entryText = "Wait"; entryColor = "var(--watch)"; }
 
-      const sizingUsd = Number.isFinite(explain?.sizing?.suggested_max_buy_usd)
-        ? formatUsd(explain.sizing.suggested_max_buy_usd)
-        : null;
+        let rsiNote = "";
+        if (rsi !== null) {
+          if (rsi < 30) rsiNote = "oversold";
+          else if (rsi > 70) rsiNote = "overbought";
+        }
+        let dipNote = "";
+        if (distFromHigh !== null && distFromHigh > 15) { dipNote = `${Math.round(distFromHigh)}% off high`; }
+        const subNote = [rsiNote, dipNote].filter(Boolean).join(", ");
 
-      const confidence = explain?.confidence || {};
-      const confLines = [
-        confidenceLine(confidence?.ownership_rule, "Ownership check"),
-        confidenceLine(confidence?.dilution_rule, "Dilution check"),
-      ].filter(Boolean);
+        entryHtml = `<span style="color: ${entryColor}; font-weight: 600;">${entryText}</span>` +
+          (subNote ? `<div class="muted small">${escapeHtml(subNote)}</div>` : "");
+      }
 
-      const whyHtml =
-        why.length > 0
-          ? `<ul class="compact">${why.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`
-          : `<div class="muted small">No explanation available.</div>`;
-      const riskHtml =
-        risks.length > 0
-          ? `<ul class="compact">${risks.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`
-          : `<div class="muted small">No major risks flagged.</div>`;
+      const sparkValues = Array.isArray(coin.price_sparkline_30d) ? coin.price_sparkline_30d : null;
+      const sparkHtml = sparkValues ? buildSparkline(sparkValues, 140, 28, "30 day price trend") : "";
+      const sparkCell = sparkHtml ? `<div class="sparkline">${sparkHtml}</div>` : `<span class="muted">n/a</span>`;
 
-      const headlineHtml = headline
-        ? `<div class="muted small" style="margin-top: 10px;"><strong>Headline:</strong> ${escapeHtml(headline)}</div>`
-        : "";
+      const coinId = coin.coin_gecko_id ? String(coin.coin_gecko_id) : "";
+      const geckoUrl = coinId ? `https://www.coingecko.com/en/coins/${encodeURIComponent(coinId)}` : null;
+      const symbolHtml = geckoUrl
+        ? `<a href="${escapeHtml(geckoUrl)}" target="_blank" rel="noreferrer"><strong>${escapeHtml(coin.symbol)}</strong></a>`
+        : `<strong>${escapeHtml(coin.symbol)}</strong>`;
 
+      const explain = coin?.explain || null;
+      const why = Array.isArray(explain?.why) ? explain.why.slice(0, 3) : [];
+      const risks = Array.isArray(explain?.risks) ? explain.risks.slice(0, 2) : [];
+      const maxBuyUsd = Number.isFinite(explain?.sizing?.suggested_max_buy_usd) ? explain.sizing.suggested_max_buy_usd : null;
+      const maxBuyText = maxBuyUsd !== null ? formatUsd(maxBuyUsd) : "n/a";
+      const sizingInputs = explain?.sizing?.inputs || {};
+      const basePct = Number.isFinite(sizingInputs.base_pct) ? sizingInputs.base_pct : null;
+      const labelPct = Number.isFinite(sizingInputs.label_pct) ? sizingInputs.label_pct : null;
+      const riskMult = Number.isFinite(sizingInputs.risk_multiplier) ? sizingInputs.risk_multiplier : null;
+      const volumeCap = Number.isFinite(sizingInputs.volume_cap_usd) ? sizingInputs.volume_cap_usd : null;
       const newsSource = explain?.news?.source ? String(explain.news.source) : "";
       const newsFetchedAt = explain?.news?.fetched_at ? formatUtc(explain.news.fetched_at) : "";
-      const newsMetaHtml =
-        newsSource || newsFetchedAt
-          ? `<div class="muted small" style="margin-top: 8px;"><strong>News checked:</strong> ${escapeHtml(newsFetchedAt || "n/a")}${newsSource ? ` (source: ${escapeHtml(newsSource)})` : ""}</div>`
-          : "";
 
-      const holderNoteHtml = holderNote
-        ? `<div class="muted small" style="margin-top: 8px;"><strong>Top holders note:</strong> ${escapeHtml(holderNote)}</div>`
+      const maxBuyAttrs = [
+        basePct !== null ? `data-base-pct="${basePct}"` : "",
+        labelPct !== null ? `data-label-pct="${labelPct}"` : "",
+        riskMult !== null ? `data-risk-mult="${riskMult}"` : "",
+        volumeCap !== null ? `data-volume-cap="${volumeCap}"` : "",
+      ].filter(Boolean).join(" ");
+
+      const maxBuyHtml = `<span class="max-buy" ${maxBuyAttrs}>${escapeHtml(maxBuyText)}</span>`;
+      const newsMeta = (newsFetchedAt || newsSource)
+        ? `News checked: ${escapeHtml(newsFetchedAt || "n/a")}${newsSource ? ` (source: ${escapeHtml(newsSource)})` : ""}`
+        : "News checked: n/a";
+
+      const checklist = explain?.checklist || [];
+
+      const explainRow = explain
+        ? `
+          <tr class="explain-row" data-symbol="${escapeHtml(coin.symbol)}" data-name="${escapeHtml(coin.name || "")}">
+            <td colspan="8">
+              <div class="coin-explain">
+                <div class="coin-explain-grid">
+                  <div>
+                    <div class="muted small" style="font-weight: 700;">Why</div>
+                    ${explainList(why)}
+                  </div>
+                  <div>
+                    <div class="muted small" style="font-weight: 700;">What could go wrong</div>
+                    ${explainList(risks)}
+                  </div>
+                </div>
+                <div class="muted small" style="margin-top: 8px;">
+                  <strong>Max buy (rough):</strong> ${maxBuyHtml} | ${newsMeta}
+                </div>
+                <details class="details" style="margin-top: 10px;">
+                  <summary><span class="summary-title">What we checked</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
+                  <div class="details-body">
+                    ${renderChecklist(checklist)}
+                  </div>
+                </details>
+              </div>
+            </td>
+          </tr>
+        `
         : "";
 
-      const sizingHtml = sizingUsd
-        ? `<div class="muted small" style="margin-top: 8px;"><strong>Suggested max buy:</strong> ${escapeHtml(sizingUsd)} (rough cap)</div>`
-        : `<div class="muted small" style="margin-top: 8px;"><strong>Suggested max buy:</strong> n/a</div>`;
-
-      const confidenceHtml = confLines.length
-        ? `<div class="muted small" style="margin-top: 8px;"><strong>Confidence:</strong> ${escapeHtml(confLines.join(" | "))}</div>`
-        : "";
-
-      return `
-        <details class="details">
-          <summary>
-            <span class="summary-title">${escapeHtml(coin?.symbol || "n/a")} ? ${escapeHtml(verdictPlain)}</span>
-            <span class="spacer"></span>
-            ${sizingUsd ? `<span class="muted small">Max buy: ${escapeHtml(sizingUsd)}</span>` : ""}
-          </summary>
-          <div class="details-body">
-            <div class="grid" style="grid-template-columns: 1fr; gap: 12px;">
-              <div>
-                <div style="font-weight:700;">Why</div>
-                ${whyHtml}
-              </div>
-              <div>
-                <div style="font-weight:700;">What could go wrong</div>
-                ${riskHtml}
-              </div>
-              <div>
-                <div style="font-weight:700;">What we checked</div>
-                ${renderChecklist(explain?.checklist)}
-                ${sizingHtml}
-                ${confidenceHtml}
-                ${headlineHtml}
-                ${newsMetaHtml}
-                ${holderNoteHtml}
-              </div>
-            </div>
-          </div>
-        </details>
+      const mainRow = `
+        <tr data-symbol="${escapeHtml(coin.symbol)}" data-name="${escapeHtml(coin.name || "")}">
+          <td class="col-symbol">${symbolHtml}<div class="muted small">${escapeHtml(coin.name || "")}</div></td>
+          <td>${labelBadge}</td>
+          <td class="num">${escapeHtml(price)}</td>
+          <td class="num">${sparkCell}</td>
+          <td class="num">${ch7dDisplay}</td>
+          <td class="num">${rsDisplay}</td>
+          <td class="num">${entryHtml}</td>
+          <td>${notesHtml}</td>
+        </tr>
       `;
+
+      return mainRow + explainRow;
     })
     .join("");
 
-  const explainersSection = explainersHtml.trim()
-    ? `
-      <details class="collapsible-section" style="margin-top: 14px;">
-        <summary><h2>Why These Verdicts</h2><span class="muted small">Per-coin explanation (plain English)</span></summary>
-        <div class="section-content">
-          ${explainersHtml}
-        </div>
-      </details>
-    `
-    : "";
-
-  // Legend for Entry column
   const entryLegend = `
     <div class="entry-legend muted small" style="margin-top: 10px; padding: 8px 12px; background: rgba(255,255,255,0.03); border-radius: 8px;">
-      <strong>Entry Guide:</strong>
-      <span style="color: var(--keep); margin-left: 8px;">Great</span> = price dipped, good time to buy
+      <strong>Entry guide:</strong>
+      <span style="color: var(--keep); margin-left: 8px;">Great</span> = pulled back, better risk/reward
       <span style="color: var(--keep); margin-left: 8px;">Good</span> = reasonable entry point
-      <span style="color: var(--muted); margin-left: 8px;">Okay</span> = neither cheap nor expensive
-      <span style="color: var(--drop); margin-left: 8px;">Wait</span> = price ran up recently, wait for dip
+      <span style="color: var(--watch); margin-left: 8px;">Wait</span> = good coin, but wait for a better dip
     </div>
   `;
 
@@ -1428,6 +1364,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
               <th>Coin</th>
               <th>Verdict</th>
               <th class="num">Price</th>
+              <th class="num">30d</th>
               <th class="num">Week</th>
               <th class="num">Beat BTC?</th>
               <th class="num">Entry</th>
@@ -1440,11 +1377,9 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
         </table>
       </div>
       ${entryLegend}
-      ${explainersSection}
     </div>
   `;
 }
-
 function buildOnchainHtml(coins) {
   const onchainCoins = coins.filter(
     (coin) => coin?.onchain && Array.isArray(coin.onchain.top_holders) && coin.onchain.top_holders.length > 0
@@ -1490,7 +1425,7 @@ function buildOnchainHtml(coins) {
         .map((h) => {
           const addr = h.address || "";
           const addrShort =
-            addr && addr.length > 10 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr || "n/a";
+            addr && addr.length > 10 ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : addr || "n/a";
           const displayName = h.holder_label
             ? `${h.holder_label} (${addrShort})`
             : addrShort;
@@ -1543,12 +1478,12 @@ function buildOnchainHtml(coins) {
             <span class="muted">${escapeHtml(chain)}</span>
             <span class="spacer"></span>
             ${riskBadge}
-            <span class="muted small">Top10 ${escapeHtml(top10)} • Top20 ${escapeHtml(top20)}</span>
+            <span class="muted small">Top10 ${escapeHtml(top10)} - Top20 ${escapeHtml(top20)}</span>
           </summary>
           <div class="details-body">
-            <div class="muted small">Contract: ${contractHtml} • Source: ${escapeHtml(
+            <div class="muted small">Contract: ${contractHtml} - Source: ${escapeHtml(
         coin.onchain.source || "unknown"
-      )}${breakdown.length > 0 ? ` • Top10 breakdown: ${escapeHtml(breakdown.join(", "))}` : ""}</div>
+      )}${breakdown.length > 0 ? ` - Top10 breakdown: ${escapeHtml(breakdown.join(", "))}` : ""}</div>
             <div class="table-wrap">
               <table class="table">
                 <thead><tr><th class="num">#</th><th>Holder</th><th>Type</th><th class="num">% Supply</th></tr></thead>
@@ -1574,7 +1509,7 @@ function buildDefiHtml(defiLatest) {
   if (!defiLatest || !Array.isArray(defiLatest.protocols)) {
     return `
       <div class="card">
-        <h2>🏦 DeFi Projects</h2>
+        <h2>DeFi Projects</h2>
         <p class="muted">No DeFi data yet. This scans crypto lending/trading platforms to find solid projects.</p>
       </div>
     `;
@@ -1599,7 +1534,7 @@ function buildDefiHtml(defiLatest) {
       const protocol = url
         ? `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(name)}</a>`
         : escapeHtml(name);
-      const token = preferTokenMapped ? p?.market?.token_symbol || p?.market?.gecko_id || "—" : null;
+      const token = preferTokenMapped ? p?.market?.token_symbol || p?.market?.gecko_id || "-" : null;
       const tvl = formatUsd(num(p?.tvl?.focus_current));
       const ch30d = formatSignedPct(num(p?.tvl?.change_30d_pct), 1);
       return `
@@ -1616,8 +1551,8 @@ function buildDefiHtml(defiLatest) {
   return `
     <div class="card">
       <div class="row space-between">
-        <h2>🏦 Top DeFi Projects</h2>
-        <div class="muted"><a href="defi/Latest.md">See all ${buckets.CANDIDATE} →</a></div>
+        <h2>DeFi Projects</h2>
+        <div class="muted"><a href="defi/Latest.md">See all ${buckets.CANDIDATE} ></a></div>
       </div>
       <p class="muted small">DeFi = Decentralized Finance (lending, trading platforms). These are the top projects by money locked in them (TVL).</p>
       <div class="table-wrap">
@@ -1633,7 +1568,7 @@ function buildDefiHtml(defiLatest) {
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <p class="muted small" style="margin-top:10px;">💡 <strong>What this means:</strong> Projects with more money locked and growing TVL are generally more trusted. The token column shows what coin you'd buy to invest in these projects.</p>
+      <p class="muted small" style="margin-top:10px;"><strong>What this means:</strong> Projects with more money locked and growing TVL are generally more trusted. The token column shows what coin you'd buy to invest in these projects.</p>
     </div>
   `;
 }
@@ -1699,86 +1634,114 @@ function buildFunnelHtml(funnelStats, backtestStats) {
   if (!funnelStats && !backtestStats) {
     return `
       <div class="card">
-        <h2>📊 Discovery Funnel & Performance</h2>
-        <p class="muted">Run the scanner daily to build performance data.</p>
+        <h2>Discovery Funnel</h2>
+        <p class="muted">Run discovery and the daily scanner to build this section.</p>
+        <div class="muted small" style="margin-top: 10px;">
+          <div><strong>What this is:</strong> a simple pipeline for turning "new finds" into "kept coins".</div>
+          <div style="margin-top: 8px;"><strong>How to use it:</strong></div>
+          <ul class="compact">
+            <li>Run <code>node src/discover.js</code> to find new candidates.</li>
+            <li>Move the good ones into <strong>Staging</strong> (your trial list).</li>
+            <li>Run the daily scanner for a few days and see how they behave.</li>
+            <li>Promote winners to the main watchlist; ignore the rest.</li>
+          </ul>
+        </div>
       </div>
     `;
   }
 
-  // Discovery funnel section
   const funnel = funnelStats || {};
   const byStatus = funnel.by_status || {};
   const totalDiscovered = funnel.total_discovered || 0;
-  
+
+  const toPct = (value) => (typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "n/a");
+  const stagedPct = toPct(funnel.conversion_rate_staging);
+  const promotedPct = toPct(funnel.conversion_rate_main);
+
+  const howToHtml = `
+    <div class="muted small" style="margin-top: 6px;">
+      <div><strong>What this is:</strong> a scorecard for your discovery pipeline. It shows what happened to coins found by Discovery.</div>
+      <div style="margin-top: 8px;"><strong>How to read it:</strong></div>
+      <ul class="compact">
+        <li><strong>Pending</strong>: discovered, but not reviewed yet.</li>
+        <li><strong>Staging</strong>: added to your staging watchlist to test for a few days.</li>
+        <li><strong>Promoted</strong>: moved into your main watchlist.</li>
+        <li><strong>Ignored</strong>: you decided it is not worth tracking.</li>
+      </ul>
+      <div class="muted" style="margin-top: 6px;">So far: ${stagedPct} reached Staging, and ${promotedPct} made it to your main watchlist.</div>
+    </div>
+  `;
+
   const funnelBarHtml = totalDiscovered > 0 ? `
     <div class="funnel-visual">
       <div class="funnel-bar">
-        <div class="funnel-segment" style="flex: ${byStatus.NEW || 0}; background: var(--muted);" title="Pending review: ${byStatus.NEW || 0}"></div>
+        <div class="funnel-segment" style="flex: ${byStatus.NEW || 0}; background: var(--muted);" title="Pending: ${byStatus.NEW || 0}"></div>
         <div class="funnel-segment" style="flex: ${byStatus.STAGED || 0}; background: var(--watch);" title="Staging: ${byStatus.STAGED || 0}"></div>
         <div class="funnel-segment" style="flex: ${byStatus.PROMOTED || 0}; background: var(--keep);" title="Promoted: ${byStatus.PROMOTED || 0}"></div>
         <div class="funnel-segment" style="flex: ${byStatus.IGNORED || 0}; background: var(--drop);" title="Ignored: ${byStatus.IGNORED || 0}"></div>
       </div>
       <div class="funnel-labels">
-        <span style="color: var(--muted)">⏳ ${byStatus.NEW || 0} pending</span>
-        <span style="color: var(--watch)">🧪 ${byStatus.STAGED || 0} staging</span>
-        <span style="color: var(--keep)">✅ ${byStatus.PROMOTED || 0} promoted</span>
-        <span style="color: var(--drop)">❌ ${byStatus.IGNORED || 0} ignored</span>
+        <span style="color: var(--muted)">${byStatus.NEW || 0} pending</span>
+        <span style="color: var(--watch)">${byStatus.STAGED || 0} staging</span>
+        <span style="color: var(--keep)">${byStatus.PROMOTED || 0} promoted</span>
+        <span style="color: var(--drop)">${byStatus.IGNORED || 0} ignored</span>
       </div>
     </div>
-  ` : '<p class="muted">No discovery data yet. Run: node src/discover.js</p>';
+  ` : `<p class="muted">No discovery data yet. Run <code>node src/discover.js</code> to create it.</p>`;
 
   // Performance comparison
   const stagingPerf = funnel.staging_performance || {};
   const mainPerf = funnel.main_performance || {};
-  const verdict = funnel.verdict || "Keep running daily scans to build data.";
-  
+  const verdictRaw = funnel.verdict || "Keep running daily scans to build data.";
+  const verdictClean = String(verdictRaw).replace(/[^ -~]+/g, " ").replace(/\s+/g, " ").trim();
+
   const perfHtml = (stagingPerf.sample_size > 0 || mainPerf.sample_size > 0) ? `
     <div class="perf-comparison">
       <div class="perf-box">
-        <div class="perf-label">📋 Main Watchlist</div>
+        <div class="perf-label">Main Watchlist</div>
         <div class="perf-value">${formatSignedPct(num(mainPerf.avg_return_14d), 1)}</div>
         <div class="perf-sample">${mainPerf.sample_size || 0} coins measured</div>
       </div>
       <div class="perf-vs">vs</div>
       <div class="perf-box">
-        <div class="perf-label">🧪 Staging Picks</div>
+        <div class="perf-label">Staging Picks</div>
         <div class="perf-value">${formatSignedPct(num(stagingPerf.avg_return_14d), 1)}</div>
         <div class="perf-sample">${stagingPerf.sample_size || 0} coins measured</div>
       </div>
     </div>
-    <div class="verdict-box">${escapeHtml(verdict)}</div>
-  ` : '';
-  
+    <div class="verdict-box">${escapeHtml(verdictClean)}</div>
+  ` : "";
+
   // Best/Worst from backtest
   const best = backtestStats?.best_14d || [];
   const worst = backtestStats?.worst_14d || [];
   const flagEffectiveness = backtestStats?.flag_effectiveness_14d || [];
-  
+
   const bestWorstHtml = (best.length > 0 || worst.length > 0) ? `
     <div class="best-worst-grid">
       <div class="best-section">
-        <h4>🏆 Best Picks (14d)</h4>
+        <h4>Best Picks (14d)</h4>
         ${best.slice(0, 3).map(b => `
           <div class="pick-item pick-good">
             <span class="pick-symbol">${escapeHtml(b.symbol)}</span>
             <span class="pick-return">${formatSignedPct(num(b.return_14d_pct), 1)}</span>
-            <span class="pick-reason">${escapeHtml(b.why_good || '')}</span>
+            <span class="pick-reason">${escapeHtml(b.why_good || "")}</span>
           </div>
-        `).join('')}
+        `).join("")}
       </div>
       <div class="worst-section">
-        <h4>⚠️ Worst Picks (14d)</h4>
+        <h4>Worst Picks (14d)</h4>
         ${worst.slice(0, 3).map(w => `
           <div class="pick-item pick-bad">
             <span class="pick-symbol">${escapeHtml(w.symbol)}</span>
             <span class="pick-return">${formatSignedPct(num(w.return_14d_pct), 1)}</span>
-            <span class="pick-reason">${escapeHtml(w.why_bad || '')}</span>
+            <span class="pick-reason">${escapeHtml(w.why_bad || "")}</span>
           </div>
-        `).join('')}
+        `).join("")}
       </div>
     </div>
-  ` : '';
-  
+  ` : "";
+
   // Which rules helped
   const getRuleConfidence = (rule) => {
     if (rule?.confidence) return rule.confidence;
@@ -1793,16 +1756,16 @@ function buildFunnelHtml(funnelStats, backtestStats) {
     .filter(r => r.count_with >= 2 && r.count_without >= 2 && r.edge_14d !== null)
     .sort((a, b) => Math.abs(b.edge_14d || 0) - Math.abs(a.edge_14d || 0))
     .slice(0, 4);
-  
+
   const rulesHtml = helpfulRules.length > 0 ? `
     <div class="rules-section">
-      <h4>🔍 Which Rules Help?</h4>
+      <h4>Which Rules Helped (14d)</h4>
       <div class="rules-grid">
         ${helpfulRules.map(r => {
           const edge = r.edge_14d || 0;
           const isGood = edge > 5;
           const isBad = edge < -5;
-          const color = isGood ? 'var(--keep)' : isBad ? 'var(--drop)' : 'var(--muted)';
+          const color = isGood ? "var(--keep)" : isBad ? "var(--drop)" : "var(--muted)";
           const confidenceRaw = getRuleConfidence(r);
           const confidenceLabel = typeof confidenceRaw === "string"
             ? confidenceRaw.charAt(0).toUpperCase() + confidenceRaw.slice(1)
@@ -1811,37 +1774,38 @@ function buildFunnelHtml(funnelStats, backtestStats) {
             <div class="rule-item" style="border-left: 3px solid ${color}">
               <div class="rule-name">${escapeHtml(r.label || r.flag)}</div>
               <div class="rule-edge" style="color: ${color}">${formatSignedPct(edge, 1)} edge</div>
-              <div class="rule-verdict">${escapeHtml(r.verdict || '')}</div>
+              <div class="rule-verdict">${escapeHtml(r.verdict || "")}</div>
               <div class="rule-meta">Confidence: ${escapeHtml(confidenceLabel)}</div>
             </div>
           `;
-        }).join('')}
+        }).join("")}
       </div>
     </div>
-  ` : '';
-  
+  ` : "";
+
   // Data coverage
   const coverage = backtestStats?.data_coverage || {};
   const coverageHtml = `
     <div class="coverage-info">
-      <span>📊 Data: ${coverage.with_14d_outcome || 0} coins have 14-day results</span>
-      ${coverage.awaiting_7d > 0 ? `<span class="muted"> | ⏳ ${coverage.awaiting_7d} awaiting 7d</span>` : ''}
+      <span>Data: ${coverage.with_14d_outcome || 0} coins have 14-day results</span>
+      ${coverage.awaiting_7d > 0 ? `<span class="muted"> | ${coverage.awaiting_7d} awaiting 7d</span>` : ""}
     </div>
   `;
 
   return `
     <div class="card funnel-card">
       <div class="row space-between">
-        <h2>📊 Discovery Funnel</h2>
+        <h2>Discovery Funnel</h2>
         <span class="muted small">${totalDiscovered} coins discovered</span>
       </div>
+      ${howToHtml}
       ${funnelBarHtml}
       ${perfHtml}
       ${bestWorstHtml}
       ${rulesHtml}
       ${coverageHtml}
       <div class="muted small" style="margin-top: 12px;">
-        <a href="backtest/BacktestReport.md">View full backtest report →</a>
+        <a href="backtest/BacktestReport.md">View full backtest report</a>
       </div>
     </div>
   `;
@@ -2002,6 +1966,15 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       tr:hover td { background: rgba(255,255,255,0.02); }
       .num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); }
       .col-symbol { min-width: 180px; }
+      .sparkline { width: 120px; max-width: 160px; }
+      .sparkline svg { display: block; width: 100%; height: 28px; }
+      tr.explain-row td { background: rgba(0,0,0,0.10); }
+      tr.explain-row td { padding-top: 0; padding-bottom: 14px; }
+      .coin-explain { padding: 10px 0 2px; }
+      .coin-explain-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; }
+      @media (max-width: 980px) { .coin-explain-grid { grid-template-columns: 1fr; } }
+      .coin-explain h4 { margin: 0 0 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+      .max-buy { font-family: var(--mono); font-weight: 700; }
       ul.compact { margin: 8px 0 0; padding-left: 18px; }
       ul.compact li { margin: 4px 0; }
       .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -2108,7 +2081,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
     <div class="container">
       <div class="header">
         <div>
-          <div class="title">📊 Crypto Scanner</div>
+          <div class="title">Crypto Scanner Dashboard</div>
           <div class="subtitle">Last updated: ${escapeHtml(runAt)}</div>
         </div>
         <div class="controls">
@@ -2160,23 +2133,16 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         </div>
       </div>
 
-      <!-- YOUR WATCHLIST -->
-      <div class="grid" style="margin-top:14px;">
-        <div>
-          ${buildWatchlistTableHtml({ title: "📋 Your Watchlist", coins: mainCoins, rankBySymbol })}
-        </div>
-        <div>
-          ${buildWatchlistTableHtml({
-            title: "🧪 Testing (Staging)",
-            coins: stagingCoins,
-            rankBySymbol,
-          })}
-        </div>
+            <!-- YOUR WATCHLIST -->
+      <div style="margin-top:14px;">
+        ${buildWatchlistTableHtml({ title: "Your Watchlist", coins: mainCoins, rankBySymbol })}
       </div>
-
-      <!-- EXPANDABLE SECTIONS FOR MORE DETAIL -->
+      <div style="margin-top:14px;">
+        ${buildWatchlistTableHtml({ title: "Testing (Staging)", coins: stagingCoins, rankBySymbol })}
+      </div>
+<!-- EXPANDABLE SECTIONS FOR MORE DETAIL -->
       <details class="collapsible-section" open>
-        <summary><h2>🤖 AI Analysis & DeFi</h2><span class="muted small">Click to expand/collapse</span></summary>
+        <summary><h2>AI Analysis & DeFi</h2><span class="muted small">Click to expand/collapse</span></summary>
         <div class="section-content">
           <div class="grid" style="margin-top:14px;">
             <div>
@@ -2190,14 +2156,14 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       </details>
 
       <details class="collapsible-section">
-        <summary><h2>🔍 Ownership Details</h2><span class="muted small">Who holds these coins?</span></summary>
+        <summary><h2>Ownership Details</h2><span class="muted small">Who holds these coins?</span></summary>
         <div class="section-content">
           ${buildOnchainHtml(coins)}
         </div>
       </details>
 
       <details class="collapsible-section">
-        <summary><h2>📈 Backtest & History</h2><span class="muted small">How accurate is this scanner?</span></summary>
+        <summary><h2>Backtest & History</h2><span class="muted small">How accurate is this scanner?</span></summary>
         <div class="section-content">
           ${buildFunnelHtml(funnelStats, backtestStats)}
           ${buildBacktestHtml(backtestStats)}
@@ -2206,22 +2172,22 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
 
       <!-- HELP SECTION -->
       <div class="card help-section" style="margin-top:14px;">
-        <h2>❓ How to Read This Dashboard</h2>
+        <h2>How to Read This Dashboard</h2>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 12px;">
           <div>
-            <h3 style="color: var(--keep);">✅ Ready to Buy (KEEP)</h3>
+            <h3 style="color: var(--keep);">Ready to Buy (KEEP)</h3>
             <p class="small muted">These coins passed all safety checks. They have good trading volume, aren't overly controlled by a few wallets, and show signs of real project activity.</p>
           </div>
           <div>
-            <h3 style="color: var(--watch);">👀 Keep Watching (WATCH)</h3>
+            <h3 style="color: var(--watch);">Keep Watching (WATCH)</h3>
             <p class="small muted">Interesting but not ready yet. Maybe missing data, or has some warning signs. Keep an eye on them but don't buy without more research.</p>
           </div>
           <div>
-            <h3 style="color: var(--drop);">🚫 Avoid (DROP)</h3>
+            <h3 style="color: var(--drop);">Avoid (DROP)</h3>
             <p class="small muted">Failed basic checks. Could be too illiquid (hard to sell), or has serious red flags. Better to skip these.</p>
           </div>
           <div>
-            <h3>🧪 Testing (Staging)</h3>
+            <h3>Testing (Staging)</h3>
             <p class="small muted">New coins the scanner found. They're being tested before adding to your main list. Promote winners, ignore the rest.</p>
           </div>
         </div>
@@ -2229,29 +2195,113 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
 
       <!-- QUICK LINKS AT BOTTOM -->
       <div class="card" style="margin-top:14px;">
-        <h2>📁 All Reports</h2>
+        <h2>All Reports</h2>
         <div>${fileLinksHtml}</div>
       </div>
     </div>
 
     <script>
-      (function () {
-        const input = document.getElementById("filter");
-        const tables = Array.from(document.querySelectorAll("table.filterable"));
-        function applyFilter() {
-          const q = (input.value || "").trim().toLowerCase();
-          for (const table of tables) {
-            const rows = Array.from(table.tBodies[0].rows);
-            for (const row of rows) {
-              if (!q) { row.style.display = ""; continue; }
-              const hay = (row.dataset.symbol + " " + row.dataset.name).toLowerCase();
-              row.style.display = hay.includes(q) ? "" : "none";
-            }
-          }
+  (function () {
+    const input = document.getElementById("filter");
+    const tables = Array.from(document.querySelectorAll("table.filterable"));
+    function applyFilter() {
+      const q = (input?.value || "").trim().toLowerCase();
+      for (const table of tables) {
+        const rows = Array.from(table.tBodies[0].rows);
+        for (const row of rows) {
+          if (!q) { row.style.display = ""; continue; }
+          const hay = ((row.dataset.symbol || "") + " " + (row.dataset.name || "")).toLowerCase();
+          row.style.display = hay.includes(q) ? "" : "none";
         }
-        input.addEventListener("input", applyFilter);
-      })();
-    </script>
+      }
+    }
+    if (input) input.addEventListener("input", applyFilter);
+
+    function formatUsd(value) {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "n/a";
+      const digits = Math.abs(value) >= 1 ? 2 : 6;
+      return "$" + value.toLocaleString("en-US", { maximumFractionDigits: digits, minimumFractionDigits: 0 });
+    }
+
+    function formatUsdCompact(value) {
+      if (typeof value !== "number" || !Number.isFinite(value)) return "n/a";
+      const abs = Math.abs(value);
+      if (abs >= 1e12) return "$" + (value / 1e12).toFixed(2) + "T";
+      if (abs >= 1e9) return "$" + (value / 1e9).toFixed(2) + "B";
+      if (abs >= 1e6) return "$" + (value / 1e6).toFixed(2) + "M";
+      if (abs >= 1e3) return "$" + (value / 1e3).toFixed(2) + "K";
+      return formatUsd(value);
+    }
+
+    function marketPhaseBasePositionPct(phase) {
+      switch (phase) {
+        case "accumulation": return 0.1;
+        case "caution": return 0.03;
+        case "run":
+        case "neutral":
+        default: return 0.07;
+      }
+    }
+
+    function computeLiquidityThresholds(portfolioSize) {
+      const multiplier = Math.max(0.1, Math.min(1, portfolioSize / 100000));
+      const volumeLow = Math.max(250000, Math.round(5000000 * multiplier));
+      const volumeDrop = Math.max(50000, Math.round(1000000 * multiplier));
+      return { volumeLow, volumeDrop };
+    }
+
+    function updateSizing() {
+      const card = document.getElementById("positionSizingCard");
+      const inputEl = document.getElementById("portfolioSizeInput");
+      if (!card || !inputEl) return;
+
+      const raw = Number(inputEl.value);
+      const portfolioSize = Number.isFinite(raw) && raw > 0 ? raw : 0;
+      localStorage.setItem("portfolio_size_usd", String(portfolioSize));
+
+      const phase = card.dataset.phase || "neutral";
+      const basePct = card.dataset.basePct ? Number(card.dataset.basePct) : marketPhaseBasePositionPct(phase);
+      const keepCap = portfolioSize * basePct;
+      const watchCap = portfolioSize * basePct * 0.5;
+
+      const keepCapEl = document.getElementById("keepCapValue");
+      const watchCapEl = document.getElementById("watchCapValue");
+      if (keepCapEl) keepCapEl.textContent = formatUsd(keepCap);
+      if (watchCapEl) watchCapEl.textContent = formatUsd(watchCap);
+
+      const { volumeLow, volumeDrop } = computeLiquidityThresholds(portfolioSize);
+      const lowEl = document.getElementById("volumeLowValue");
+      const dropEl = document.getElementById("volumeDropValue");
+      if (lowEl) lowEl.textContent = formatUsdCompact(volumeLow);
+      if (dropEl) dropEl.textContent = formatUsdCompact(volumeDrop);
+
+      const maxBuyEls = Array.from(document.querySelectorAll("span.max-buy"));
+      for (const el of maxBuyEls) {
+        const base = el.dataset.basePct ? Number(el.dataset.basePct) : null;
+        const labelPct = el.dataset.labelPct ? Number(el.dataset.labelPct) : null;
+        const risk = el.dataset.riskMult ? Number(el.dataset.riskMult) : null;
+        const volumeCap = el.dataset.volumeCap ? Number(el.dataset.volumeCap) : null;
+        if (!Number.isFinite(base) || !Number.isFinite(labelPct) || !Number.isFinite(risk)) continue;
+        const portfolioCap = portfolioSize * base * labelPct * risk;
+        const suggested = Number.isFinite(volumeCap) ? Math.min(portfolioCap, volumeCap) : portfolioCap;
+        el.textContent = formatUsd(suggested);
+      }
+    }
+
+    (function initSizing() {
+      const inputEl = document.getElementById("portfolioSizeInput");
+      if (!inputEl) return;
+      const saved = localStorage.getItem("portfolio_size_usd");
+      if (saved && Number.isFinite(Number(saved))) {
+        inputEl.value = String(Number(saved));
+      } else if (!inputEl.value) {
+        inputEl.value = "5000";
+      }
+      inputEl.addEventListener("input", updateSizing);
+      updateSizing();
+    })();
+  })();
+</script>
   </body>
 </html>`;
 }

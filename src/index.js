@@ -144,8 +144,8 @@ const DEFI_STALE_HOURS = envNumber("DEFI_STALE_HOURS", 24);
 
 // Portfolio size setting - adjusts liquidity thresholds
 // Set PORTFOLIO_SIZE env var to your trading capital (e.g., "5000" for $5K)
-// Default thresholds are for institutional/large portfolios
-const PORTFOLIO_SIZE = Number(process.env.PORTFOLIO_SIZE || 100000);
+// Default is tuned for a typical retail account; override as needed.
+const PORTFOLIO_SIZE = Number(process.env.PORTFOLIO_SIZE || 5000);
 const PORTFOLIO_MULTIPLIER = Math.max(0.1, Math.min(1, PORTFOLIO_SIZE / 100000));
 
 // Liquidity thresholds scale with portfolio size:
@@ -947,6 +947,26 @@ function getVolumeStats(marketChart) {
   };
 }
 
+function buildPriceSparkline30d(marketChart, maxPoints = 30) {
+  if (!marketChart || !Array.isArray(marketChart.prices)) {
+    return null;
+  }
+  const values = marketChart.prices
+    .map((entry) => num(entry?.[1]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (values.length < 2) return null;
+
+  const target = Math.max(2, Math.min(60, Math.round(maxPoints)));
+  if (values.length <= target) return values;
+
+  const step = (values.length - 1) / (target - 1);
+  const sampled = [];
+  for (let i = 0; i < target; i += 1) {
+    sampled.push(values[Math.round(i * step)]);
+  }
+  return sampled;
+}
+
 // ============================================================================
 // TECHNICAL ANALYSIS - Entry Signals
 // ============================================================================
@@ -1381,6 +1401,21 @@ async function fetchFearGreedIndex() {
       avg_7d: Math.round(avg7d),
       avg_30d: Math.round(avg30d),
       trend,
+      history: history
+        .slice()
+        .reverse()
+        .map((d) => {
+          const raw = Number(d.timestamp);
+          const dateIso = Number.isFinite(raw)
+            ? new Date(raw * 1000).toISOString().slice(0, 10)
+            : null;
+          return {
+            date: dateIso,
+            value: Number(d.value),
+            classification: d.value_classification || null,
+          };
+        })
+        .filter((d) => Number.isFinite(d.value)),
       fetched_at: new Date().toISOString(),
     };
     
@@ -1476,7 +1511,7 @@ function detectMarketCondition(fearGreed, btcData, btcMAs) {
       signals.run.push({
         signal: "sentiment_shift",
         strength: "moderate",
-        message: `Sentiment improving: ${fearGreed.avg_7d} → ${fearGreed.value}`,
+        message: `Sentiment improving: ${fearGreed.avg_7d} to ${fearGreed.value}`,
       });
     }
   }
@@ -1775,7 +1810,7 @@ function generateBestEntries(coins, marketCondition) {
       reasons.push("Near 30d low");
     }
     if (coin.traction_status === "OK") {
-      reasons.push("✓ active dev");
+      reasons.push("active dev");
     }
     if (coin.has_clean_catalyst) {
       reasons.push("catalyst");
@@ -1853,21 +1888,28 @@ function generateBestEntries(coins, marketCondition) {
       price_change_7d: coin.price_change_7d,
       vs_btc_7d: coin.relative_strength_7d,
       reasons,
-      action: entrySignal === "strong_buy" 
-        ? "🟢 Buy now" 
-        : entrySignal === "buy" 
-          ? "🔵 Good entry" 
-          : "⏸️ Wait for dip",
+      action:
+        entrySignal === "strong_buy"
+          ? "Buy now"
+          : entrySignal === "buy"
+            ? "Good entry"
+            : "Wait for dip",
       risks: highRisk ? ["ownership/dilution risk"] : [],
     });
   }
   
   // Sort by adjusted score (best entries first)
   entries.sort((a, b) => b.adjusted_score - a.adjusted_score);
+
+  const bestEntries = entries.filter(
+    (entry) => entry?.entry_signal === "strong_buy" || entry?.entry_signal === "buy"
+  );
+  const waitList = entries.filter((entry) => entry?.entry_signal === "wait");
   
   return {
     market_phase: phase,
-    best_entries: entries.slice(0, 5), // Top 5
+    best_entries: bestEntries.slice(0, 5), // Buy signals only
+    wait_list: waitList.slice(0, 5),
     all_entries: entries,
     generated_at: new Date().toISOString(),
   };
@@ -3975,7 +4017,7 @@ function shortAddress(address) {
   if (value.length <= 12) {
     return value;
   }
-  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
 function getExplorerAddressUrl(explorerConfig, address) {
@@ -5067,7 +5109,7 @@ function evaluateTraction(tvlData, devData, githubActivity) {
     
     // Check if repo is archived (bad sign)
     if (isArchived) {
-      tractionSignals.push("⚠️ Repo archived");
+      tractionSignals.push("Repo archived");
       // Don't set OK if archived
     } else if (lastCommitDate) {
       // Calculate days since last commit
@@ -5079,7 +5121,7 @@ function evaluateTraction(tvlData, devData, githubActivity) {
         // Active development (commit in last 30 days)
         tractionStatus = "OK";
         missingTraction = false;
-        tractionSignals.push(`✓ Active dev (${daysSinceCommit}d ago)`);
+        tractionSignals.push(`Active dev (${daysSinceCommit}d ago)`);
         tractionSource = "GitHub";
       } else if (daysSinceCommit <= 90) {
         // Recent activity (commit in last 90 days)
@@ -5089,7 +5131,7 @@ function evaluateTraction(tvlData, devData, githubActivity) {
         tractionSource = tractionSource || "GitHub";
       } else if (daysSinceCommit > 180) {
         // Stale (no commits in 6 months)
-        tractionSignals.push(`⚠️ Stale code (${daysSinceCommit}d)`);
+        tractionSignals.push(`Stale code (${daysSinceCommit}d)`);
         // Don't override OK from TVL, but note the staleness
       }
     }
@@ -5843,8 +5885,8 @@ function computeBacktestStats(predictions) {
       sample_min: sampleMin,
       confidence,
       verdict: edge === null ? "Not enough data" :
-               edge > 5 ? "✓ Helpful (buy signal)" :
-               edge < -5 ? "✓ Helpful (avoid signal)" :
+               edge > 5 ? "Helpful (buy signal)" :
+               edge < -5 ? "Helpful (avoid signal)" :
                "Neutral (not predictive)",
     });
   }
@@ -5891,13 +5933,13 @@ function writeBacktestReport(stats) {
   );
 
   const md = [];
-  md.push("# 📊 Backtest Report");
+  md.push("# Backtest Report");
   md.push("");
   md.push(`**Generated:** ${generatedAt}`);
   md.push("");
   
   // Data Coverage Summary
-  md.push("## 📈 Data Coverage");
+  md.push("## Data Coverage");
   md.push("");
   const cov = stats.data_coverage || {};
   md.push(`- **Total predictions tracked:** ${stats.predictions_tracked}`);
@@ -5909,12 +5951,12 @@ function writeBacktestReport(stats) {
   }
   md.push("");
   if ((cov.with_14d_outcome || 0) < 10) {
-    md.push("> ⏳ **Note:** Need more time to collect meaningful results. Keep running the scanner daily!");
+    md.push("> Note: Need more time to collect meaningful results. Keep running the scanner daily.");
     md.push("");
   }
 
   // Accuracy by Label
-  md.push("## 🎯 Accuracy by Decision");
+  md.push("## Accuracy by Decision");
   md.push("");
   md.push("How did each decision type perform?");
   md.push("");
@@ -5926,7 +5968,8 @@ function writeBacktestReport(stats) {
     const winRate = typeof row.win_rate_14d === "number" && sample14d > 0
         ? `${(row.win_rate_14d * 100).toFixed(0)}%`
         : "n/a";
-    const decision = label === "KEEP" ? "✅ Buy" : label === "WATCH-ONLY" ? "👀 Watch" : "🚫 Avoid";
+    const decision =
+      label === "KEEP" ? "Buy" : label === "WATCH-ONLY" ? "Watch" : "Avoid";
     md.push(
       `| ${decision} | ${sample14d} coins | ${formatSignedPct(row.avg_return_7d, 1)} | ${formatSignedPct(row.avg_return_14d, 1)} | ${formatSignedPct(row.avg_return_30d, 1)} | ${winRate} |`
     );
@@ -5934,7 +5977,7 @@ function writeBacktestReport(stats) {
   md.push("");
 
   // Main vs Staging comparison
-  md.push("## 🆚 Main Watchlist vs Staging");
+  md.push("## Main Watchlist vs Staging");
   md.push("");
   md.push("Does staging (discovery) add value, or is it just noise?");
   md.push("");
@@ -5947,12 +5990,12 @@ function writeBacktestReport(stats) {
     ? `${(mainStats.win_rate_14d * 100).toFixed(0)}%` : "n/a";
   const stagingWin = typeof stagingStats.win_rate_14d === "number" && stagingStats.sample_14d > 0
     ? `${(stagingStats.win_rate_14d * 100).toFixed(0)}%` : "n/a";
-  md.push(`| 📋 Main Watchlist | ${mainStats.sample_14d || 0} | ${formatSignedPct(mainStats.avg_return_14d, 1)} | ${mainWin} |`);
-  md.push(`| 🧪 Staging/Discovery | ${stagingStats.sample_14d || 0} | ${formatSignedPct(stagingStats.avg_return_14d, 1)} | ${stagingWin} |`);
+  md.push(`| Main Watchlist | ${mainStats.sample_14d || 0} | ${formatSignedPct(mainStats.avg_return_14d, 1)} | ${mainWin} |`);
+  md.push(`| Staging/Discovery | ${stagingStats.sample_14d || 0} | ${formatSignedPct(stagingStats.avg_return_14d, 1)} | ${stagingWin} |`);
   md.push("");
 
   // Flag Effectiveness
-  md.push("## 🔍 Which Rules Help?");
+  md.push("## Which Rules Help?");
   md.push("");
   md.push("How do coins with each warning flag perform vs coins without it?");
   md.push("");
@@ -5973,7 +6016,7 @@ function writeBacktestReport(stats) {
   md.push("");
 
   // Best Predictions
-  md.push("## 🏆 Best Picks (14 days)");
+  md.push("## Best Picks (14 days)");
   md.push("");
   if (!stats.best_14d || stats.best_14d.length === 0) {
     md.push("- No 14-day results yet. Keep running the scanner!");
@@ -5982,14 +6025,14 @@ function writeBacktestReport(stats) {
       const flags = item.flags?.length > 0 ? ` (${item.flags.join(", ")})` : "";
       const source = item.watchlist_source === "staging" ? " [staging]" : "";
       md.push(
-        `- **${item.symbol}**${source}: ${formatSignedPct(item.return_14d_pct, 1)} — ${item.why_good}${flags}`
+        `- **${item.symbol}**${source}: ${formatSignedPct(item.return_14d_pct, 1)} - ${item.why_good}${flags}`
       );
     }
   }
   md.push("");
 
   // Worst Predictions
-  md.push("## ⚠️ Worst Picks (14 days)");
+  md.push("## Worst Picks (14 days)");
   md.push("");
   if (!stats.worst_14d || stats.worst_14d.length === 0) {
     md.push("- No 14-day results yet. Keep running the scanner!");
@@ -5998,14 +6041,14 @@ function writeBacktestReport(stats) {
       const flags = item.flags?.length > 0 ? ` (${item.flags.join(", ")})` : "";
       const source = item.watchlist_source === "staging" ? " [staging]" : "";
       md.push(
-        `- **${item.symbol}**${source}: ${formatSignedPct(item.return_14d_pct, 1)} — ${item.why_bad}${flags}`
+        `- **${item.symbol}**${source}: ${formatSignedPct(item.return_14d_pct, 1)} - ${item.why_bad}${flags}`
       );
     }
   }
   md.push("");
 
   // Insights
-  md.push("## 💡 Key Insights");
+  md.push("## Key Insights");
   md.push("");
   const insights = [];
   
@@ -6017,9 +6060,11 @@ function writeBacktestReport(stats) {
     const dropAvg = dropRow.avg_return_14d;
     if (keepAvg !== null && dropAvg !== null) {
       if (keepAvg > dropAvg + 5) {
-        insights.push(`✅ **KEEP picks outperform DROP by ${formatSignedPct(keepAvg - dropAvg, 1)}** — the scanner is working!`);
+        insights.push(
+          `**KEEP picks outperform DROP by ${formatSignedPct(keepAvg - dropAvg, 1)}** - the scanner is working.`
+        );
       } else if (dropAvg > keepAvg) {
-        insights.push(`⚠️ DROP picks outperformed KEEP — review your criteria or market conditions.`);
+        insights.push("DROP picks outperformed KEEP - review criteria or market conditions.");
       }
     }
   }
@@ -6031,9 +6076,9 @@ function writeBacktestReport(stats) {
   
   for (const rule of helpfulRules) {
     if (rule.edge_14d > 5) {
-      insights.push(`📈 **"${rule.label}"** is a positive signal: +${formatSignedPct(rule.edge_14d, 1)} edge`);
+      insights.push(`**\"${rule.label}\"** is a positive signal: +${formatSignedPct(rule.edge_14d, 1)} edge`);
     } else if (rule.edge_14d < -5) {
-      insights.push(`📉 **"${rule.label}"** correctly identifies risk: ${formatSignedPct(rule.edge_14d, 1)} edge`);
+      insights.push(`**\"${rule.label}\"** correctly identifies risk: ${formatSignedPct(rule.edge_14d, 1)} edge`);
     }
   }
   
@@ -6100,15 +6145,21 @@ function computeDiscoveryFunnelStats(predictions) {
     }));
   
   // Calculate if staging adds value
-  let stagingVerdict = "Not enough data yet";
+  let stagingVerdict = "Not enough data yet.";
   if (stagingReturns.length >= 3 && mainReturns.length >= 3) {
     const diff = (stagingAvg || 0) - (mainAvg || 0);
     if (diff > 5) {
-      stagingVerdict = "✅ Staging finds winners! Outperforming main by " + formatSignedPct(diff, 1);
+      stagingVerdict =
+        "Staging is beating the main watchlist by " +
+        formatSignedPct(diff, 1) +
+        " on the 14-day average.";
     } else if (diff < -5) {
-      stagingVerdict = "⚠️ Staging underperforms. Focus on your main watchlist.";
+      stagingVerdict =
+        "Staging is underperforming the main watchlist by " +
+        formatSignedPct(Math.abs(diff), 1) +
+        " on the 14-day average.";
     } else {
-      stagingVerdict = "➖ Staging performs similarly to main watchlist.";
+      stagingVerdict = "Staging is performing similarly to the main watchlist.";
     }
   }
   
@@ -6232,7 +6283,7 @@ function buildSummary(
     lines.push("");
   }
 
-  // DeFi Protocol Scanner (latest snapshot) — separate runner, but surfaced here for convenience.
+  // DeFi Protocol Scanner (latest snapshot) - separate runner, but surfaced here for convenience.
   try {
     const defiLatestPath = path.join(REPORTS_DIR, "defi", "Latest.json");
     if (fs.existsSync(defiLatestPath)) {
@@ -6339,7 +6390,7 @@ function buildSummary(
   if (layer1Report.btc_reference) {
     const btc = layer1Report.btc_reference;
     lines.push("## BTC Reference");
-    lines.push(`BTC 7d: ${formatPct(btc.price_change_7d)} | Coins beating BTC are marked with ✓`);
+    lines.push(`BTC 7d: ${formatPct(btc.price_change_7d)}`);
     lines.push("");
   }
 
@@ -6391,7 +6442,7 @@ function buildSummary(
       }
 
       // Relative strength indicator
-      const rsIndicator = coin.outperforming_btc ? "✓ " : "";
+      const rsIndicator = "";
       const rs7d = coin.relative_strength_7d;
       const rsDisplay =
         rs7d !== null
@@ -6683,6 +6734,7 @@ async function main() {
 
     const volumeStats = getVolumeStats(marketChart);
     const technicalSignals = getTechnicalSignals(marketChart, num(market?.current_price));
+    const priceSparkline30d = buildPriceSparkline30d(marketChart, 30);
     const volume24h = num(market?.total_volume);
     const volumeBaseline = volumeStats.avg7d ?? volumeStats.avg30d;
     const volumeBaselineWindow = volumeStats.avg7d ? "7d" : volumeStats.avg30d ? "30d" : null;
@@ -6848,6 +6900,7 @@ async function main() {
       watchlist_source: coin.watchlist_source || "main",
       coin_gecko_id: coin.coinGeckoId || null,
       price: num(market?.current_price),
+      price_sparkline_30d: priceSparkline30d,
       price_change_24h: priceChange24h,
       price_change_7d: priceChange7d,
       price_change_30d: priceChange30d,
@@ -7151,6 +7204,7 @@ async function main() {
   try {
     alertsReport = computeAlerts({
       layer1Report,
+      previousLayer1Report,
       defiLatest,
       discoveryQueue,
       macroPulse,

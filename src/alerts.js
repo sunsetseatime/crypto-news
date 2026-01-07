@@ -166,6 +166,16 @@ function explainAlert(alert) {
     if (details.hygiene_label) pushUnique(why, `Verdict: ${details.hygiene_label}.`);
     pushUnique(risks, "Catalysts can fail to deliver; avoid betting too much on one event.");
     pushUnique(risks, "Watch for unlocks, dilution, and sudden bad news.");
+  } else if (source === "improving") {
+    pushUnique(why, `${symbol} looks better than the last scan.`);
+    if (details.from_label && details.to_label) {
+      pushUnique(why, `Rating changed from ${details.from_label} to ${details.to_label}.`);
+    }
+    if (details.from_entry_signal && details.to_entry_signal) {
+      pushUnique(why, "Entry timing also improved.");
+    }
+    pushUnique(risks, "An improvement does not guarantee price goes up next; still check news and unlocks.");
+    pushUnique(risks, "If liquidity is low, keep size small and use limit orders.");
   } else if (source === "discovery") {
     pushUnique(why, "This coin was flagged by the discovery scanner as a high-score candidate.");
     if (details.status) pushUnique(why, `Discovery status: ${details.status}.`);
@@ -193,7 +203,14 @@ function explainAlert(alert) {
   };
 }
 
-function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, thresholds }) {
+function computeAlerts({
+  layer1Report,
+  previousLayer1Report,
+  defiLatest,
+  discoveryQueue,
+  macroPulse,
+  thresholds,
+}) {
   const generatedAt = new Date().toISOString();
   const alerts = [];
 
@@ -203,19 +220,75 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
 
   const coins = Array.isArray(layer1Report?.coins) ? layer1Report.coins : [];
   const marketCondition = layer1Report?.market_condition?.signals;
+
+  const hygieneRank = (label) => {
+    switch (label) {
+      case "DROP":
+        return 0;
+      case "WATCH-ONLY":
+        return 1;
+      case "KEEP":
+        return 2;
+      default:
+        return -1;
+    }
+  };
+
+  const friendlyHygiene = (label) => {
+    switch (label) {
+      case "KEEP":
+        return "Buy";
+      case "WATCH-ONLY":
+        return "Watch";
+      case "DROP":
+        return "Avoid";
+      default:
+        return "Unknown";
+    }
+  };
+
+  const entryRank = (signal) => {
+    switch (signal) {
+      case "overbought":
+        return 0;
+      case "wait":
+        return 1;
+      case "buy":
+        return 2;
+      case "strong_buy":
+        return 3;
+      default:
+        return -1;
+    }
+  };
+
+  const friendlyEntry = (signal) => {
+    switch (signal) {
+      case "strong_buy":
+        return "Very good entry";
+      case "buy":
+        return "Good entry";
+      case "wait":
+        return "Wait for a better price";
+      case "overbought":
+        return "Too hot (overbought)";
+      default:
+        return "Unknown";
+    }
+  };
   
   // === MARKET CONDITION ALERTS (HIGHEST PRIORITY) ===
   // Accumulation alerts - time to buy
   if (marketCondition?.accumulation?.length > 0) {
     for (const signal of marketCondition.accumulation) {
-      const emoji = signal.strength === "strong" ? "🟢💰" : "🟡";
+      const strengthTag = signal.strength === "strong" ? "STRONG " : "";
       const priority = signal.strength === "strong" ? 100 : 80;
       alerts.push({
         key: `market:accumulation:${signal.signal}`,
         source: "market_accumulation",
         watchlist_source: null,
         symbol: "MARKET",
-        title: `${emoji} ACCUMULATION: ${signal.message}`,
+        title: `${strengthTag}ACCUMULATION: ${signal.message}`,
         score: priority,
         url: null,
         details: {
@@ -230,14 +303,14 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
   // Run alerts - momentum plays
   if (marketCondition?.run?.length > 0) {
     for (const signal of marketCondition.run) {
-      const emoji = signal.strength === "strong" ? "🚀" : "📈";
+      const strengthTag = signal.strength === "strong" ? "STRONG " : "";
       const priority = signal.strength === "strong" ? 70 : 60;
       alerts.push({
         key: `market:run:${signal.signal}`,
         source: "market_run",
         watchlist_source: null,
         symbol: "MARKET",
-        title: `${emoji} RUN STARTING: ${signal.message}`,
+        title: `${strengthTag}RUN STARTING: ${signal.message}`,
         score: priority,
         url: null,
         details: {
@@ -257,7 +330,7 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
         source: "market_warning",
         watchlist_source: null,
         symbol: "MARKET",
-        title: `⚠️ CAUTION: ${signal.message}`,
+        title: ` CAUTION: ${signal.message}`,
         score: 50,
         url: null,
         details: {
@@ -342,7 +415,7 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
   // === BLUE CHIP DIP ALERTS (safer plays) ===
   const blueChipOpps = layer1Report?.blue_chip_opportunities?.opportunities || [];
   for (const opp of blueChipOpps.slice(0, 5)) { // Top 5 opportunities
-    const emoji = opp.entry_signal === "strong_buy" ? "🟢💎" : "🔵";
+
     const priority = opp.signal_strength + (opp.market_in_fear ? 10 : 0);
     const riskWarnings = Array.isArray(opp.risk_warnings) ? opp.risk_warnings : [];
     const cautionTag = riskWarnings.length > 0 ? " (caution)" : "";
@@ -352,7 +425,7 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
       source: "blue_chip_dip",
       watchlist_source: null,
       symbol: opp.symbol,
-      title: `${emoji} ${opp.name} dip: ${opp.signals.slice(0, 2).join(", ")}${cautionTag}`,
+      title: `${opp.name} dip: ${opp.signals.slice(0, 2).join(", ")}${cautionTag}`,
       score,
       url: `https://www.coingecko.com/en/coins/${encodeURIComponent(opp.coin_gecko_id)}`,
       details: {
@@ -383,7 +456,7 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
         source: "defi_hack",
         watchlist_source: coin.watchlist_source,
         symbol: coin.symbol,
-        title: `🚨 ${coin.symbol} has ${coin.defi_hack_count} past hack${coin.defi_hack_count > 1 ? 's' : ''} ($${(coin.defi_hack_total_usd / 1000000).toFixed(1)}M lost)`,
+        title: ` ${coin.symbol} has ${coin.defi_hack_count} past hack${coin.defi_hack_count > 1 ? 's' : ''} ($${(coin.defi_hack_total_usd / 1000000).toFixed(1)}M lost)`,
         score: 80,
         url: coin.coin_gecko_id
           ? `https://www.coingecko.com/en/coins/${encodeURIComponent(coin.coin_gecko_id)}`
@@ -403,7 +476,7 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
         source: "defi_no_audit",
         watchlist_source: coin.watchlist_source,
         symbol: coin.symbol,
-        title: `⚠️ ${coin.symbol} has NO audit - higher smart contract risk`,
+        title: ` ${coin.symbol} has NO audit - higher smart contract risk`,
         score: 40,
         url: null,
         details: {
@@ -420,7 +493,7 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
         source: "defi_tvl_collapse",
         watchlist_source: coin.watchlist_source,
         symbol: coin.symbol,
-        title: `📉 ${coin.symbol} TVL collapsing - users leaving the protocol`,
+        title: ` ${coin.symbol} TVL collapsing - users leaving the protocol`,
         score: 60,
         url: null,
         details: {
@@ -435,8 +508,7 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
   const bestEntries = layer1Report?.best_entries?.best_entries || [];
   for (const entry of bestEntries.slice(0, 3)) { // Top 3 best entries
     if (entry.entry_signal !== "strong_buy" && entry.entry_signal !== "buy") continue;
-    
-    const emoji = entry.entry_signal === "strong_buy" ? "🎯" : "🔵";
+
     const priority = entry.adjusted_score;
     const reasonsText = entry.reasons.slice(0, 2).join(", ");
     
@@ -445,7 +517,7 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
       source: "best_entry",
       watchlist_source: null,
       symbol: entry.symbol,
-      title: `${emoji} Best Entry: ${entry.symbol} - ${reasonsText || entry.action}`,
+      title: `Best Entry: ${entry.symbol} - ${reasonsText || entry.action}`,
       score: priority,
       url: entry.coin_gecko_id 
         ? `https://www.coingecko.com/en/coins/${encodeURIComponent(entry.coin_gecko_id)}`
@@ -638,6 +710,82 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, t
     }
   }
 
+  // === IMPROVING COINS (since last run) ===
+  const prevCoins = Array.isArray(previousLayer1Report?.coins)
+    ? previousLayer1Report.coins
+    : [];
+  if (prevCoins.length > 0) {
+    const prevById = new Map();
+    for (const prev of prevCoins) {
+      const idKey = normalizeId(prev?.coin_gecko_id) || normalizeId(prev?.symbol);
+      if (!idKey) continue;
+      if (!prevById.has(idKey)) prevById.set(idKey, prev);
+    }
+
+    const improvements = [];
+    for (const coin of coins) {
+      const idKey = normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || null;
+      if (!idKey) continue;
+      const prev = prevById.get(idKey);
+      if (!prev) continue;
+
+      const fromLabelRaw = prev?.hygiene_label || "UNKNOWN";
+      const toLabelRaw = coin?.hygiene_label || "UNKNOWN";
+      const fromLabel = friendlyHygiene(fromLabelRaw);
+      const toLabel = friendlyHygiene(toLabelRaw);
+
+      const fromEntry = prev?.entry_signal || null;
+      const toEntry = coin?.entry_signal || null;
+
+      const labelImproved = hygieneRank(toLabelRaw) > hygieneRank(fromLabelRaw);
+      const entryImproved = entryRank(toEntry) > entryRank(fromEntry);
+
+      if (!labelImproved && !entryImproved) continue;
+
+      let score = 55;
+      if (labelImproved) {
+        const diff = hygieneRank(toLabelRaw) - hygieneRank(fromLabelRaw);
+        score = 70 + diff * 10;
+      } else if (entryImproved) {
+        const diff = entryRank(toEntry) - entryRank(fromEntry);
+        score = 55 + diff * 5;
+      }
+
+      const reasons = [];
+      if (labelImproved) reasons.push(`Rating changed from ${fromLabel} to ${toLabel}.`);
+      if (entryImproved) {
+        reasons.push(`Entry timing changed from ${friendlyEntry(fromEntry)} to ${friendlyEntry(toEntry)}.`);
+      }
+
+      const prevDate = String(previousLayer1Report?.generated_at || "").slice(0, 10) || "unknown";
+      const symbol = coin?.symbol || "n/a";
+
+      improvements.push({
+        key: `improving:${idKey}:${prevDate}:${toLabelRaw}:${toEntry || "none"}`,
+        source: "improving",
+        watchlist_source: coin?.watchlist_source || "main",
+        symbol,
+        title: `${symbol} is improving since the last scan`,
+        score,
+        url: coin?.coin_gecko_id
+          ? `https://www.coingecko.com/en/coins/${encodeURIComponent(coin.coin_gecko_id)}`
+          : null,
+        details: {
+          from_label: fromLabel,
+          to_label: toLabel,
+          from_label_raw: fromLabelRaw,
+          to_label_raw: toLabelRaw,
+          from_entry_signal: fromEntry,
+          to_entry_signal: toEntry,
+          reasons,
+        },
+      });
+    }
+
+    improvements.sort((a, b) => (b.score || 0) - (a.score || 0));
+    alerts.push(...improvements.slice(0, 6));
+  }
+
   if (Number.isFinite(defiThreshold) && defiLatest && Array.isArray(defiLatest.protocols)) {
     for (const protocol of defiLatest.protocols) {
       const totalScore = num(protocol?.scores?.total);
@@ -750,7 +898,7 @@ function renderAlertsMarkdown(alertsReport) {
   
   // Market Condition Section (most important)
   if (marketAlerts.length > 0) {
-    lines.push("## 🌐 Market Condition");
+    lines.push("## Market Condition");
     lines.push("");
     for (const alert of marketAlerts) {
       lines.push(`- ${alert.title}`);
@@ -763,13 +911,13 @@ function renderAlertsMarkdown(alertsReport) {
   
   // Blue Chip Dip Opportunities (safer plays)
   if (blueChipAlerts.length > 0) {
-    lines.push("## 💎 Blue Chip Dips (Safer Plays)");
+    lines.push("## Blue Chip Dips");
     lines.push("");
     lines.push("Top cryptos with buy signals - higher liquidity, lower risk:");
     lines.push("");
     for (const alert of blueChipAlerts) {
       const d = alert.details || {};
-      lines.push(`- **${alert.symbol}** - ${alert.title.replace(/^[🟢💎🔵]+\s*/, "").replace(`${alert.symbol} dip: `, "")}`);
+      lines.push(`- **${alert.symbol}** - ${alert.title}`);
       const price = d.price ? `$${d.price.toLocaleString()}` : "n/a";
       const rsi = d.rsi ? `RSI ${d.rsi.toFixed(0)}` : "";
       const dip = d.dip_from_7d_high ? `-${d.dip_from_7d_high.toFixed(1)}% from high` : "";
@@ -777,7 +925,7 @@ function renderAlertsMarkdown(alertsReport) {
       if (extras) {
         lines.push(`  - Price: ${price} | ${extras}`);
       }
-      lines.push(`  - Signal: ${d.entry_signal === "strong_buy" ? "🟢 STRONG BUY" : "🔵 BUY"}`);
+      lines.push(`  - Signal: ${d.entry_signal === "strong_buy" ? "STRONG BUY" : "BUY"}`);
     }
     lines.push("");
   }
