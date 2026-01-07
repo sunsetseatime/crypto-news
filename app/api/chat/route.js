@@ -112,9 +112,10 @@ async function loadReports() {
     defi: `${baseUrl}/defi/Latest.json`,
     supervisor: `${baseUrl}/SupervisorSummary.json`,
     backtest: `${baseUrl}/backtest/BacktestReport.json`,
+    macroPulse: `${baseUrl}/MacroPulse.json`,
   };
 
-  const [layer1, diff, alerts, discovery, defi, supervisor, backtest] =
+  const [layer1, diff, alerts, discovery, defi, supervisor, backtest, macroPulse] =
     await Promise.all([
       fetchJson(urls.layer1),
       fetchJson(urls.diff),
@@ -123,6 +124,7 @@ async function loadReports() {
       fetchJson(urls.defi),
       fetchJson(urls.supervisor),
       fetchJson(urls.backtest),
+      fetchJson(urls.macroPulse),
     ]);
 
   const data = {
@@ -134,6 +136,7 @@ async function loadReports() {
     defi,
     supervisor,
     backtest,
+    macroPulse,
   };
   reportCache.data = data;
   reportCache.fetchedAt = now;
@@ -325,6 +328,22 @@ function summarizeCoin(coinEntry, reports) {
           source: discoveryForCoin.source || null,
         }
       : null,
+    explain: coinEntry?.explain
+      ? {
+          why: Array.isArray(coinEntry.explain?.why)
+            ? coinEntry.explain.why.slice(0, 3)
+            : [],
+          risks: Array.isArray(coinEntry.explain?.risks)
+            ? coinEntry.explain.risks.slice(0, 2)
+            : [],
+          suggested_max_buy:
+            typeof coinEntry.explain?.sizing?.suggested_max_buy_usd === 'number'
+              ? shortUsd(Number(coinEntry.explain.sizing.suggested_max_buy_usd))
+              : null,
+          news_checked_at: coinEntry.explain?.news?.fetched_at || null,
+          news_source: coinEntry.explain?.news?.source || null,
+        }
+      : null,
   };
 }
 
@@ -389,6 +408,8 @@ function summarizeGlobal(reports) {
         symbol: a.symbol || null,
         title: a.title || null,
         score: typeof a.score === 'number' ? Number(a.score.toFixed(1)) : null,
+        why: Array.isArray(a?.explain?.why) ? a.explain.why.slice(0, 3) : null,
+        risks: Array.isArray(a?.explain?.risks) ? a.explain.risks.slice(0, 2) : null,
         details:
           a?.source === 'discovery' && a?.details
             ? {
@@ -443,6 +464,95 @@ function summarizeGlobal(reports) {
         }))
     : [];
 
+  const macro = reports?.macroPulse || null;
+  const macroPulse = macro
+    ? {
+        generated_at: macro.generated_at || null,
+        btc_price: shortUsd(Number(macro.btc_price)),
+        btc_change_24h: pct(Number(macro.btc_change_24h)),
+        etf_flows: macro.etf_flows?.error
+          ? { error: macro.etf_flows.error }
+          : macro.etf_flows
+            ? {
+                today_total_musd:
+                  typeof macro.etf_flows.today_total_musd === 'number'
+                    ? macro.etf_flows.today_total_musd
+                    : null,
+                five_day_total_musd:
+                  typeof macro.etf_flows.five_day_total_musd === 'number'
+                    ? macro.etf_flows.five_day_total_musd
+                    : null,
+                momentum: macro.etf_flows.momentum_label || null,
+                top_drivers: Array.isArray(macro.etf_flows.top_drivers)
+                  ? macro.etf_flows.top_drivers.map((d) => ({
+                      ticker: d.ticker || null,
+                      flow_musd:
+                        typeof d.flow_musd === 'number'
+                          ? Number(d.flow_musd.toFixed(1))
+                          : null,
+                    }))
+                  : [],
+              }
+            : null,
+        leverage: macro.leverage?.error
+          ? { error: macro.leverage.error }
+          : macro.leverage
+            ? {
+                funding_rate_pct:
+                  typeof macro.leverage.funding_rate_pct === 'number'
+                    ? Number(macro.leverage.funding_rate_pct.toFixed(4))
+                    : null,
+                funding_label: macro.leverage.funding_label || null,
+                open_interest_usd: shortUsd(Number(macro.leverage.open_interest_usd)),
+                open_interest_change_pct: pct(Number(macro.leverage.open_interest_change_pct)),
+                open_interest_label: macro.leverage.open_interest_label || null,
+              }
+            : null,
+        btc_share: macro.btc_share?.error
+          ? { error: macro.btc_share.error }
+          : macro.btc_share
+            ? {
+                pct:
+                  typeof macro.btc_share.pct === 'number'
+                    ? Number(macro.btc_share.pct.toFixed(1))
+                    : null,
+                change_24h:
+                  typeof macro.btc_share.change_24h === 'number'
+                    ? Number(macro.btc_share.change_24h.toFixed(1))
+                    : null,
+                trend: macro.btc_share.trend_label || null,
+              }
+            : null,
+        alt_strength: macro.alt_strength?.groups
+          ? {
+              stronger: Array.isArray(macro.alt_strength.groups.stronger)
+                ? macro.alt_strength.groups.stronger.slice(0, 6)
+                : [],
+              weaker: Array.isArray(macro.alt_strength.groups.weaker)
+                ? macro.alt_strength.groups.weaker.slice(0, 6)
+                : [],
+              inline: Array.isArray(macro.alt_strength.groups.inline)
+                ? macro.alt_strength.groups.inline.slice(0, 6)
+                : [],
+            }
+          : null,
+        alt_news: Array.isArray(macro.alt_news)
+          ? macro.alt_news.slice(0, 3).map((item) => ({
+              symbol: item.symbol || null,
+              tone: item.tone || null,
+              title: safeText(item.title, 160) || null,
+              window: item.window || null,
+            }))
+          : [],
+        mood: macro.mood
+          ? {
+              label: macro.mood.label || null,
+              reason: safeText(macro.mood.reason, 160) || null,
+            }
+          : null,
+      }
+    : null;
+
   const supervisor = reports?.supervisor
     ? {
         actionable_today: Boolean(reports.supervisor.actionable_today),
@@ -469,6 +579,8 @@ function summarizeGlobal(reports) {
     : null;
 
   return {
+    data_freshness: reports?.layer1?.data_freshness || null,
+    portfolio_guidance: reports?.layer1?.portfolio_guidance || null,
     reports_generated_at: {
       watchlist: reports?.layer1?.generated_at || null,
       discovery: reports?.discovery?.generated_at || null,
@@ -487,6 +599,7 @@ function summarizeGlobal(reports) {
     diffTop,
     discoveryTop,
     defiTop,
+    macro_pulse: macroPulse,
     supervisor,
     backtest,
   };
@@ -741,4 +854,3 @@ export async function POST(req) {
     );
   }
 }
-

@@ -86,6 +86,8 @@ const DEFI_LATEST_PATH = path.join(REPORTS_DIR, "defi", "Latest.json");
 const BACKTEST_PREDICTIONS_PATH = path.join(BACKTEST_DIR, "predictions.json");
 const BACKTEST_REPORT_MD_PATH = path.join(BACKTEST_DIR, "BacktestReport.md");
 const BACKTEST_REPORT_JSON_PATH = path.join(BACKTEST_DIR, "BacktestReport.json");
+const MACRO_PULSE_JSON_PATH = path.join(REPORTS_DIR, "MacroPulse.json");
+const MACRO_PULSE_MD_PATH = path.join(REPORTS_DIR, "MacroPulse.md");
 const DASHBOARD_PATH = path.join(REPORTS_DIR, "Dashboard.html");
 const ALERTS_JSON_PATH = path.join(REPORTS_DIR, "Alerts.json");
 const ALERTS_MD_PATH = path.join(REPORTS_DIR, "Alerts.md");
@@ -171,6 +173,22 @@ const TAKE_PROFIT_APPROACH_BUFFER = clamp(
   0,
   10
 );
+
+const ETF_FLOW_PROXY_URL = "https://r.jina.ai/http://farside.co.uk/btc/";
+const ETF_FLOW_CACHE_PATH = path.join(CACHE_DIR, "etf_flows_btc.json");
+const LEVERAGE_CACHE_PATH = path.join(CACHE_DIR, "leverage_btc.json");
+const GLOBAL_MARKET_CACHE_PATH = path.join(CACHE_DIR, "global_market.json");
+const GLOBAL_MARKET_HISTORY_PATH = path.join(CACHE_DIR, "global_market_history.json");
+const ALT_MARKET_CACHE_PATH = path.join(CACHE_DIR, "alt_market_snapshot.json");
+const ALT_PULSE_COINS = [
+  { id: "ethereum", symbol: "ETH" },
+  { id: "binancecoin", symbol: "BNB" },
+  { id: "solana", symbol: "SOL" },
+  { id: "ripple", symbol: "XRP" },
+  { id: "litecoin", symbol: "LTC" },
+  { id: "monero", symbol: "XMR" },
+];
+const ALT_PULSE_IDS = ALT_PULSE_COINS.map((coin) => coin.id);
 
 // Market condition alert thresholds
 const FEAR_GREED_EXTREME_FEAR = 25;  // Below this = accumulation zone
@@ -267,6 +285,28 @@ async function fetchJson(url, options = {}, retries = 2) {
   }
 }
 
+async function fetchText(url, options = {}, retries = 2) {
+  try {
+    const response = await fetch(url, options);
+    if (!response.ok) {
+      if (response.status === 429 && retries > 0) {
+        const retryAfter = response.headers.get("retry-after");
+        const waitMs = retryAfter ? Number(retryAfter) * 1000 : 15000;
+        await sleep(waitMs);
+        return fetchText(url, options, retries - 1);
+      }
+      throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    }
+    return await response.text();
+  } catch (err) {
+    if (retries > 0) {
+      await sleep(750);
+      return fetchText(url, options, retries - 1);
+    }
+    throw err;
+  }
+}
+
 function average(values) {
   if (!values || values.length === 0) {
     return null;
@@ -321,6 +361,15 @@ function formatUsdCompact(value) {
     return `$${(value / 1_000).toFixed(2)}K`;
   }
   return formatUsd(value);
+}
+
+function roundUsd(value) {
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  const abs = Math.abs(value);
+  const step = abs >= 5000 ? 50 : abs >= 1000 ? 25 : abs >= 200 ? 10 : abs >= 50 ? 5 : 1;
+  return Math.round(value / step) * step;
 }
 
 function formatPct(value) {
@@ -418,6 +467,36 @@ function loadRuleConfidenceFromBacktest() {
       item?.confidence || deriveRuleConfidence(countWith, countWithout);
     map[flag] = confidence;
   }
+  return map;
+}
+
+function loadRuleEffectivenessFromBacktest() {
+  const report = readJsonFile(BACKTEST_REPORT_JSON_PATH, null);
+  const items = Array.isArray(report?.flag_effectiveness_14d)
+    ? report.flag_effectiveness_14d
+    : [];
+  const map = {};
+
+  for (const item of items) {
+    const flag = item?.flag;
+    if (!flag) continue;
+
+    const countWith = Number(item?.count_with) || 0;
+    const countWithout = Number(item?.count_without) || 0;
+    const confidence =
+      item?.confidence || deriveRuleConfidence(countWith, countWithout);
+
+    map[flag] = {
+      label: item?.label || flag,
+      confidence,
+      sample_min: Number(item?.sample_min) || 0,
+      verdict: item?.verdict || null,
+      count_with: countWith,
+      count_without: countWithout,
+      edge_14d: typeof item?.edge_14d === "number" ? item.edge_14d : null,
+    };
+  }
+
   return map;
 }
 
@@ -603,6 +682,111 @@ function buildSupervisorSchema() {
   };
 }
 
+function buildSupervisorInput(layer1Report) {
+  const report = layer1Report && typeof layer1Report === "object" ? layer1Report : {};
+  const coins = Array.isArray(report.coins) ? report.coins : [];
+
+  const trimmedCoins = coins.map((coin) => {
+    const onchain = coin?.onchain || null;
+    const topHolders = Array.isArray(onchain?.top_holders) ? onchain.top_holders : [];
+    const top10 = topHolders.slice(0, 10);
+
+    const classify = (holder) => {
+      const kind = String(holder?.holder_kind || "").toLowerCase();
+      const type = String(holder?.address_type || "").toUpperCase();
+      if (type === "CONTRACT") return "contract";
+      if (type === "EOA") return "wallet";
+      if (kind.includes("smart")) return "contract";
+      if (kind.includes("wallet")) return "wallet";
+      return "unknown";
+    };
+
+    let walletCount = 0;
+    let contractCount = 0;
+    let unknownCount = 0;
+    for (const holder of top10) {
+      const bucket = classify(holder);
+      if (bucket === "wallet") walletCount += 1;
+      else if (bucket === "contract") contractCount += 1;
+      else unknownCount += 1;
+    }
+
+    const newsHeadline =
+      Array.isArray(coin?.news_headlines) && coin.news_headlines.length > 0
+        ? coin.news_headlines[0]?.title || null
+        : null;
+
+    return {
+      symbol: coin?.symbol || null,
+      name: coin?.name || null,
+      watchlist_source: coin?.watchlist_source || "main",
+      hygiene_label: coin?.hygiene_label || null,
+      price: num(coin?.price),
+      price_change_24h: num(coin?.price_change_24h),
+      price_change_7d: num(coin?.price_change_7d),
+      price_change_30d: num(coin?.price_change_30d),
+      volume_24h: num(coin?.volume_24h),
+      has_clean_catalyst: Boolean(coin?.has_clean_catalyst),
+      clean_catalyst: coin?.clean_catalyst || null,
+      chasing: Boolean(coin?.chasing),
+      low_liquidity: Boolean(coin?.low_liquidity),
+      high_dilution_risk: Boolean(coin?.high_dilution_risk),
+      unlock_risk_flag: Boolean(coin?.unlock_risk_flag),
+      traction_status: coin?.traction_status || null,
+      github_active: Boolean(coin?.github_active),
+      github_stale: Boolean(coin?.github_stale),
+      github_archived: Boolean(coin?.github_archived),
+      holder_concentration_level: coin?.holder_concentration_level || "UNKNOWN",
+      top_10_holder_percent: num(coin?.top_10_holder_percent),
+      top_20_holder_percent: num(coin?.top_20_holder_percent),
+      top_10_wallet_percent: num(coin?.top_10_wallet_percent),
+      top_10_exchange_percent: num(coin?.top_10_exchange_percent),
+      top_10_contract_percent: num(coin?.top_10_contract_percent),
+      onchain: onchain
+        ? {
+            chain: onchain.chain || null,
+            source: onchain.source || null,
+            wallet_count_top10: walletCount,
+            contract_count_top10: contractCount,
+            unknown_count_top10: unknownCount,
+          }
+        : null,
+      entry_signal: coin?.entry_signal || null,
+      rsi_14d: num(coin?.rsi_14d),
+      distance_from_high: num(coin?.distance_from_high),
+      news_activity: coin?.news_activity || null,
+      news_sentiment: coin?.news_sentiment || null,
+      news_signal: coin?.news_signal || null,
+      news_headline: newsHeadline,
+      defi_matched: Boolean(coin?.defi_matched),
+      defi_protocol_name: coin?.defi_protocol_name || null,
+      defi_audit_status: coin?.defi_audit_status || null,
+      defi_hack_count:
+        typeof coin?.defi_hack_count === "number" ? coin.defi_hack_count : null,
+      take_profit: coin?.take_profit
+        ? {
+            signal: coin.take_profit.signal || null,
+            profit_pct: num(coin.take_profit.profit_pct),
+            highest_target_hit:
+              typeof coin.take_profit.highest_target_hit === "number"
+                ? coin.take_profit.highest_target_hit
+                : null,
+            approaching_delta_pct: num(coin.take_profit.approaching_delta_pct),
+          }
+        : null,
+    };
+  });
+
+  return {
+    generated_at: report.generated_at || null,
+    actionable_today: Boolean(report.actionable_today),
+    warnings: Array.isArray(report.warnings) ? report.warnings.slice(0, 20) : [],
+    market_condition: report?.market_condition?.signals || null,
+    btc_reference: report?.btc_reference || null,
+    coins: trimmedCoins,
+  };
+}
+
 async function runSupervisor(layer1Report) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -624,7 +808,7 @@ async function runSupervisor(layer1Report) {
     "Return JSON matching the schema. " +
     "Include up to 5 on-chain highlights focusing on coins where ownership concentration is HIGH (`holder_concentration_level=HIGH`); otherwise include any with on-chain data. " +
     "Do not include raw addresses in the highlight facts.\n\n" +
-    JSON.stringify(layer1Report);
+    JSON.stringify(buildSupervisorInput(layer1Report));
 
   const schema = buildSupervisorSchema();
 
@@ -995,11 +1179,24 @@ function calculateRSIFromSparkline(sparkline) {
   return 100 - (100 / (1 + rs));
 }
 
+function sparklinePctChange(sparkline, pointsBack) {
+  if (!sparkline || !Array.isArray(sparkline.price) || sparkline.price.length < 2) {
+    return null;
+  }
+  const prices = sparkline.price;
+  const end = num(prices[prices.length - 1]);
+  const startIdx = prices.length - 1 - Math.max(1, Number(pointsBack) || 1);
+  const start = startIdx >= 0 ? num(prices[startIdx]) : null;
+  if (end === null || start === null || start <= 0) return null;
+  return ((end - start) / start) * 100;
+}
+
 /**
  * Analyze blue chips for dip opportunities
  */
 function analyzeBlueChipsForDips(blueChips, fearGreed) {
   const opportunities = [];
+  const wait_list = [];
   const coins = blueChips?.coins || [];
   const marketInFear = fearGreed && fearGreed.value <= FEAR_GREED_FEAR;
   
@@ -1028,10 +1225,16 @@ function analyzeBlueChipsForDips(blueChips, fearGreed) {
     
     // Calculate distance from ATH
     const dipFromATH = ath > 0 ? ((ath - price) / ath) * 100 : 0;
+
+    const recentChange3h = sparklinePctChange(coin.sparkline_in_7d, 3);
+    const recentChange6h = sparklinePctChange(coin.sparkline_in_7d, 6);
+    const stabilizing =
+      recentChange3h !== null ? recentChange3h >= -0.5 : recentChange6h !== null ? recentChange6h >= -1 : false;
     
     // Determine buy signals
     const signals = [];
     let signalStrength = 0;
+    const riskWarnings = [];
     
     // RSI oversold
     if (rsi !== null && rsi < RSI_OVERSOLD_THRESHOLD) {
@@ -1056,6 +1259,17 @@ function analyzeBlueChipsForDips(blueChips, fearGreed) {
       signals.push(`${dipFromATH.toFixed(0)}% below ATH`);
       signalStrength += 10;
     }
+
+    // Risk hints (plain-English warnings)
+    if (change24h !== null && change24h <= -8) {
+      riskWarnings.push(`still dropping today (${formatSignedPct(change24h, 1)})`);
+    }
+    if (change30d !== null && change30d <= -30) {
+      riskWarnings.push(`down a lot this month (${formatSignedPct(change30d, 1)})`);
+    }
+    if (recentChange3h !== null && recentChange3h <= -1) {
+      riskWarnings.push(`still falling in the last few hours (${formatSignedPct(recentChange3h, 1)})`);
+    }
     
     // Market fear bonus
     if (marketInFear && signals.length > 0) {
@@ -1072,9 +1286,12 @@ function analyzeBlueChipsForDips(blueChips, fearGreed) {
       entrySignal = "overbought";
     }
     
-    // Only include if there's at least one buy signal
+    const fallingHardToday =
+      change24h !== null && change24h <= -6 && (recentChange3h === null ? true : recentChange3h <= -0.5);
+
+    // Only include if there's at least one buy signal; if still falling hard, move to a wait list.
     if (signals.length > 0 && entrySignal !== "overbought" && entrySignal !== "wait") {
-      opportunities.push({
+      const payload = {
         symbol,
         name,
         coin_gecko_id: coin.id,
@@ -1084,6 +1301,9 @@ function analyzeBlueChipsForDips(blueChips, fearGreed) {
         change_24h: change24h,
         change_7d: change7d,
         change_30d: change30d,
+        recent_change_3h: recentChange3h,
+        recent_change_6h: recentChange6h,
+        stabilizing,
         rsi,
         dip_from_7d_high: dipFrom7dHigh,
         dip_from_ath: dipFromATH,
@@ -1091,16 +1311,29 @@ function analyzeBlueChipsForDips(blueChips, fearGreed) {
         signal_strength: signalStrength,
         entry_signal: entrySignal,
         market_in_fear: marketInFear,
-      });
+        risk_warnings: riskWarnings,
+      };
+
+      if (fallingHardToday && !stabilizing) {
+        wait_list.push({
+          ...payload,
+          entry_signal: "wait",
+          wait_reason: "Still falling hard today; wait for it to stop falling.",
+        });
+      } else {
+        opportunities.push(payload);
+      }
     }
   }
   
   // Sort by signal strength (best opportunities first)
   opportunities.sort((a, b) => b.signal_strength - a.signal_strength);
+  wait_list.sort((a, b) => b.signal_strength - a.signal_strength);
   
   return {
     scanned_count: coins.length,
     opportunities,
+    wait_list,
     market_in_fear: marketInFear,
     scanned_at: new Date().toISOString(),
   };
@@ -1911,6 +2144,294 @@ function decideLabel(coin, gates, ruleConfidence = {}) {
   return label;
 }
 
+function marketPhaseBasePositionPct(phase) {
+  switch (phase) {
+    case "accumulation":
+      return 0.1;
+    case "caution":
+      return 0.03;
+    case "run":
+    case "neutral":
+    default:
+      return 0.07;
+  }
+}
+
+function buildPortfolioGuidance(marketPhase) {
+  const basePct = marketPhaseBasePositionPct(marketPhase);
+  const keepCap = roundUsd(PORTFOLIO_SIZE * basePct);
+  const watchCap = roundUsd(PORTFOLIO_SIZE * basePct * 0.5);
+
+  const notes = [];
+  if (marketPhase === "accumulation") {
+    notes.push("Market looks like an accumulation phase; buying in steps can make sense.");
+  } else if (marketPhase === "run") {
+    notes.push("Market looks like a run; consider smaller, quicker trades and avoid chasing.");
+  } else if (marketPhase === "caution") {
+    notes.push("Market looks overheated; consider smaller size and wait for pullbacks.");
+  }
+  if (PORTFOLIO_SIZE <= 10_000) {
+    notes.push("Liquidity checks are scaled for a smaller portfolio size.");
+  }
+
+  return {
+    portfolio_size_usd: PORTFOLIO_SIZE,
+    market_phase: marketPhase,
+    base_position_pct: basePct,
+    suggested_max_buy_keep_usd: keepCap,
+    suggested_max_buy_watch_usd: watchCap,
+    volume_low_threshold_usd: VOLUME_LOW,
+    volume_drop_threshold_usd: VOLUME_DROP,
+    notes,
+  };
+}
+
+function computeSuggestedMaxBuyUsd({ coin, marketPhase }) {
+  const label = coin?.hygiene_label || "UNKNOWN";
+  if (label === "DROP") return null;
+
+  const basePct = marketPhaseBasePositionPct(marketPhase);
+  const labelPct = label === "KEEP" ? 1 : 0.5; // WATCH-ONLY = smaller size
+
+  let riskMultiplier = 1;
+  if (coin?.low_liquidity) riskMultiplier *= 0.5;
+  if (coin?.high_slippage_risk) riskMultiplier *= 0.7;
+  if (coin?.chasing) riskMultiplier *= 0.5;
+  if (coin?.holder_concentration_level === "HIGH") riskMultiplier *= 0.5;
+  if (coin?.high_dilution_risk) riskMultiplier *= 0.5;
+  if (coin?.unlock_risk_flag) riskMultiplier *= 0.7;
+  if (coin?.github_archived) riskMultiplier *= 0.4;
+  if (coin?.defi_hack_count > 0) riskMultiplier *= 0.7;
+  if (coin?.defi_audit_status === "NO") riskMultiplier *= 0.85;
+  if (!coin?.gates?.news_flow) riskMultiplier *= 0.7;
+  if (!coin?.gates?.entry_timing) riskMultiplier *= 0.7;
+
+  riskMultiplier = clamp(riskMultiplier, 0.1, 1);
+
+  const portfolioCapRaw = PORTFOLIO_SIZE * basePct * labelPct * riskMultiplier;
+  const portfolioCap = roundUsd(portfolioCapRaw);
+
+  const volume24h = num(coin?.volume_24h);
+  const volumeCapRaw =
+    volume24h !== null && volume24h > 0 ? volume24h * 0.001 : null; // ~0.1% of daily volume
+  const volumeCap = volumeCapRaw !== null ? roundUsd(volumeCapRaw) : null;
+
+  const suggested =
+    volumeCap !== null ? Math.min(portfolioCap ?? portfolioCapRaw, volumeCap) : portfolioCap;
+
+  const maxBuy = roundUsd(suggested ?? portfolioCapRaw);
+  if (!Number.isFinite(maxBuy) || maxBuy <= 0) return null;
+
+  return {
+    suggested_max_buy_usd: maxBuy,
+    inputs: {
+      portfolio_size_usd: PORTFOLIO_SIZE,
+      base_pct: basePct,
+      label_pct: labelPct,
+      risk_multiplier: Math.round(riskMultiplier * 100) / 100,
+      portfolio_cap_usd: portfolioCap,
+      volume_cap_usd: volumeCap,
+    },
+  };
+}
+
+function explainGateFailure(key, coin) {
+  switch (key) {
+    case "trackable_data":
+      return "Some basic price/volume data is missing.";
+    case "liquidity": {
+      const vol = num(coin?.volume_24h);
+      const volText = vol !== null ? formatUsdCompact(vol) : "n/a";
+      return `Trading activity looks too low for your portfolio (24h volume ${volText}; target at least ${formatUsdCompact(VOLUME_LOW)}).`;
+    }
+    case "unlock_transparency":
+      return coin?.unlock_confidence === "UNKNOWN"
+        ? "Token unlock / vesting info is missing, so dilution risk is hard to judge."
+        : "Unlock / supply info looks incomplete.";
+    case "traction":
+      return coin?.missing_traction
+        ? "Traction data is missing or incomplete."
+        : "Traction signals look weak right now.";
+    case "concentration_risk":
+      return coin?.holder_concentration_level === "HIGH"
+        ? "Ownership looks very concentrated (a few holders control a lot)."
+        : "Holder data is missing, so ownership risk is unknown.";
+    case "entry_timing":
+      return "Entry timing looks overheated right now (could pull back).";
+    case "news_flow":
+      return "News is hot and negative right now (worth double-checking).";
+    default:
+      return String(key || "unknown").replace(/_/g, " ");
+  }
+}
+
+function buildCoinChecklist(coin) {
+  const gates = coin?.gates || {};
+  const items = [];
+
+  const add = (label, passed, note) => {
+    items.push({
+      label,
+      status: passed ? "pass" : "fail",
+      note: note || null,
+    });
+  };
+
+  add(
+    "Market data present",
+    Boolean(gates.trackable_data),
+    gates.trackable_data
+      ? null
+      : "Missing price/volume fields needed for scoring."
+  );
+
+  const vol = num(coin?.volume_24h);
+  add(
+    "Trading activity",
+    Boolean(gates.liquidity),
+    vol !== null
+      ? `24h volume ${formatUsdCompact(vol)} (target >= ${formatUsdCompact(VOLUME_LOW)})`
+      : "24h volume missing"
+  );
+
+  const unlockConf = coin?.unlock_confidence || "UNKNOWN";
+  add(
+    "Supply/unlocks clear enough",
+    Boolean(gates.unlock_transparency),
+    unlockConf !== "UNKNOWN" ? `Unlock data: ${unlockConf}` : "Unlock data: unknown"
+  );
+
+  add(
+    "Traction looks okay",
+    Boolean(gates.traction),
+    coin?.traction_status ? `Traction: ${coin.traction_status}` : "Traction status missing"
+  );
+
+  const top10 = num(coin?.top_10_holder_percent);
+  const top10Text = top10 !== null ? `${top10.toFixed(1)}%` : "n/a";
+  add(
+    "Ownership not overly concentrated",
+    Boolean(gates.concentration_risk),
+    `Top 10 holders: ${top10Text} (level: ${coin?.holder_concentration_level || "UNKNOWN"})`
+  );
+
+  add(
+    "Entry timing looks reasonable",
+    Boolean(gates.entry_timing),
+    coin?.entry_signal ? `Entry: ${coin.entry_signal.replace(/_/g, " ")}` : "Entry signal missing"
+  );
+
+  const activity = coin?.news_activity || "quiet";
+  const sentiment = coin?.news_sentiment || "unknown";
+  add(
+    "News tone not strongly negative",
+    Boolean(gates.news_flow),
+    `News: ${activity}${sentiment && sentiment !== "unknown" ? ` (${sentiment})` : ""}`
+  );
+
+  return items;
+}
+
+function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
+  const label = coin?.hygiene_label || "UNKNOWN";
+  const failures = Array.isArray(coin?.gates_failed) ? coin.gates_failed : [];
+
+  const positives = [];
+  if (coin?.has_clean_catalyst) positives.push("Recent catalyst/news found.");
+  if (coin?.traction_status === "OK") positives.push("Traction signals look okay.");
+  if (coin?.github_active) positives.push("Development looks active recently.");
+  if (coin?.outperforming_btc) {
+    const rs = num(coin?.relative_strength_7d);
+    positives.push(rs !== null ? `Beating BTC by ${rs.toFixed(1)}% this week.` : "Beating BTC this week.");
+  }
+  if (!coin?.low_liquidity && num(coin?.volume_24h) !== null) positives.push("Easy to trade (healthy daily volume).");
+  if (coin?.entry_signal === "strong_buy") positives.push("Entry timing looks very good right now.");
+  else if (coin?.entry_signal === "buy") positives.push("Entry timing looks good right now.");
+  if (coin?.news_sentiment === "bullish" && coin?.news_activity && coin.news_activity !== "quiet") {
+    positives.push("News tone looks positive recently.");
+  }
+
+  const risks = [];
+  if (coin?.unlock_risk_flag) risks.push("Unlock risk in the next 30 days can add selling pressure.");
+  if (coin?.high_dilution_risk) risks.push("Supply could expand a lot (dilution risk).");
+  if (coin?.holder_concentration_level === "HIGH") risks.push("A few holders control a large share of supply.");
+  if (coin?.low_liquidity) risks.push("Low trading activity can make exits harder.");
+  if (coin?.chasing) risks.push("Price has already run up; pullbacks can be sharp.");
+  if (!coin?.gates?.news_flow) risks.push("Recent news looks negative; double-check headlines before buying.");
+  if (coin?.github_archived) risks.push("Project code repo is archived (development may have stopped).");
+  if (coin?.defi_hack_count > 0) risks.push("Protocol has a history of hacks/exploits.");
+  if (coin?.defi_audit_status === "NO") risks.push("No audit found; smart contract risk is higher.");
+
+  const why = [];
+  if (label === "KEEP") {
+    why.push("Verdict is Buy because it passes most of the safety checks.");
+    for (const line of positives.slice(0, 2)) why.push(line);
+    if (why.length < 3) {
+      const missing = failures.map((f) => explainGateFailure(f, coin)).slice(0, 1);
+      if (missing.length > 0) why.push(`One thing to watch: ${missing[0]}`);
+    }
+  } else if (label === "WATCH-ONLY") {
+    why.push("Verdict is Watch because it has some positives, but not enough to buy confidently yet.");
+    if (positives.length > 0) why.push(positives[0]);
+    const mainIssue = failures.length > 0 ? explainGateFailure(failures[0], coin) : null;
+    if (mainIssue) why.push(`Main issue: ${mainIssue}`);
+  } else if (label === "DROP") {
+    why.push("Verdict is Avoid because it fails key checks or has missing data.");
+    const mainIssues = failures.slice(0, 2).map((f) => explainGateFailure(f, coin));
+    for (const issue of mainIssues) why.push(issue);
+    while (why.length < 3) {
+      why.push("Revisit only if data improves and risks clear up.");
+    }
+  } else {
+    why.push("Verdict is unknown because the scanner could not score it reliably.");
+    const mainIssue = failures.length > 0 ? explainGateFailure(failures[0], coin) : null;
+    if (mainIssue) why.push(mainIssue);
+    why.push("Try re-running the scan later.");
+  }
+
+  const checklist = buildCoinChecklist(coin);
+
+  const sizing = computeSuggestedMaxBuyUsd({ coin, marketPhase });
+
+  const exchangePct = num(coin?.top_10_exchange_percent);
+  const holderNote =
+    exchangePct !== null && exchangePct > 0
+      ? `Some top holders are labeled exchange wallets (${exchangePct.toFixed(1)}% of supply in the top 10). This is often lower \"whale\" risk because it can represent many users.`
+      : null;
+
+  const ownershipRule = ruleEffectiveness?.high_concentration_risk || null;
+  const dilutionRule = ruleEffectiveness?.high_dilution_risk || null;
+
+  return {
+    why: why.slice(0, 3),
+    risks: risks.slice(0, 2),
+    checklist,
+    headline: Array.isArray(coin?.news_headlines) && coin.news_headlines.length > 0 ? coin.news_headlines[0]?.title || null : null,
+    news: {
+      source: coin?.news_source || null,
+      fetched_at: coin?.news_fetched_at || null,
+    },
+    holder_note: holderNote,
+    sizing,
+    confidence: {
+      ownership_rule: ownershipRule
+        ? {
+            confidence: ownershipRule.confidence || null,
+            sample_min: ownershipRule.sample_min ?? null,
+            verdict: ownershipRule.verdict || null,
+          }
+        : null,
+      dilution_rule: dilutionRule
+        ? {
+            confidence: dilutionRule.confidence || null,
+            sample_min: dilutionRule.sample_min ?? null,
+            verdict: dilutionRule.verdict || null,
+          }
+        : null,
+    },
+  };
+}
+
 function rankCoins(coins) {
   const candidates = coins.filter((coin) => coin.hygiene_label !== "DROP");
   const relativeStrengthTier = (value) => {
@@ -2297,6 +2818,757 @@ function evaluateNewsMomentum(newsSentiment) {
     momentum_score: score,
     is_viral: isViral,
   };
+}
+
+function addUniqueWarning(list, warning) {
+  if (!warning) return;
+  if (!Array.isArray(list)) return;
+  if (list.includes(warning)) return;
+  list.push(warning);
+}
+
+function detectNegativeHeadline(headlines) {
+  const items = Array.isArray(headlines) ? headlines : [];
+  const keywords = [
+    "hack",
+    "exploit",
+    "lawsuit",
+    "investigation",
+    "ban",
+    "delist",
+    "outage",
+    "downtime",
+    "vulnerability",
+    "bug",
+    "breach",
+    "scam",
+    "fraud",
+    "liquidation",
+    "halt",
+  ];
+  for (const item of items) {
+    const title = String(item?.title || "").toLowerCase();
+    if (!title) continue;
+    for (const kw of keywords) {
+      if (title.includes(kw)) return kw;
+    }
+  }
+  return null;
+}
+
+async function enrichBlueChipOpportunitiesWithNews(blueChipData, maxCoins = 5) {
+  if (!blueChipData || !Array.isArray(blueChipData.opportunities)) return;
+  const top = blueChipData.opportunities.slice(0, Math.max(0, maxCoins));
+  if (top.length === 0) return;
+
+  await Promise.all(
+    top.map(async (opp) => {
+      const symbol = opp?.symbol;
+      const coinId = opp?.coin_gecko_id;
+      if (!symbol || !coinId) return;
+
+      let news = null;
+      try {
+        news = await fetchNewsSentiment(symbol, coinId);
+      } catch {
+        news = null;
+      }
+      if (!news) return;
+
+      const summary = evaluateNewsMomentum(news);
+      opp.news_source = news.source || null;
+      opp.news_signal = news.news_signal || "quiet";
+      opp.news_sentiment = news.sentiment || "neutral";
+      opp.news_activity = summary.activity_label;
+
+      const headline = Array.isArray(news.headlines)
+        ? news.headlines.find((h) => h && h.title)
+        : null;
+      opp.news_headline = headline?.title || null;
+
+      const warnings = Array.isArray(opp.risk_warnings) ? opp.risk_warnings : [];
+      if (!Array.isArray(opp.risk_warnings)) {
+        opp.risk_warnings = warnings;
+      }
+
+      if (opp.news_sentiment === "bearish" && summary.activity_label !== "quiet") {
+        addUniqueWarning(warnings, "news looks negative");
+        return;
+      }
+
+      const negKeyword = detectNegativeHeadline(news.headlines);
+      if (negKeyword) {
+        addUniqueWarning(warnings, `headline mentions ${negKeyword}`);
+      }
+    })
+  );
+}
+
+// ============================================================================
+// MACRO PULSE (ETF FLOWS + LEVERAGE)
+// ============================================================================
+
+function parseEtfFlowValue(raw) {
+  if (!raw) return null;
+  const cleaned = String(raw).trim();
+  if (!cleaned || cleaned === "-" || cleaned.toLowerCase() === "n/a") {
+    return null;
+  }
+  const numeric = cleaned.replace(/[$,]/g, "");
+  if (numeric.startsWith("(") && numeric.endsWith(")")) {
+    const inner = numeric.slice(1, -1);
+    const parsed = Number(inner);
+    return Number.isFinite(parsed) ? -parsed : null;
+  }
+  const parsed = Number(numeric);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseFarsideDate(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  const ms = Date.parse(trimmed);
+  return Number.isFinite(ms) ? new Date(ms).toISOString().slice(0, 10) : null;
+}
+
+function parseFarsideFlows(markdown) {
+  const lines = String(markdown || "").split(/\r?\n/);
+  const rows = lines.filter((line) => line.trim().startsWith("|"));
+  if (rows.length === 0) return null;
+
+  let tickers = null;
+  let totalIndex = null;
+  const parsedRows = [];
+  for (const row of rows) {
+    const cols = row
+      .split("|")
+      .slice(1, -1)
+      .map((col) => col.trim());
+    if (!tickers) {
+      if (cols.includes("Total")) {
+        totalIndex = cols.indexOf("Total");
+      }
+      if (cols.includes("IBIT") && cols.includes("FBTC")) {
+        tickers = cols;
+        if (!tickers.includes("Total")) {
+          if (Number.isFinite(totalIndex) && totalIndex >= 0) {
+            tickers[totalIndex] = "Total";
+          } else if (tickers.length > 0) {
+            tickers[tickers.length - 1] = "Total";
+          }
+        }
+        continue;
+      }
+      continue;
+    }
+
+    const dateIso = parseFarsideDate(cols[0]);
+    if (!dateIso) continue;
+
+    const flows = {};
+    let total = null;
+    for (let i = 1; i < cols.length; i += 1) {
+      const label = tickers[i] || "";
+      if (!label) continue;
+      const value = parseEtfFlowValue(cols[i]);
+      if (label === "Total") {
+        total = value;
+        continue;
+      }
+      flows[label] = value;
+    }
+    if (total === null) {
+      total = Object.values(flows)
+        .map((v) => (Number.isFinite(v) ? v : 0))
+        .reduce((sum, v) => sum + v, 0);
+    }
+
+    parsedRows.push({
+      date: dateIso,
+      total_musd: total,
+      flows_musd: flows,
+    });
+  }
+
+  if (parsedRows.length === 0) return null;
+
+  parsedRows.sort((a, b) => a.date.localeCompare(b.date));
+
+  return {
+    source: "Farside Investors (via Jina AI proxy)",
+    unit: "USD_millions",
+    rows: parsedRows,
+  };
+}
+
+async function fetchEtfFlows() {
+  const cached = readCache(ETF_FLOW_CACHE_PATH);
+  if (cached) return cached;
+  const raw = await fetchText(ETF_FLOW_PROXY_URL);
+  const parsed = parseFarsideFlows(raw);
+  if (!parsed) {
+    throw new Error("ETF flow parse failed.");
+  }
+  writeCache(ETF_FLOW_CACHE_PATH, parsed);
+  return parsed;
+}
+
+function summarizeEtfFlows(flowData) {
+  if (!flowData || !Array.isArray(flowData.rows) || flowData.rows.length === 0) {
+    return { error: "ETF flows unavailable." };
+  }
+  const rows = flowData.rows;
+  const lastRows = rows.slice(-5);
+  const latest = lastRows[lastRows.length - 1];
+  const todayTotal = latest?.total_musd ?? null;
+  const fiveDayTotal = lastRows
+    .map((r) => (Number.isFinite(r.total_musd) ? r.total_musd : 0))
+    .reduce((sum, v) => sum + v, 0);
+
+  const drivers = Object.entries(latest.flows_musd || {})
+    .filter(([, v]) => Number.isFinite(v) && v !== 0)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .slice(0, 3)
+    .map(([ticker, value]) => ({ ticker, flow_musd: value }));
+
+  let momentum = "mixed";
+  if (todayTotal > 0 && fiveDayTotal > 0) {
+    momentum = "turning positive";
+  } else if (todayTotal < 0 && fiveDayTotal < 0) {
+    momentum = "still net selling";
+  } else if (
+    Math.abs(todayTotal || 0) < 100 &&
+    Math.abs(fiveDayTotal || 0) < 200
+  ) {
+    momentum = "quiet";
+  }
+
+  let devilNote =
+    "Flows can flip quickly day to day; treat today as a hint, not a guarantee.";
+  if (todayTotal >= 300) {
+    devilNote =
+      "Big inflow today, but it is just one session. Watch for follow-through before getting too bullish.";
+  } else if (todayTotal <= -300) {
+    devilNote =
+      "Big outflow today, but one red day does not confirm a trend. It could be profit-taking or rotation.";
+  } else if (Math.abs(todayTotal || 0) < 75) {
+    devilNote = "Flows are small today; this is more noise than signal.";
+  }
+
+  return {
+    source: flowData.source,
+    unit: flowData.unit,
+    latest_date: latest.date,
+    today_total_musd: todayTotal,
+    five_day_total_musd: fiveDayTotal,
+    momentum_label: momentum,
+    devil_note: devilNote,
+    top_drivers: drivers,
+    last_rows: lastRows,
+  };
+}
+
+function classifyFundingRate(rate) {
+  if (!Number.isFinite(rate)) return "unknown";
+  const abs = Math.abs(rate);
+  if (abs < 0.00005) return "neutral";
+  if (rate > 0) return abs >= 0.0002 ? "longs stronger" : "mild long bias";
+  return abs >= 0.0002 ? "shorts stronger" : "mild short bias";
+}
+
+function classifyOpenInterest(changePct) {
+  if (!Number.isFinite(changePct)) return "unknown";
+  if (changePct >= 5) return "rising fast";
+  if (changePct >= 2) return "rising";
+  if (changePct <= -5) return "dropping fast";
+  if (changePct <= -2) return "dropping";
+  return "steady";
+}
+
+function loadGlobalMarketHistory() {
+  const history = readJsonFile(GLOBAL_MARKET_HISTORY_PATH, []);
+  return Array.isArray(history) ? history : [];
+}
+
+function recordGlobalMarketHistory(snapshot) {
+  if (!snapshot || !Number.isFinite(snapshot.btc_dominance_pct)) return;
+  const history = loadGlobalMarketHistory();
+  const ts = Date.parse(snapshot.fetched_at || new Date().toISOString());
+  if (!Number.isFinite(ts)) return;
+
+  const last = history[history.length - 1];
+  const lastTs = last ? Date.parse(last.timestamp) : null;
+  if (Number.isFinite(lastTs) && Math.abs(ts - lastTs) < 3 * 60 * 60 * 1000) {
+    return;
+  }
+
+  history.push({
+    timestamp: new Date(ts).toISOString(),
+    btc_dominance_pct: snapshot.btc_dominance_pct,
+  });
+
+  const maxEntries = 60;
+  if (history.length > maxEntries) {
+    history.splice(0, history.length - maxEntries);
+  }
+  writeJsonFile(GLOBAL_MARKET_HISTORY_PATH, history);
+}
+
+function findDominanceChange(history, latestPct) {
+  if (!Number.isFinite(latestPct) || !Array.isArray(history)) return null;
+  const targetMs = Date.now() - 24 * 60 * 60 * 1000;
+  let best = null;
+  let bestDiff = Infinity;
+
+  for (const entry of history) {
+    const ts = Date.parse(entry?.timestamp);
+    const pct = num(entry?.btc_dominance_pct);
+    if (!Number.isFinite(ts) || pct === null) continue;
+    const diff = Math.abs(ts - targetMs);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = entry;
+    }
+  }
+
+  if (!best || bestDiff > 8 * 60 * 60 * 1000) {
+    return null;
+  }
+  return latestPct - best.btc_dominance_pct;
+}
+
+function classifyShareTrend(changePct) {
+  if (!Number.isFinite(changePct)) return "steady";
+  if (changePct >= 0.2) return "rising";
+  if (changePct <= -0.2) return "falling";
+  return "steady";
+}
+
+async function fetchGlobalMarketSnapshot() {
+  const cached = readCache(GLOBAL_MARKET_CACHE_PATH);
+  if (cached) return cached;
+
+  const data = await fetchJson(`${BASE_URL}/global`, {}, 1);
+  const snapshot = {
+    fetched_at: new Date().toISOString(),
+    btc_dominance_pct: num(data?.data?.market_cap_percentage?.btc),
+    total_market_cap_usd: num(data?.data?.total_market_cap?.usd),
+  };
+  writeCache(GLOBAL_MARKET_CACHE_PATH, snapshot);
+  recordGlobalMarketHistory(snapshot);
+  return snapshot;
+}
+
+async function fetchAltMarketSnapshot(ids) {
+  const cached = readCache(ALT_MARKET_CACHE_PATH);
+  if (cached) return cached;
+
+  const idList = Array.isArray(ids) ? ids : [];
+  if (idList.length === 0) return { fetched_at: new Date().toISOString(), data: {} };
+
+  const url =
+    `${BASE_URL}/simple/price?ids=${idList.join(",")}` +
+    `&vs_currencies=${VS_CURRENCY}&include_24hr_change=true`;
+  const data = await fetchJson(url, {}, 1);
+  const snapshot = {
+    fetched_at: new Date().toISOString(),
+    data: data || {},
+  };
+  writeCache(ALT_MARKET_CACHE_PATH, snapshot);
+  return snapshot;
+}
+
+function classifyAltVsBtc(altChange, btcChange) {
+  if (!Number.isFinite(altChange) || !Number.isFinite(btcChange)) return "unknown";
+  const diff = altChange - btcChange;
+  if (diff >= 2) return "stronger than BTC";
+  if (diff <= -2) return "weaker than BTC";
+  return "about the same";
+}
+
+function summarizeAltStrength(snapshot, btcChange) {
+  const items = ALT_PULSE_COINS.map((coin) => {
+    const change = num(snapshot?.data?.[coin.id]?.usd_24h_change);
+    const label = classifyAltVsBtc(change, btcChange);
+    return {
+      id: coin.id,
+      symbol: coin.symbol,
+      change_24h: change,
+      vs_btc_label: label,
+    };
+  });
+
+  const groups = {
+    stronger: [],
+    weaker: [],
+    inline: [],
+    unknown: [],
+  };
+  for (const item of items) {
+    if (item.vs_btc_label === "stronger than BTC") groups.stronger.push(item.symbol);
+    else if (item.vs_btc_label === "weaker than BTC") groups.weaker.push(item.symbol);
+    else if (item.vs_btc_label === "about the same") groups.inline.push(item.symbol);
+    else groups.unknown.push(item.symbol);
+  }
+
+  return { items, groups };
+}
+
+function normalizeNewsTone(sentiment) {
+  if (sentiment === "bullish") return "positive";
+  if (sentiment === "bearish") return "negative";
+  return "neutral";
+}
+
+function summarizeAltNews(newsEntries) {
+  const now = Date.now();
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const items = [];
+
+  for (const entry of newsEntries) {
+    const symbol = entry?.symbol;
+    const sentiment = entry?.sentiment;
+    const headlines = Array.isArray(entry?.headlines) ? entry.headlines : [];
+    const headline = headlines.find((h) => h && h.title) || null;
+    if (!headline) continue;
+    const publishedMs = Date.parse(headline.published || "");
+    if (Number.isFinite(publishedMs) && publishedMs < sevenDaysAgo) continue;
+
+    const windowLabel =
+      Number.isFinite(publishedMs) && publishedMs >= now - 24 * 60 * 60 * 1000
+        ? "today"
+        : "this week";
+
+    items.push({
+      symbol,
+      tone: normalizeNewsTone(headline.sentiment || sentiment),
+      title: headline.title,
+      source: headline.source || "",
+      published_at: Number.isFinite(publishedMs)
+        ? new Date(publishedMs).toISOString()
+        : null,
+      window: windowLabel,
+    });
+  }
+
+  items.sort((a, b) => {
+    const at = a.published_at ? Date.parse(a.published_at) : 0;
+    const bt = b.published_at ? Date.parse(b.published_at) : 0;
+    return bt - at;
+  });
+
+  return items.slice(0, 3);
+}
+
+function summarizeBtcShare(globalSnapshot) {
+  if (!globalSnapshot || !Number.isFinite(globalSnapshot.btc_dominance_pct)) {
+    return { error: "BTC share unavailable." };
+  }
+
+  const history = loadGlobalMarketHistory();
+  const change24h = findDominanceChange(history, globalSnapshot.btc_dominance_pct);
+  return {
+    pct: globalSnapshot.btc_dominance_pct,
+    change_24h: change24h,
+    trend_label: classifyShareTrend(change24h),
+  };
+}
+
+function deriveMacroMood({ etfSummary, leverage, altStrength }) {
+  const today = num(etfSummary?.today_total_musd);
+  const fiveDay = num(etfSummary?.five_day_total_musd);
+  const flowBias =
+    today !== null && fiveDay !== null
+      ? today > 0 && fiveDay > 0
+        ? "positive"
+        : today < 0 && fiveDay < 0
+          ? "negative"
+          : "mixed"
+      : "mixed";
+
+  const funding = num(leverage?.funding_rate_pct);
+  const fundingTone =
+    funding === null
+      ? null
+      : funding > 0.05
+        ? "high"
+        : funding < -0.05
+          ? "negative"
+          : "calm";
+
+  const stronger = altStrength?.groups?.stronger?.length || 0;
+  const weaker = altStrength?.groups?.weaker?.length || 0;
+
+  let label = "Mixed";
+  if (flowBias === "positive" && stronger >= weaker + 1 && fundingTone !== "high") {
+    label = "Bullish tilt";
+  } else if (flowBias === "negative" && (weaker >= stronger + 1 || fundingTone === "negative")) {
+    label = "Cautious";
+  }
+
+  const reasons = [];
+  if (flowBias === "positive") reasons.push("ETF money flow is positive");
+  if (flowBias === "negative") reasons.push("ETF money flow is negative");
+  if (fundingTone === "high") reasons.push("funding cost looks crowded");
+  if (fundingTone === "negative") reasons.push("funding cost leans short");
+  if (stronger >= weaker + 2) reasons.push("more alts are beating BTC");
+  if (weaker >= stronger + 2) reasons.push("more alts are lagging BTC");
+
+  return {
+    label,
+    reason: reasons.slice(0, 2).join("; "),
+  };
+}
+
+async function fetchLeverageSnapshot() {
+  const cached = readCache(LEVERAGE_CACHE_PATH);
+  if (cached) return cached;
+
+  const fundingUrl =
+    "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT";
+  const oiUrl =
+    "https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1d&limit=2";
+
+  const [funding, oiHist] = await Promise.all([
+    fetchJson(fundingUrl, {}, 1),
+    fetchJson(oiUrl, {}, 1),
+  ]);
+
+  const fundingRate = Number(funding?.lastFundingRate);
+  const fundingLabel = classifyFundingRate(fundingRate);
+
+  let openInterestUsd = null;
+  let openInterestChangePct = null;
+  if (Array.isArray(oiHist) && oiHist.length > 0) {
+    const sorted = [...oiHist].sort(
+      (a, b) => (a.timestamp || 0) - (b.timestamp || 0)
+    );
+    const latest = sorted[sorted.length - 1];
+    const previous = sorted.length > 1 ? sorted[sorted.length - 2] : null;
+    openInterestUsd = Number(latest?.sumOpenInterestValue);
+    if (previous && Number(previous?.sumOpenInterestValue) > 0) {
+      openInterestChangePct =
+        ((openInterestUsd - Number(previous.sumOpenInterestValue)) /
+          Number(previous.sumOpenInterestValue)) *
+        100;
+    }
+  }
+
+  const leverage = {
+    source: "Binance BTCUSDT perp",
+    funding_rate: Number.isFinite(fundingRate) ? fundingRate : null,
+    funding_rate_pct: Number.isFinite(fundingRate) ? fundingRate * 100 : null,
+    funding_label: fundingLabel,
+    open_interest_usd: Number.isFinite(openInterestUsd) ? openInterestUsd : null,
+    open_interest_change_pct: Number.isFinite(openInterestChangePct)
+      ? openInterestChangePct
+      : null,
+    open_interest_label: classifyOpenInterest(openInterestChangePct),
+    as_of: new Date().toISOString(),
+  };
+
+  writeCache(LEVERAGE_CACHE_PATH, leverage);
+  return leverage;
+}
+
+async function buildMacroPulse({ btcData } = {}) {
+  let etfSummary = null;
+  let leverage = null;
+  let btcShare = null;
+  let altStrength = null;
+  let altNews = [];
+  let mood = null;
+  try {
+    const flows = await fetchEtfFlows();
+    etfSummary = summarizeEtfFlows(flows);
+  } catch (err) {
+    etfSummary = { error: err.message || "ETF flow fetch failed." };
+  }
+
+  try {
+    leverage = await fetchLeverageSnapshot();
+  } catch (err) {
+    leverage = { error: err.message || "Leverage fetch failed." };
+  }
+
+  const btcPrice = num(btcData?.current_price);
+  const btcChange24h = num(btcData?.price_change_percentage_24h_in_currency);
+
+  try {
+    const globalSnapshot = await fetchGlobalMarketSnapshot();
+    recordGlobalMarketHistory(globalSnapshot);
+    btcShare = summarizeBtcShare(globalSnapshot);
+  } catch (err) {
+    btcShare = { error: err.message || "BTC share fetch failed." };
+  }
+
+  try {
+    const altSnapshot = await fetchAltMarketSnapshot(ALT_PULSE_IDS);
+    altStrength = summarizeAltStrength(altSnapshot, btcChange24h);
+  } catch (err) {
+    altStrength = { error: err.message || "Alt strength fetch failed." };
+  }
+
+  try {
+    const newsEntries = await Promise.all(
+      ALT_PULSE_COINS.map(async (coin) => {
+        const sentiment = await fetchNewsSentiment(coin.symbol, coin.id);
+        return {
+          symbol: coin.symbol,
+          sentiment: sentiment?.sentiment || "neutral",
+          headlines: sentiment?.headlines || [],
+        };
+      })
+    );
+    altNews = summarizeAltNews(newsEntries);
+  } catch (err) {
+    altNews = [];
+  }
+
+  mood = deriveMacroMood({ etfSummary, leverage, altStrength });
+
+  return {
+    generated_at: new Date().toISOString(),
+    btc_price: btcPrice,
+    btc_change_24h: btcChange24h,
+    etf_flows: etfSummary,
+    leverage,
+    btc_share: btcShare,
+    alt_strength: altStrength,
+    alt_news: altNews,
+    mood,
+  };
+}
+
+function formatUsdMillions(value) {
+  if (!Number.isFinite(value)) return "n/a";
+  return formatUsdCompact(Math.abs(value) * 1_000_000);
+}
+
+function formatSignedUsdMillions(value) {
+  if (!Number.isFinite(value)) return "n/a";
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${formatUsdMillions(value)}`;
+}
+
+function renderMacroPulseMarkdown(macroPulse) {
+  if (!macroPulse) return "# Market Pulse\n\nNo data.\n";
+  const lines = [];
+  lines.push("# Market Pulse");
+  lines.push("");
+  lines.push(`Generated: ${macroPulse.generated_at}`);
+  lines.push("");
+
+  if (Number.isFinite(macroPulse.btc_price)) {
+    const price = formatUsd(macroPulse.btc_price);
+    const change = formatSignedPct(macroPulse.btc_change_24h, 2);
+    lines.push(`BTC price: ${price} (${change} 24h)`);
+    lines.push("");
+  }
+
+  const etf = macroPulse.etf_flows || {};
+  lines.push("## ETF money flow (spot BTC)");
+  if (etf.error) {
+    lines.push(`- ${etf.error}`);
+  } else {
+    lines.push(`- Today: ${formatSignedUsdMillions(etf.today_total_musd)}`);
+    lines.push(
+      `- Last 5 days: ${formatSignedUsdMillions(etf.five_day_total_musd)}`
+    );
+    lines.push(`- Momentum: ${etf.momentum_label || "mixed"}`);
+    if (Array.isArray(etf.top_drivers) && etf.top_drivers.length > 0) {
+      const drivers = etf.top_drivers
+        .map((d) => `${d.ticker} ${formatSignedUsdMillions(d.flow_musd)}`)
+        .join(", ");
+      lines.push(`- Biggest movers: ${drivers}`);
+    }
+    if (etf.devil_note) {
+      lines.push(`- Note: ${etf.devil_note}`);
+    }
+  }
+  lines.push("");
+
+  const lev = macroPulse.leverage || {};
+  lines.push("## Leverage check (BTC futures)");
+  if (lev.error) {
+    lines.push(`- ${lev.error}`);
+  } else {
+    const fundingPct = Number.isFinite(lev.funding_rate_pct)
+      ? `${lev.funding_rate_pct.toFixed(3)}%`
+      : "n/a";
+    const oiChange = Number.isFinite(lev.open_interest_change_pct)
+      ? `${lev.open_interest_change_pct.toFixed(2)}%`
+      : "n/a";
+    lines.push(
+      `- Funding cost: ${fundingPct} (${lev.funding_label || "unknown"})`
+    );
+    lines.push(
+      `- Open positions: ${formatUsd(lev.open_interest_usd)} (${lev.open_interest_label || "unknown"}, ${oiChange})`
+    );
+  }
+  lines.push("");
+
+  const share = macroPulse.btc_share || {};
+  lines.push("## BTC market share");
+  if (share.error) {
+    lines.push(`- ${share.error}`);
+  } else {
+    const sharePct = Number.isFinite(share.pct)
+      ? formatPct(share.pct, 1)
+      : "n/a";
+    const shareChange = Number.isFinite(share.change_24h)
+      ? formatSignedPct(share.change_24h, 1)
+      : "n/a";
+    const shareTrend = share.trend_label || "steady";
+    const changeNote =
+      shareChange !== "n/a" ? `${shareTrend}, ${shareChange} in 24h` : shareTrend;
+    lines.push(`- BTC share: ${sharePct} (${changeNote})`);
+  }
+  lines.push("");
+
+  const strength = macroPulse.alt_strength || {};
+  lines.push("## Alt strength vs BTC");
+  if (strength.error) {
+    lines.push(`- ${strength.error}`);
+  } else {
+    const stronger = strength.groups?.stronger || [];
+    const weaker = strength.groups?.weaker || [];
+    const inline = strength.groups?.inline || [];
+    const unknown = strength.groups?.unknown || [];
+    if (stronger.length) lines.push(`- Stronger than BTC: ${stronger.join(", ")}`);
+    if (weaker.length) lines.push(`- Weaker than BTC: ${weaker.join(", ")}`);
+    if (inline.length) lines.push(`- About the same: ${inline.join(", ")}`);
+    if (!stronger.length && !weaker.length && !inline.length && unknown.length) {
+      lines.push("- Alt strength: n/a");
+    }
+  }
+  lines.push("");
+
+  const altNews = Array.isArray(macroPulse.alt_news) ? macroPulse.alt_news : [];
+  lines.push("## Altcoin news");
+  if (altNews.length === 0) {
+    lines.push("- No major altcoin headlines today.");
+  } else {
+    for (const item of altNews.slice(0, 3)) {
+      const tone = item?.tone || "neutral";
+      const windowLabel = item?.window || "recent";
+      const title = item?.title || "";
+      const symbol = item?.symbol || "n/a";
+      lines.push(`- ${symbol} (${tone}, ${windowLabel}): ${title}`);
+    }
+  }
+  lines.push("");
+
+  const mood = macroPulse.mood || {};
+  lines.push("## Market mood");
+  if (mood.label) {
+    lines.push(`- ${mood.label}${mood.reason ? `: ${mood.reason}` : ""}`);
+  } else {
+    lines.push("- Mixed signals.");
+  }
+  lines.push("");
+
+  return lines.join("\n");
 }
 
 // ============================================================================
@@ -4899,7 +6171,13 @@ async function runBacktest(layer1Report) {
   };
 }
 
-function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) {
+function buildSummary(
+  layer1Report,
+  supervisorResult,
+  diffReport,
+  alertsReport,
+  macroPulse
+) {
   const lines = [];
   lines.push("# Crypto Watchlist Daily Scanner");
   lines.push("");
@@ -4912,6 +6190,11 @@ function buildSummary(layer1Report, supervisorResult, diffReport, alertsReport) 
 
   if (fs.existsSync(DASHBOARD_PATH)) {
     lines.push("Dashboard: [Dashboard.html](Dashboard.html)");
+    lines.push("");
+  }
+
+  if (fs.existsSync(MACRO_PULSE_MD_PATH)) {
+    lines.push("Macro pulse: [MacroPulse.md](MacroPulse.md)");
     lines.push("");
   }
 
@@ -5233,6 +6516,7 @@ async function main() {
   const preScanWarnings = [];
   const defiLatestInfo = ensureDefiFreshness(preScanWarnings);
   const ruleConfidence = loadRuleConfidenceFromBacktest();
+  const ruleEffectiveness = loadRuleEffectivenessFromBacktest();
 
   const addressBook = loadAddressBook(ADDRESS_BOOK_PATH);
   if (addressBook.count > 0) {
@@ -5347,6 +6631,7 @@ async function main() {
     fetchMarketChart("bitcoin"),
     fetchBlueChips(),
   ]);
+  const macroPulse = await buildMacroPulse({ btcData });
   
   const btc = {
     price_change_24h: num(btcData?.price_change_percentage_24h_in_currency),
@@ -5357,9 +6642,13 @@ async function main() {
   // Calculate BTC moving averages and detect market condition
   const btcMAs = calculateBTCMovingAverages(btcMarketChart);
   const marketCondition = detectMarketCondition(fearGreedData, btcData, btcMAs);
+  const portfolioGuidance = buildPortfolioGuidance(
+    marketCondition?.market_phase || "neutral"
+  );
   
   // Analyze blue chips for dip opportunities
   const blueChipOpportunities = analyzeBlueChipsForDips(blueChipsData, fearGreedData);
+  await enrichBlueChipOpportunitiesWithNews(blueChipOpportunities, 5);
   console.log(`Blue Chip Scanner: ${blueChipOpportunities.scanned_count} top cryptos scanned, ${blueChipOpportunities.opportunities.length} dip opportunities found`);
   
   // Will be populated after coins are processed
@@ -5658,6 +6947,7 @@ async function main() {
       news_signal: newsSentiment?.news_signal || "quiet",
       news_headlines: newsSentiment?.headlines?.slice(0, 3) || [],
       news_source: newsSentiment?.source || null,
+      news_fetched_at: newsSentiment?.fetched_at || null,
       news_activity: newsSummary.activity_label,
       news_momentum_score: newsSummary.momentum_score,
       news_is_viral: newsSummary.is_viral,
@@ -5679,6 +6969,11 @@ async function main() {
     coinReport.hygiene_label = label;
     coinReport.gates_failed = gatesFailed;
     coinReport.gates = gates;
+    coinReport.explain = buildCoinExplain({
+      coin: coinReport,
+      marketPhase: marketCondition?.market_phase || "neutral",
+      ruleEffectiveness,
+    });
 
     coins.push(coinReport);
     
@@ -5707,13 +7002,24 @@ async function main() {
   const bestEntries = generateBestEntries(coins, marketCondition);
   console.log(`Best Entries: ${bestEntries.best_entries.length} top opportunities found`);
 
+  const dataFreshness = {
+    scan_generated_at: new Date().toISOString(),
+    fear_greed_fetched_at: fearGreedData?.fetched_at || null,
+    macro_pulse_generated_at: macroPulse?.generated_at || null,
+    defi_generated_at: defiLatestInfo?.generated_at || null,
+    defi_age_hours: typeof defiLatestInfo?.age_hours === "number" ? defiLatestInfo.age_hours : null,
+    cache_ttl_minutes: CACHE_TTL_MINUTES,
+  };
+
   const layer1Report = {
-    generated_at: new Date().toISOString(),
+    generated_at: dataFreshness.scan_generated_at,
     data_sources: {
       ...dataSources,
       volume_note: "Total volume used as proxy for spot volume.",
     },
+    data_freshness: dataFreshness,
     rule_confidence: ruleConfidence,
+    portfolio_guidance: portfolioGuidance,
     btc_reference: {
       price_change_24h: btc.price_change_24h,
       price_change_7d: btc.price_change_7d,
@@ -5759,6 +7065,21 @@ async function main() {
 
   const layer1Path = path.join(REPORTS_DIR, "Layer1Report.json");
   fs.writeFileSync(layer1Path, JSON.stringify(layer1Report, null, 2), "utf8");
+
+  try {
+    fs.writeFileSync(
+      MACRO_PULSE_JSON_PATH,
+      JSON.stringify(macroPulse, null, 2),
+      "utf8"
+    );
+    fs.writeFileSync(
+      MACRO_PULSE_MD_PATH,
+      renderMacroPulseMarkdown(macroPulse),
+      "utf8"
+    );
+  } catch (err) {
+    console.warn(`Macro Pulse write failed: ${err.message}`);
+  }
 
   const previousLayer1Report = loadPreviousLayer1Report();
   const diffReport = buildDiffReport(previousLayer1Report, layer1Report);
@@ -5832,6 +7153,7 @@ async function main() {
       layer1Report,
       defiLatest,
       discoveryQueue,
+      macroPulse,
       thresholds: alertsThresholds,
     });
     fs.writeFileSync(
@@ -5867,13 +7189,20 @@ async function main() {
       alertsReport,
       backtestStats,
       funnelStats,
+      macroPulse,
     });
     fs.writeFileSync(DASHBOARD_PATH, dashboardHtml, "utf8");
   } catch (err) {
     console.warn(`Dashboard render failed: ${err.message}`);
   }
 
-  const summary = buildSummary(layer1Report, supervisorResult, diffReport, alertsReport);
+  const summary = buildSummary(
+    layer1Report,
+    supervisorResult,
+    diffReport,
+    alertsReport,
+    macroPulse
+  );
   const summaryPath = path.join(REPORTS_DIR, "Summary.md");
   fs.writeFileSync(summaryPath, summary, "utf8");
 

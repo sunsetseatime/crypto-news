@@ -2,6 +2,10 @@ const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
+const REPORTS_DIR = path.join(__dirname, "..", "reports");
+const CACHE_DIR = path.join(REPORTS_DIR, "cache");
+const ALT_STRENGTH_STATE_PATH = path.join(CACHE_DIR, "alt_strength_state.json");
+
 function normalizeId(value) {
   if (typeof value !== "string") return "";
   return value.trim().toLowerCase();
@@ -31,7 +35,165 @@ function writeJson(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
 }
 
-function computeAlerts({ layer1Report, defiLatest, discoveryQueue, thresholds }) {
+function getAltStrengthMode(groups) {
+  const stronger = Array.isArray(groups?.stronger) ? groups.stronger.length : 0;
+  const weaker = Array.isArray(groups?.weaker) ? groups.weaker.length : 0;
+  const inline = Array.isArray(groups?.inline) ? groups.inline.length : 0;
+
+  let mode = "mixed";
+  if (stronger >= 4 && stronger >= weaker + 2) {
+    mode = "alts leading";
+  } else if (weaker >= 4 && weaker >= stronger + 2) {
+    mode = "alts lagging";
+  }
+
+  return { mode, stronger, weaker, inline };
+}
+
+function loadAltStrengthState() {
+  return readJson(ALT_STRENGTH_STATE_PATH, null);
+}
+
+function saveAltStrengthState(state) {
+  if (!state) return;
+  writeJson(ALT_STRENGTH_STATE_PATH, state);
+}
+
+function formatUsdCompact(value) {
+  if (!Number.isFinite(value)) return "n/a";
+  const abs = Math.abs(value);
+  const fmt = (n) =>
+    n.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 0 });
+  if (abs >= 1e12) return `$${fmt(value / 1e12)}T`;
+  if (abs >= 1e9) return `$${fmt(value / 1e9)}B`;
+  if (abs >= 1e6) return `$${fmt(value / 1e6)}M`;
+  if (abs >= 1e3) return `$${fmt(value / 1e3)}K`;
+  return `$${fmt(value)}`;
+}
+
+function explainAlert(alert) {
+  const why = [];
+  const risks = [];
+
+  const source = String(alert?.source || "").toLowerCase();
+  const symbol = alert?.symbol ? String(alert.symbol) : "this coin";
+  const details = alert?.details || {};
+
+  const pushUnique = (list, value) => {
+    if (!value) return;
+    const text = String(value).trim();
+    if (!text) return;
+    if (list.includes(text)) return;
+    list.push(text);
+  };
+
+  if (source === "blue_chip_dip") {
+    pushUnique(why, "This is a large, liquid coin that pulled back from a recent high.");
+    if (Number.isFinite(details.dip_from_7d_high)) {
+      pushUnique(why, `Dip from recent high: ${details.dip_from_7d_high.toFixed(1)}%.`);
+    }
+    if (Number.isFinite(details.rsi)) {
+      pushUnique(why, `Momentum indicator (RSI) is ${details.rsi.toFixed(0)}.`);
+    }
+    if (details.entry_signal) {
+      pushUnique(why, `Entry signal: ${String(details.entry_signal).replace(/_/g, " ")}.`);
+    }
+
+    const warnings = Array.isArray(details.risk_warnings) ? details.risk_warnings : [];
+    for (const w of warnings) pushUnique(risks, w);
+    pushUnique(risks, "Even blue chips can keep dropping; consider waiting for stabilization.");
+  } else if (source.startsWith("market_")) {
+    pushUnique(why, "This alert comes from the overall market condition checks (not a single coin).");
+    if (details.signal_type) pushUnique(why, `Signal: ${details.signal_type}.`);
+    if (details.strength) pushUnique(why, `Strength: ${details.strength}.`);
+    if (details.recommendation) pushUnique(why, `Suggested action: ${details.recommendation}.`);
+    pushUnique(risks, "Market conditions can change quickly; avoid oversized bets.");
+    pushUnique(risks, "If you are unsure, wait for confirmation and use smaller size.");
+  } else if (source === "btc_share_shift") {
+    pushUnique(why, "BTC market share moved meaningfully in the last 24 hours (rotation signal).");
+    if (details.btc_share_pct) pushUnique(why, `BTC share now: ${details.btc_share_pct}.`);
+    if (Number.isFinite(details.change_24h)) {
+      pushUnique(why, `Change in 24h: ${details.change_24h.toFixed(2)}%.`);
+    }
+    pushUnique(risks, "Rotation can reverse fast; do not chase late moves.");
+    pushUnique(risks, "Use smaller size until the trend persists.");
+  } else if (source === "alt_strength_flip") {
+    pushUnique(why, "A quick check of major alts vs BTC flipped direction (rotation signal).");
+    if (details.mode) pushUnique(why, `Now: ${details.mode}.`);
+    if (details.previous_mode) pushUnique(why, `Previously: ${details.previous_mode}.`);
+    pushUnique(risks, "This is a small sample signal; it can flip back.");
+    pushUnique(risks, "Avoid forcing trades on mixed signals.");
+  } else if (source === "best_entry") {
+    pushUnique(why, "This coin ranks high for entry timing among your watchlist.");
+    if (details.entry_signal) pushUnique(why, `Entry signal: ${String(details.entry_signal).replace(/_/g, " ")}.`);
+    if (Number.isFinite(details.rsi)) pushUnique(why, `RSI: ${details.rsi.toFixed(0)}.`);
+    if (details.hygiene_label) pushUnique(why, `Verdict: ${details.hygiene_label}.`);
+    pushUnique(risks, "A good entry can still fail if the market turns down.");
+    pushUnique(risks, "Check recent news and use a stop or smaller size.");
+  } else if (source === "take_profit" || source === "take_profit_approaching") {
+    pushUnique(why, "This alert is based on your portfolio entry price and current price.");
+    if (Number.isFinite(details.profit_pct)) pushUnique(why, `Current profit: ${details.profit_pct.toFixed(1)}%.`);
+    if (details.signal) pushUnique(why, `Signal: ${String(details.signal).replace(/_/g, " ")}.`);
+    pushUnique(risks, "Profits can disappear quickly in crypto; consider taking some off.");
+    pushUnique(risks, "Be careful with limit orders in low-liquidity markets.");
+  } else if (source === "defi_hack" || source === "defi_no_audit" || source === "defi_tvl_collapse") {
+    pushUnique(why, "This alert flags DeFi-specific safety risks for a watchlist coin.");
+    if (details.defi_protocol) pushUnique(why, `Protocol match: ${details.defi_protocol}.`);
+    if (Number.isFinite(details.hack_count)) pushUnique(why, `Known hacks: ${details.hack_count}.`);
+    if (Number.isFinite(details.hack_total_usd)) pushUnique(why, `Total lost: ${formatUsdCompact(details.hack_total_usd)}.`);
+    if (details.audit_status) pushUnique(why, `Audit status: ${details.audit_status}.`);
+    pushUnique(risks, "Smart contract risk can be sudden and total (not like slow price moves).");
+    pushUnique(risks, "If you do anything, keep size small and prefer audited projects.");
+  } else if (source === "volume_news") {
+    pushUnique(why, "This coin has a jump in trading activity alongside an increase in news.");
+    if (details.volume_ratio_label) pushUnique(why, `Volume change: ${details.volume_ratio_label}.`);
+    if (details.sentiment) pushUnique(why, `News tone: ${details.sentiment}.`);
+    pushUnique(risks, "Volume spikes can fade quickly; avoid buying after a large move.");
+    pushUnique(risks, "Make sure the news is real and relevant, not recycled hype.");
+  } else if (source === "news") {
+    pushUnique(why, "This coin has unusually active news coverage recently.");
+    if (Number.isFinite(details.news_count_24h) && details.news_count_24h > 0) {
+      pushUnique(why, `News today: ${details.news_count_24h}.`);
+    } else if (Number.isFinite(details.news_count_7d)) {
+      pushUnique(why, `News this week: ${details.news_count_7d}.`);
+    }
+    if (details.sentiment) pushUnique(why, `News tone: ${details.sentiment}.`);
+    pushUnique(risks, "News-driven moves can reverse once attention drops.");
+    pushUnique(risks, "Double-check the top headline before trading.");
+  } else if (source === "watchlist") {
+    pushUnique(why, `${symbol} is marked as KEEP and has a clean catalyst in the last 14 days.`);
+    if (details.catalyst) pushUnique(why, `Catalyst: ${details.catalyst}.`);
+    if (details.hygiene_label) pushUnique(why, `Verdict: ${details.hygiene_label}.`);
+    pushUnique(risks, "Catalysts can fail to deliver; avoid betting too much on one event.");
+    pushUnique(risks, "Watch for unlocks, dilution, and sudden bad news.");
+  } else if (source === "discovery") {
+    pushUnique(why, "This coin was flagged by the discovery scanner as a high-score candidate.");
+    if (details.status) pushUnique(why, `Discovery status: ${details.status}.`);
+    if (Number.isFinite(details.market_cap)) pushUnique(why, `Market cap: ${formatUsdCompact(details.market_cap)}.`);
+    if (Number.isFinite(details.volume_24h)) pushUnique(why, `24h volume: ${formatUsdCompact(details.volume_24h)}.`);
+    pushUnique(risks, "New finds can be very volatile; treat as watch-first.");
+    pushUnique(risks, "Liquidity can drop fast; use small size and avoid market orders.");
+  } else if (source === "defi") {
+    pushUnique(why, "This protocol scored well in the DeFi scan.");
+    if (details.bucket) pushUnique(why, `Bucket: ${details.bucket}.`);
+    if (Number.isFinite(details.score)) pushUnique(why, `Score: ${details.score}.`);
+    if (Number.isFinite(details.tvl)) pushUnique(why, `TVL: ${formatUsdCompact(details.tvl)}.`);
+    pushUnique(risks, "A high score does not remove smart contract risk.");
+    pushUnique(risks, "Always check audits, TVL trend, and recent exploits.");
+  } else {
+    pushUnique(why, "This alert is triggered by the scanner rules.");
+    if (alert?.title) pushUnique(why, String(alert.title));
+    pushUnique(risks, "If the reason is unclear, open the full report links for details.");
+    pushUnique(risks, "Use smaller size on unclear signals.");
+  }
+
+  return {
+    why: why.slice(0, 3),
+    risks: risks.slice(0, 2),
+  };
+}
+
+function computeAlerts({ layer1Report, defiLatest, discoveryQueue, macroPulse, thresholds }) {
   const generatedAt = new Date().toISOString();
   const alerts = [];
 
@@ -106,18 +268,92 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, thresholds })
     }
   }
   
+  // === MACRO PULSE ALERTS (BTC share shifts + alt strength flips) ===
+  const btcShareChange = num(macroPulse?.btc_share?.change_24h);
+  if (btcShareChange !== null) {
+    const absChange = Math.abs(btcShareChange);
+    if (absChange >= 0.5) {
+      const changeText = absChange.toFixed(1);
+      const sharePct = num(macroPulse?.btc_share?.pct);
+      const shareText = sharePct !== null ? `${sharePct.toFixed(1)}%` : "n/a";
+      const title =
+        btcShareChange > 0
+          ? `BTC share up ${changeText}% in 24h - BTC taking share from alts`
+          : `BTC share down ${changeText}% in 24h - alts gaining share`;
+      const score = 60 + Math.min(20, Math.round(absChange * 10));
+      alerts.push({
+        key: `macro:btc_share:${btcShareChange > 0 ? "up" : "down"}`,
+        source: "btc_share_shift",
+        watchlist_source: null,
+        symbol: "MARKET",
+        title,
+        score,
+        url: null,
+        details: {
+          btc_share_pct: shareText,
+          change_24h: btcShareChange,
+        },
+      });
+    }
+  }
+
+  if (macroPulse?.alt_strength?.groups) {
+    const { mode, stronger, weaker, inline } = getAltStrengthMode(
+      macroPulse.alt_strength.groups
+    );
+    const prev = loadAltStrengthState();
+    const prevMode = prev?.mode;
+    const prevTs = prev?.timestamp ? Date.parse(prev.timestamp) : null;
+    const ageHours =
+      Number.isFinite(prevTs) ? (Date.now() - prevTs) / (1000 * 60 * 60) : null;
+
+    if (mode !== "mixed" && prevMode && mode !== prevMode && (ageHours === null || ageHours >= 6)) {
+      const title =
+        mode === "alts leading"
+          ? "Alt strength flipped: more alts beating BTC"
+          : "Alt strength flipped: more alts lagging BTC";
+      alerts.push({
+        key: `macro:alt_strength:${mode.replace(/\s+/g, "_")}`,
+        source: "alt_strength_flip",
+        watchlist_source: null,
+        symbol: "MARKET",
+        title,
+        score: 55,
+        url: null,
+        details: {
+          mode,
+          stronger,
+          weaker,
+          inline,
+          previous_mode: prevMode || null,
+        },
+      });
+    }
+
+    saveAltStrengthState({
+      mode,
+      stronger,
+      weaker,
+      inline,
+      timestamp: new Date().toISOString(),
+    });
+  }
+  
   // === BLUE CHIP DIP ALERTS (safer plays) ===
   const blueChipOpps = layer1Report?.blue_chip_opportunities?.opportunities || [];
   for (const opp of blueChipOpps.slice(0, 5)) { // Top 5 opportunities
     const emoji = opp.entry_signal === "strong_buy" ? "🟢💎" : "🔵";
     const priority = opp.signal_strength + (opp.market_in_fear ? 10 : 0);
+    const riskWarnings = Array.isArray(opp.risk_warnings) ? opp.risk_warnings : [];
+    const cautionTag = riskWarnings.length > 0 ? " (caution)" : "";
+    const score = Math.max(0, priority - (riskWarnings.length > 0 ? 10 : 0));
     alerts.push({
       key: `bluechip:dip:${opp.coin_gecko_id}`,
       source: "blue_chip_dip",
       watchlist_source: null,
       symbol: opp.symbol,
-      title: `${emoji} ${opp.name} dip: ${opp.signals.slice(0, 2).join(", ")}`,
-      score: priority,
+      title: `${emoji} ${opp.name} dip: ${opp.signals.slice(0, 2).join(", ")}${cautionTag}`,
+      score,
       url: `https://www.coingecko.com/en/coins/${encodeURIComponent(opp.coin_gecko_id)}`,
       details: {
         price: opp.price,
@@ -128,6 +364,10 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, thresholds })
         entry_signal: opp.entry_signal,
         signal_strength: opp.signal_strength,
         all_signals: opp.signals,
+        risk_warnings: riskWarnings,
+        news_signal: opp.news_signal || null,
+        news_sentiment: opp.news_sentiment || null,
+        news_headline: opp.news_headline || null,
       },
     });
   }
@@ -461,6 +701,10 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, thresholds })
     if (scoreA !== scoreB) return scoreB - scoreA;
     return String(a.key).localeCompare(String(b.key));
   });
+
+  for (const alert of alerts) {
+    alert.explain = explainAlert(alert);
+  }
 
   return {
     generated_at: generatedAt,

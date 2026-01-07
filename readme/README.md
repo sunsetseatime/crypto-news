@@ -169,6 +169,7 @@ Notes:
 |------|-------------|
 | `reports/Layer1Report.json` | Raw deterministic data for all coins |
 | `reports/Summary.md` | Human-readable summary table |
+| `reports/MacroPulse.md` | Daily macro pulse (ETF money flow, leverage, BTC share, alt news) |
 | `reports/Dashboard.html` | Local dashboard UI (opens in your browser) |
 | `reports/Alerts.md` | Alerts for this run (high-score / actionable items) |
 | `reports/Alerts.json` | Alerts (structured JSON) |
@@ -178,6 +179,7 @@ Notes:
 | `reports/backtest/predictions.json` | Prediction history used for backtesting |
 | `reports/defi/Latest.md` | Latest DeFi protocol scan report |
 | `reports/defi/snapshots/*.json` | Historical DeFi scan snapshots |
+| `reports/MacroPulse.json` | Macro pulse data (flows, leverage, share, alt strength/news) |
 
 ## Configuration
 
