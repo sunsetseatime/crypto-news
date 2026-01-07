@@ -166,6 +166,11 @@ const CRYPTOPANIC_API_KEY = process.env.CRYPTOPANIC_API_KEY || "";
 const TAKE_PROFIT_TARGET_1 = Number(process.env.TAKE_PROFIT_TARGET_1 || 15); // First target: 15%
 const TAKE_PROFIT_TARGET_2 = Number(process.env.TAKE_PROFIT_TARGET_2 || 30); // Second target: 30%
 const TAKE_PROFIT_TARGET_3 = Number(process.env.TAKE_PROFIT_TARGET_3 || 50); // Moon target: 50%
+const TAKE_PROFIT_APPROACH_BUFFER = clamp(
+  envNumber("TAKE_PROFIT_APPROACH_BUFFER", 2),
+  0,
+  10
+);
 
 // Market condition alert thresholds
 const FEAR_GREED_EXTREME_FEAR = 25;  // Below this = accumulation zone
@@ -1543,7 +1548,12 @@ function generateBestEntries(coins, marketCondition) {
       reasons.push("catalyst");
     }
     if (coin.outperforming_btc) {
-      reasons.push("beating BTC");
+      const rsValue = num(coin.relative_strength_7d);
+      if (rsValue !== null) {
+        reasons.push(`Beating BTC by ${rsValue.toFixed(1)}%`);
+      } else {
+        reasons.push("beating BTC");
+      }
     }
     if (coin.news_activity && coin.news_activity !== "quiet") {
       const tone =
@@ -1575,12 +1585,25 @@ function generateBestEntries(coins, marketCondition) {
     if (highRisk) {
       adjustedScore -= 20; // Penalty for risks
     }
+    if (coin.volume_trend === "spike") {
+      adjustedScore += 5;
+    }
     if (coin.low_liquidity) {
       adjustedScore -= 10; // Liquidity penalty
     }
     const newsBoost = num(coin.news_momentum_score) || 0;
     if (newsBoost !== 0) {
       adjustedScore += newsBoost;
+    }
+    const rsValue = num(coin.relative_strength_7d);
+    if (rsValue !== null) {
+      if (rsValue >= 20) {
+        adjustedScore += 12;
+      } else if (rsValue >= 10) {
+        adjustedScore += 6;
+      } else if (rsValue <= -10) {
+        adjustedScore -= 6;
+      }
     }
     
     entries.push({
@@ -1890,6 +1913,13 @@ function decideLabel(coin, gates, ruleConfidence = {}) {
 
 function rankCoins(coins) {
   const candidates = coins.filter((coin) => coin.hygiene_label !== "DROP");
+  const relativeStrengthTier = (value) => {
+    if (!Number.isFinite(value)) return 0;
+    if (value >= 20) return 2;
+    if (value >= 10) return 1;
+    if (value <= -10) return -1;
+    return 0;
+  };
   const ranked = [...candidates].sort((a, b) => {
     // 1. Clean catalyst is most important
     const catalystA = a.has_clean_catalyst ? 1 : 0;
@@ -1909,19 +1939,25 @@ function rankCoins(coins) {
     if (chaseA !== chaseB) {
       return chaseA - chaseB;
     }
-    // 4. Lower dilution risk
+    // 4. Stronger relative strength vs BTC
+    const rsTierA = relativeStrengthTier(a.relative_strength_7d);
+    const rsTierB = relativeStrengthTier(b.relative_strength_7d);
+    if (rsTierA !== rsTierB) {
+      return rsTierB - rsTierA;
+    }
+    // 5. Lower dilution risk
     const dilutionA = a.high_dilution_risk ? 1 : 0;
     const dilutionB = b.high_dilution_risk ? 1 : 0;
     if (dilutionA !== dilutionB) {
       return dilutionA - dilutionB;
     }
-    // 5. Higher relative strength (actual value)
+    // 6. Higher relative strength (actual value)
     const rs7dA = a.relative_strength_7d || -Infinity;
     const rs7dB = b.relative_strength_7d || -Infinity;
     if (rs7dA !== rs7dB) {
       return rs7dB - rs7dA;
     }
-    // 6. Volume as final tiebreaker
+    // 7. Volume as final tiebreaker
     return (b.volume_24h || 0) - (a.volume_24h || 0);
   });
 
@@ -2372,7 +2408,11 @@ function calculateTakeProfitStatus(symbol, currentPrice, portfolio) {
   
   const highestHit = targets.filter(t => t.hit).pop();
   const nextTarget = targets.find(t => !t.hit);
-  
+  const approachingTarget =
+    nextTarget &&
+    profitPct >= nextTarget.pct - TAKE_PROFIT_APPROACH_BUFFER &&
+    profitPct < nextTarget.pct;
+
   let signal = "hold";
   if (profitPct < -20) signal = "deep_loss";
   else if (profitPct < -10) signal = "loss";
@@ -2380,6 +2420,7 @@ function calculateTakeProfitStatus(symbol, currentPrice, portfolio) {
   else if (profitPct >= TAKE_PROFIT_TARGET_3) signal = "moon";
   else if (profitPct >= TAKE_PROFIT_TARGET_2) signal = "take_profit_2";
   else if (profitPct >= TAKE_PROFIT_TARGET_1) signal = "take_profit_1";
+  else if (approachingTarget) signal = "approaching_target";
   else if (profitPct > 5) signal = "green";
   
   return {
@@ -2393,6 +2434,11 @@ function calculateTakeProfitStatus(symbol, currentPrice, portfolio) {
     targets,
     highest_target_hit: highestHit?.level || 0,
     next_target: nextTarget?.pct || null,
+    approaching_target: approachingTarget,
+    approaching_target_level: nextTarget?.level || null,
+    approaching_target_pct: nextTarget?.pct || null,
+    approaching_delta_pct:
+      approachingTarget && nextTarget ? nextTarget.pct - profitPct : null,
     signal,
   };
 }
@@ -5351,12 +5397,22 @@ async function main() {
     const volume24h = num(market?.total_volume);
     const volumeBaseline = volumeStats.avg7d ?? volumeStats.avg30d;
     const volumeBaselineWindow = volumeStats.avg7d ? "7d" : volumeStats.avg30d ? "30d" : null;
-    const volumeTrend =
-      volume24h !== null && volumeBaseline !== null
-        ? volume24h >= volumeBaseline
-          ? "above_baseline"
-          : "below_baseline"
+    const volumeRatio =
+      volume24h !== null && volumeBaseline !== null && volumeBaseline > 0
+        ? volume24h / volumeBaseline
         : null;
+    let volumeTrend = null;
+    if (volumeRatio !== null) {
+      if (volumeRatio >= 2) {
+        volumeTrend = "spike";
+      } else if (volumeRatio >= 1.1) {
+        volumeTrend = "above_baseline";
+      } else if (volumeRatio <= 0.7) {
+        volumeTrend = "below_baseline";
+      } else {
+        volumeTrend = "normal";
+      }
+    }
 
     const dilution = computeDilution(market);
     const priceChange24h = num(market?.price_change_percentage_24h_in_currency);
@@ -5515,6 +5571,7 @@ async function main() {
       volume_avg_30d: volumeStats.avg30d,
       volume_baseline: volumeBaseline,
       volume_baseline_window: volumeBaselineWindow,
+      volume_ratio: volumeRatio,
       volume_trend: volumeTrend,
       volume_note: "Total volume used; spot/perps split unknown.",
       clean_catalyst: catalystInfo.clean_catalyst,

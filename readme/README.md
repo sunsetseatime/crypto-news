@@ -273,6 +273,13 @@ ALERT_ACTIONABLE=1
 # - Windows popup when NEW alerts appear (deduped via reports/alert_state.json). Set 1 to enable.
 ALERT_POPUP=0
 
+# Take-profit alerts (optional)
+# - Targets in % and an "approaching target" buffer (percentage points).
+TAKE_PROFIT_TARGET_1=15
+TAKE_PROFIT_TARGET_2=30
+TAKE_PROFIT_TARGET_3=50
+TAKE_PROFIT_APPROACH_BUFFER=2
+
 # Discovery auto-stage (optional)
 # - Adds top discovery picks into the staging scan automatically.
 AUTO_STAGE_DISCOVERY=1

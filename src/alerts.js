@@ -228,19 +228,18 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, thresholds })
   for (const coin of coins) {
     const tp = coin?.take_profit;
     if (!tp || !tp.signal) continue;
-    
+
     const idKey = normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || "unknown";
     const profitPct = tp.profit_pct;
-    
+
     if (tp.signal === "moon" || tp.signal === "take_profit_2" || tp.signal === "take_profit_1") {
       const targetHit = tp.highest_target_hit;
-      const emoji = tp.signal === "moon" ? "🌙" : tp.signal === "take_profit_2" ? "💰" : "📈";
       alerts.push({
         key: `takeprofit:${idKey}:${targetHit}`,
         source: "take_profit",
         watchlist_source: coin?.watchlist_source || "main",
         symbol: coin?.symbol || "n/a",
-        title: `${emoji} Target ${targetHit} hit! +${profitPct.toFixed(1)}%`,
+        title: `Target ${targetHit} hit! +${profitPct.toFixed(1)}%`,
         score: profitPct,
         url: coin?.coin_gecko_id
           ? `https://www.coingecko.com/en/coins/${encodeURIComponent(coin.coin_gecko_id)}`
@@ -254,9 +253,82 @@ function computeAlerts({ layer1Report, defiLatest, discoveryQueue, thresholds })
           signal: tp.signal,
         },
       });
+    } else if (tp.signal === "approaching_target") {
+      const targetLevel = tp.approaching_target_level || tp.highest_target_hit + 1 || 1;
+      const targetPct = tp.approaching_target_pct || tp.next_target || null;
+      const delta = tp.approaching_delta_pct;
+      const deltaText =
+        typeof delta === "number" && Number.isFinite(delta)
+          ? `${delta.toFixed(1)}% away`
+          : "close";
+      alerts.push({
+        key: `takeprofit:approaching:${idKey}:${targetLevel}`,
+        source: "take_profit_approaching",
+        watchlist_source: coin?.watchlist_source || "main",
+        symbol: coin?.symbol || "n/a",
+        title: `Close to target ${targetLevel} (${deltaText})`,
+        score: profitPct,
+        url: coin?.coin_gecko_id
+          ? `https://www.coingecko.com/en/coins/${encodeURIComponent(coin.coin_gecko_id)}`
+          : null,
+        details: {
+          entry_price: tp.entry_price,
+          current_price: tp.current_price,
+          profit_pct: profitPct,
+          profit_usd: tp.profit_usd,
+          next_target: targetPct,
+          approaching_delta_pct: delta,
+          days_held: tp.days_held,
+          signal: tp.signal,
+        },
+      });
     }
   }
-  
+
+  // === VOLUME + NEWS ALERTS (potential breakout) ===
+  for (const coin of coins) {
+    if (coin?.volume_trend !== "spike") continue;
+    const newsActivity = coin?.news_activity || "quiet";
+    if (newsActivity === "quiet") continue;
+
+    const idKey = normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || "unknown";
+    const sentiment = coin?.news_sentiment || "neutral";
+    const tone =
+      sentiment === "bullish"
+        ? "positive"
+        : sentiment === "bearish"
+          ? "negative"
+          : "mixed";
+    const volumeRatio = num(coin?.volume_ratio);
+    const ratioLabel =
+      typeof volumeRatio === "number" && Number.isFinite(volumeRatio)
+        ? `${volumeRatio.toFixed(1)}x`
+        : "spike";
+    const scoreBase = typeof volumeRatio === "number" && Number.isFinite(volumeRatio)
+      ? Math.min(90, Math.round(volumeRatio * 20))
+      : 40;
+
+    alerts.push({
+      key: `volume_news:${idKey}`,
+      source: "volume_news",
+      watchlist_source: coin?.watchlist_source || "main",
+      symbol: coin?.symbol || "n/a",
+      title: `Volume jump with news (${tone})`,
+      score: scoreBase + (newsActivity === "very active" ? 10 : 0),
+      url: coin?.coin_gecko_id
+        ? `https://www.coingecko.com/en/coins/${encodeURIComponent(coin.coin_gecko_id)}`
+        : null,
+      details: {
+        volume_trend: coin?.volume_trend,
+        volume_ratio: volumeRatio,
+        volume_ratio_label: ratioLabel,
+        news_activity: newsActivity,
+        news_source: coin?.news_source || null,
+        sentiment,
+      },
+    });
+  }
+
   // === NEWS ALERTS (viral/very active news) ===
   for (const coin of coins) {
     const news24h = coin?.news_count_24h || 0;
@@ -559,5 +631,6 @@ module.exports = {
   writeJson,
   maybeShowPopup,
 };
+
 
 

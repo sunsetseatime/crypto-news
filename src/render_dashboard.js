@@ -79,6 +79,7 @@ function notesForCoin(coin) {
   const notes = [];
   if (coin?.chasing) notes.push("price chasing");
   if (coin?.thin_fragile) notes.push("volume fading");
+  if (coin?.volume_trend === "spike") notes.push("volume jumped");
   if (coin?.high_dilution_risk) notes.push("high dilution");
   if (coin?.low_liquidity) notes.push("low liquidity");
   // Updated unlock notes to reflect new estimation system
@@ -154,13 +155,16 @@ function notesForCoin(coin) {
   // Take-profit notes
   const tp = coin?.take_profit;
   if (tp?.signal === "moon") {
-    notes.push(`🌙 +${tp.profit_pct}%`);
+    notes.push(`dYOT +${tp.profit_pct}%`);
   } else if (tp?.signal === "take_profit_2") {
-    notes.push(`💰 +${tp.profit_pct}%`);
+    notes.push(`dY'u +${tp.profit_pct}%`);
   } else if (tp?.signal === "take_profit_1") {
-    notes.push(`📈 +${tp.profit_pct}%`);
+    notes.push(`dY"^ +${tp.profit_pct}%`);
+  } else if (tp?.signal === "approaching_target") {
+    const level = tp?.approaching_target_level || tp?.highest_target_hit + 1 || 1;
+    notes.push(`close to target ${level}`);
   } else if (tp?.signal === "deep_loss") {
-    notes.push(`🔻 ${tp.profit_pct}%`);
+    notes.push(`dY"� ${tp.profit_pct}%`);
   }
   return notes;
 }
@@ -533,7 +537,7 @@ function buildBestEntriesHtml(bestEntriesData) {
         ${entriesHtml}
       </div>
       <p class="small muted" style="margin-top: 12px;">
-        💡 Entry score combines: RSI, dip from 30d high, dev activity, news activity, hygiene checks
+        💡 Entry score combines: RSI, dip from 30d high, dev activity, volume trend, news activity, hygiene checks
       </p>
     </div>
   `;
@@ -1767,5 +1771,6 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
 }
 
 module.exports = { renderDashboard };
+
 
 
