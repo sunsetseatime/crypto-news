@@ -279,12 +279,15 @@ AUTO_STAGE_DISCOVERY=1
 # - Stage up to N coins per run
 AUTO_STAGE_LIMIT=2
 # - Only stage when score/flow is strong (defaults shown)
-AUTO_STAGE_DISCOVERY_SCORE_MIN=90
+AUTO_STAGE_DISCOVERY_SCORE_MIN=85
 AUTO_STAGE_VOLUME_24H_MIN=10000000
 AUTO_STAGE_VOL_TO_MCAP_MIN=0.05
 AUTO_STAGE_PRICE_CHANGE_7D_MAX=60
 # - Cap total auto-staged coins (prevents watchlist bloat)
 AUTO_STAGE_MAX_TOTAL=25
+
+# DeFi scan freshness (always auto-runs when Latest.json is missing or stale)
+DEFI_STALE_HOURS=24
 
 # Advanced CoinGecko config (usually auto-detected)
 COINGECKO_API_KEY_HEADER=x_cg_demo_api_key
