@@ -86,6 +86,11 @@ const DEFI_LATEST_PATH = path.join(REPORTS_DIR, "defi", "Latest.json");
 const BACKTEST_PREDICTIONS_PATH = path.join(BACKTEST_DIR, "predictions.json");
 const BACKTEST_REPORT_MD_PATH = path.join(BACKTEST_DIR, "BacktestReport.md");
 const BACKTEST_REPORT_JSON_PATH = path.join(BACKTEST_DIR, "BacktestReport.json");
+const PAPER_DIR = path.join(REPORTS_DIR, "paper");
+const PAPER_SIGNAL_EVENTS_PATH = path.join(PAPER_DIR, "SignalEvents.json");
+const PAPER_TRADES_PATH = path.join(PAPER_DIR, "PaperTrades.json");
+const PAPER_REPORT_MD_PATH = path.join(PAPER_DIR, "PaperReport.md");
+const PAPER_REPORT_JSON_PATH = path.join(PAPER_DIR, "PaperReport.json");
 const MACRO_PULSE_JSON_PATH = path.join(REPORTS_DIR, "MacroPulse.json");
 const MACRO_PULSE_MD_PATH = path.join(REPORTS_DIR, "MacroPulse.md");
 const DASHBOARD_PATH = path.join(REPORTS_DIR, "Dashboard.html");
@@ -173,6 +178,35 @@ const TAKE_PROFIT_APPROACH_BUFFER = clamp(
   0,
   10
 );
+
+// Paper trading configuration
+const PAPER_TRADE_POSITION_USD = envNumber("PAPER_TRADE_POSITION_USD", 5000);
+const PAPER_TRADE_FEE_PCT = clamp(envNumber("PAPER_TRADE_FEE_PCT", 0.1), 0, 2);
+const PAPER_TRADE_TIME_STOP_DAYS = clamp(envNumber("PAPER_TRADE_TIME_STOP_DAYS", 45), 1, 365);
+const PAPER_TRADE_TRAILING_STOP_PCT = clamp(
+  envNumber("PAPER_TRADE_TRAILING_STOP_PCT", 8),
+  1,
+  30
+);
+const PAPER_TRADE_SCORE_EXIT_MIN = clamp(
+  envNumber("PAPER_TRADE_SCORE_EXIT_MIN", 40),
+  0,
+  100
+);
+const PAPER_TRADE_DISCOVERY_STRONG_BUY = clamp(
+  envNumber("PAPER_TRADE_DISCOVERY_STRONG_BUY", 80),
+  0,
+  100
+);
+const PAPER_TRADE_DISCOVERY_BUY = clamp(
+  envNumber("PAPER_TRADE_DISCOVERY_BUY", 65),
+  0,
+  100
+);
+const PAPER_TRADE_MIN_SAMPLE = clamp(envNumber("PAPER_TRADE_MIN_SAMPLE", 10), 3, 200);
+const PAPER_TRADE_STRATEGY_ID = "base_long_v1";
+const PAPER_TRADE_EXIT_STRATEGY_ID = "tp_trailing_v1";
+const PAPER_TRADE_SIGNAL_VERSION = "paper_trade_v1";
 
 const ETF_FLOW_PROXY_URL = "https://r.jina.ai/http://farside.co.uk/btc/";
 const ETF_FLOW_CACHE_PATH = path.join(CACHE_DIR, "etf_flows_btc.json");
@@ -6222,6 +6256,1128 @@ async function runBacktest(layer1Report) {
   };
 }
 
+// ============================================================================
+// PAPER TRADING
+// ============================================================================
+
+function pctToDecimal(pct) {
+  return Number.isFinite(pct) ? pct / 100 : 0;
+}
+
+function classifyLiquidity(volume24h) {
+  const vol = num(volume24h);
+  if (vol === null) return "unknown";
+  if (vol >= 1_000_000_000) return "mega";
+  if (vol >= 250_000_000) return "large";
+  if (vol >= 50_000_000) return "mid";
+  if (vol >= 10_000_000) return "small";
+  return "micro";
+}
+
+function estimateSlippagePct(volume24h) {
+  const vol = num(volume24h);
+  if (vol === null) return 0.3;
+  if (vol >= 1_000_000_000) return 0.04;
+  if (vol >= 250_000_000) return 0.06;
+  if (vol >= 50_000_000) return 0.1;
+  if (vol >= 10_000_000) return 0.2;
+  if (vol >= 5_000_000) return 0.3;
+  return 0.45;
+}
+
+function buildSignalEventId({ timestamp, source, coinGeckoId, symbol, signalType }) {
+  const stamp = isoToFilename(timestamp || new Date().toISOString());
+  const baseId =
+    normalizeCoinGeckoId(coinGeckoId) ||
+    (symbol ? String(symbol).toLowerCase() : "unknown");
+  const kind = signalType
+    ? String(signalType).replace(/[^a-z0-9_-]/gi, "").toLowerCase()
+    : "signal";
+  return `${stamp}_${source}_${baseId}_${kind}`;
+}
+
+function loadPaperSignalEvents() {
+  const events = readJsonFile(PAPER_SIGNAL_EVENTS_PATH, []);
+  return Array.isArray(events) ? events : [];
+}
+
+function savePaperSignalEvents(events) {
+  writeJsonFile(PAPER_SIGNAL_EVENTS_PATH, Array.isArray(events) ? events : []);
+}
+
+function loadPaperTrades() {
+  const trades = readJsonFile(PAPER_TRADES_PATH, []);
+  return Array.isArray(trades) ? trades : [];
+}
+
+function savePaperTrades(trades) {
+  writeJsonFile(PAPER_TRADES_PATH, Array.isArray(trades) ? trades : []);
+}
+
+function buildMarketContext(layer1Report) {
+  const btcChange7d = num(layer1Report?.btc_reference?.price_change_7d);
+  let btcTrend = "flat";
+  if (btcChange7d !== null) {
+    if (btcChange7d > 1) btcTrend = "up";
+    else if (btcChange7d < -1) btcTrend = "down";
+  }
+  return {
+    btc_trend: btcTrend,
+    fear_greed: num(layer1Report?.market_condition?.fear_greed?.value),
+  };
+}
+
+function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue }) {
+  if (!layer1Report) return [];
+  const events = [];
+  const nowIso = layer1Report?.generated_at || new Date().toISOString();
+  const marketPhase =
+    layer1Report?.best_entries?.market_phase ||
+    layer1Report?.market_condition?.signals?.market_phase ||
+    "neutral";
+  const marketContext = buildMarketContext(layer1Report);
+  const coins = Array.isArray(layer1Report?.coins) ? layer1Report.coins : [];
+  const coinById = new Map();
+  const coinBySymbol = new Map();
+  for (const coin of coins) {
+    const id = normalizeCoinGeckoId(coin?.coin_gecko_id || "");
+    if (id) coinById.set(id, coin);
+    const symbol = coin?.symbol ? String(coin.symbol).toUpperCase() : "";
+    if (symbol) coinBySymbol.set(symbol, coin);
+  }
+
+  const pushEvent = (event) => {
+    if (!event) return;
+    if (!event.coin_gecko_id && !event.symbol) return;
+    events.push(event);
+  };
+
+  // Best entries (watchlist)
+  const bestData = layer1Report?.best_entries || {};
+  let entryList = [];
+  if (Array.isArray(bestData.all_entries)) {
+    entryList = bestData.all_entries;
+  } else {
+    if (Array.isArray(bestData.best_entries)) {
+      entryList = entryList.concat(bestData.best_entries);
+    }
+    if (Array.isArray(bestData.wait_list)) {
+      entryList = entryList.concat(bestData.wait_list);
+    }
+  }
+
+  for (const entry of entryList) {
+    if (!entry) continue;
+    const id = normalizeCoinGeckoId(entry?.coin_gecko_id || "");
+    const symbol = entry?.symbol ? String(entry.symbol).toUpperCase() : "";
+    const coin = id ? coinById.get(id) : symbol ? coinBySymbol.get(symbol) : null;
+    const coinId = id || normalizeCoinGeckoId(coin?.coin_gecko_id || "");
+    if (!coinId && !symbol) continue;
+
+    const volume24h = num(entry?.volume_24h) ?? num(coin?.volume_24h);
+    const price = num(entry?.price) ?? num(coin?.price);
+    const reasons = Array.isArray(entry?.reasons) ? entry.reasons.filter(Boolean) : [];
+    const risks = Array.isArray(entry?.risks) ? entry.risks.filter(Boolean) : [];
+    const reason = [...reasons, ...risks].filter(Boolean).join("; ");
+    const signalType = entry?.entry_signal || null;
+    const score = num(entry?.entry_score);
+
+    pushEvent({
+      signal_event_id: buildSignalEventId({
+        timestamp: nowIso,
+        source: "best_entries",
+        coinGeckoId: coinId,
+        symbol,
+        signalType,
+      }),
+      timestamp: nowIso,
+      symbol: symbol || (coin?.symbol ? String(coin.symbol).toUpperCase() : null),
+      coin_gecko_id: coinId || null,
+      signal_type: signalType,
+      signal_score: score,
+      signal_reason: reason || null,
+      signal_source: "best_entries",
+      market_phase: marketPhase,
+      market_context: marketContext,
+      signal_version: PAPER_TRADE_SIGNAL_VERSION,
+      signal_price: price,
+      volume_24h: volume24h,
+      liquidity_bucket: classifyLiquidity(volume24h),
+      meta: {
+        hygiene_label: entry?.hygiene_label || coin?.hygiene_label || null,
+        watchlist_source: coin?.watchlist_source || "main",
+        adjusted_score: num(entry?.adjusted_score),
+        reasons,
+        risks,
+      },
+    });
+  }
+
+  // Blue chip dip opportunities
+  const blueData = layer1Report?.blue_chip_opportunities || {};
+  const blueLists = [
+    { list: blueData.opportunities, name: "opportunities" },
+    { list: blueData.wait_list, name: "wait_list" },
+  ];
+
+  for (const { list, name } of blueLists) {
+    if (!Array.isArray(list)) continue;
+    for (const opp of list) {
+      if (!opp) continue;
+      const coinId = normalizeCoinGeckoId(opp?.coin_gecko_id || "");
+      const symbol = opp?.symbol ? String(opp.symbol).toUpperCase() : "";
+      if (!coinId && !symbol) continue;
+
+      const signals = Array.isArray(opp?.signals) ? opp.signals.filter(Boolean) : [];
+      const riskWarnings = Array.isArray(opp?.risk_warnings)
+        ? opp.risk_warnings.filter(Boolean)
+        : [];
+      const waitReason = opp?.wait_reason ? [opp.wait_reason] : [];
+      const reason = [...signals, ...riskWarnings, ...waitReason].filter(Boolean).join("; ");
+
+      const signalType = opp?.entry_signal || null;
+      const score = num(opp?.signal_strength);
+      const price = num(opp?.price);
+      const volume24h = num(opp?.volume_24h);
+
+      pushEvent({
+        signal_event_id: buildSignalEventId({
+          timestamp: nowIso,
+          source: "blue_chip_dip",
+          coinGeckoId: coinId,
+          symbol,
+          signalType,
+        }),
+        timestamp: nowIso,
+        symbol: symbol || null,
+        coin_gecko_id: coinId || null,
+        signal_type: signalType,
+        signal_score: score,
+        signal_reason: reason || null,
+        signal_source: "blue_chip_dip",
+        market_phase: marketPhase,
+        market_context: marketContext,
+        signal_version: PAPER_TRADE_SIGNAL_VERSION,
+        signal_price: price,
+        volume_24h: volume24h,
+        liquidity_bucket: classifyLiquidity(volume24h),
+        meta: {
+          list: name,
+          signals,
+          risk_warnings: riskWarnings,
+          wait_reason: opp?.wait_reason || null,
+          rsi: num(opp?.rsi),
+          dip_from_7d_high: num(opp?.dip_from_7d_high),
+          dip_from_ath: num(opp?.dip_from_ath),
+          change_7d: num(opp?.change_7d),
+          change_24h: num(opp?.change_24h),
+          market_in_fear: Boolean(blueData?.market_in_fear),
+          stabilizing: Boolean(opp?.stabilizing),
+        },
+      });
+    }
+  }
+
+  // Discovery candidates
+  const discoveryCandidates = Array.isArray(discoveryReport?.candidates)
+    ? discoveryReport.candidates
+    : Array.isArray(discoveryQueue?.candidates)
+      ? discoveryQueue.candidates
+      : [];
+  const discoveryGeneratedAt =
+    discoveryReport?.generated_at || discoveryQueue?.generated_at || null;
+
+  for (const candidate of discoveryCandidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const coinId = normalizeCoinGeckoId(
+      candidate?.id || candidate?.coinGeckoId || candidate?.coin_gecko_id || ""
+    );
+    if (!coinId) continue;
+
+    const symbol = candidate?.symbol ? String(candidate.symbol).toUpperCase() : "";
+    const score = num(candidate?.discovery_score);
+    const signalType =
+      score !== null && score >= PAPER_TRADE_DISCOVERY_STRONG_BUY
+        ? "strong_buy"
+        : score !== null && score >= PAPER_TRADE_DISCOVERY_BUY
+          ? "buy"
+          : "wait";
+    const price = num(candidate?.price) ?? num(candidate?.current_price);
+    const volume24h = num(candidate?.volume_24h);
+    const priceChange7d = num(candidate?.price_change_7d);
+    const volToMcap = num(candidate?.volume_to_mcap);
+
+    const reasonParts = [];
+    if (score !== null) reasonParts.push(`Discovery score ${score.toFixed(1)}`);
+    if (priceChange7d !== null) {
+      reasonParts.push(`7d ${formatSignedPct(priceChange7d, 1)}`);
+    }
+    if (volToMcap !== null) {
+      reasonParts.push(`Vol/MCAP ${(volToMcap * 100).toFixed(1)}%`);
+    }
+    if (candidate?.source) reasonParts.push(`Source ${candidate.source}`);
+    const reason = reasonParts.filter(Boolean).join("; ");
+
+    pushEvent({
+      signal_event_id: buildSignalEventId({
+        timestamp: nowIso,
+        source: "discovery",
+        coinGeckoId: coinId,
+        symbol,
+        signalType,
+      }),
+      timestamp: nowIso,
+      symbol: symbol || null,
+      coin_gecko_id: coinId || null,
+      signal_type: signalType,
+      signal_score: score,
+      signal_reason: reason || null,
+      signal_source: "discovery",
+      market_phase: marketPhase,
+      market_context: marketContext,
+      signal_version: PAPER_TRADE_SIGNAL_VERSION,
+      signal_price: price,
+      volume_24h: volume24h,
+      liquidity_bucket: classifyLiquidity(volume24h),
+      meta: {
+        status: candidate?.status || null,
+        source: candidate?.source || null,
+        market_cap: num(candidate?.market_cap),
+        market_cap_rank: num(candidate?.market_cap_rank),
+        volume_to_mcap: volToMcap,
+        price_change_7d: priceChange7d,
+        discovery_generated_at: discoveryGeneratedAt,
+      },
+    });
+  }
+
+  return events;
+}
+
+function mergePaperSignalEvents(existing, incoming) {
+  const merged = Array.isArray(existing) ? [...existing] : [];
+  const seen = new Set(
+    merged.map((event) => event?.signal_event_id).filter(Boolean)
+  );
+  let added = 0;
+
+  for (const event of incoming) {
+    if (!event?.signal_event_id || seen.has(event.signal_event_id)) {
+      continue;
+    }
+    merged.push(event);
+    seen.add(event.signal_event_id);
+    added += 1;
+  }
+
+  return { merged, added };
+}
+
+function shouldExecuteSignal(event) {
+  if (!event) return false;
+  if (event.signal_source === "best_entries" || event.signal_source === "blue_chip_dip") {
+    return event.signal_type === "strong_buy" || event.signal_type === "buy";
+  }
+  if (event.signal_source === "discovery") {
+    if (event?.meta?.status === "IGNORED") return false;
+    return (
+      Number.isFinite(event.signal_score) &&
+      event.signal_score >= PAPER_TRADE_DISCOVERY_BUY
+    );
+  }
+  return false;
+}
+
+function computeTradePnlPct({ entry_price, qty, fee_pct, slippage_pct, current_price }) {
+  const entryPrice = num(entry_price);
+  const quantity = num(qty);
+  const currentPrice = num(current_price);
+  if (entryPrice === null || quantity === null || currentPrice === null) return null;
+  const feeRate = pctToDecimal(num(fee_pct) ?? 0);
+  const slippageRate = pctToDecimal(num(slippage_pct) ?? 0);
+  const entryCost = entryPrice * quantity;
+  if (!Number.isFinite(entryCost) || entryCost <= 0) return null;
+  const exitPrice = currentPrice * (1 - slippageRate);
+  const exitValue = exitPrice * quantity;
+  const entryFee = entryCost * feeRate;
+  const exitFee = exitValue * feeRate;
+  const pnl = exitValue - entryCost - entryFee - exitFee;
+  return (pnl / entryCost) * 100;
+}
+
+function createPaperTradeFromSignal(event, nowIso, btcPrice) {
+  if (!event || !event.coin_gecko_id) return null;
+  const entryPriceRaw = num(event.signal_price);
+  if (entryPriceRaw === null || entryPriceRaw <= 0) return null;
+  const positionSize = PAPER_TRADE_POSITION_USD;
+  if (!Number.isFinite(positionSize) || positionSize <= 0) return null;
+
+  const slippagePct = estimateSlippagePct(event.volume_24h);
+  const feePct = PAPER_TRADE_FEE_PCT;
+  const entryPrice = entryPriceRaw * (1 + pctToDecimal(slippagePct));
+  const qty = positionSize / entryPrice;
+  const entryCost = entryPrice * qty;
+  const entryFee = entryCost * pctToDecimal(feePct);
+
+  const trade = {
+    trade_id: event.signal_event_id,
+    signal_event_id: event.signal_event_id,
+    symbol: event.symbol || null,
+    coin_gecko_id: event.coin_gecko_id,
+    signal_source: event.signal_source,
+    entry_date: nowIso,
+    entry_price_raw: entryPriceRaw,
+    entry_price: entryPrice,
+    position_size_usd: positionSize,
+    qty,
+    fee_pct: feePct,
+    slippage_pct: slippagePct,
+    fees_estimate_usd: entryFee,
+    entry_signal: event.signal_type || null,
+    entry_score: event.signal_score ?? null,
+    market_phase: event.market_phase || null,
+    strategy_id: PAPER_TRADE_STRATEGY_ID,
+    exit_strategy_id: PAPER_TRADE_EXIT_STRATEGY_ID,
+    exit_strategy: {
+      take_profit_targets: [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3],
+      trailing_stop_pct: PAPER_TRADE_TRAILING_STOP_PCT,
+      time_stop_days: PAPER_TRADE_TIME_STOP_DAYS,
+      score_decay_exit: true,
+    },
+    status: "open",
+    days_held: 0,
+    current_price: entryPriceRaw,
+    current_pnl_pct: null,
+    mae_pct: 0,
+    mfe_pct: 0,
+    max_price: entryPriceRaw,
+    min_price: entryPriceRaw,
+    take_profit_hits: [],
+    trailing_active: false,
+    exit_date: null,
+    exit_price: null,
+    exit_reason: null,
+    exit_pnl_pct: null,
+    baseline_return_pct: 0,
+    btc_entry_price: Number.isFinite(btcPrice) ? btcPrice : null,
+    btc_return_pct: 0,
+    signal_reason: event.signal_reason || null,
+    liquidity_bucket: event.liquidity_bucket || null,
+  };
+
+  trade.current_pnl_pct = computeTradePnlPct({
+    entry_price: trade.entry_price,
+    qty: trade.qty,
+    fee_pct: trade.fee_pct,
+    slippage_pct: trade.slippage_pct,
+    current_price: entryPriceRaw,
+  });
+
+  return trade;
+}
+
+function createPaperTradesFromSignals({ signals, existingTrades, nowIso, btcPrice }) {
+  const created = [];
+  const openById = new Set(
+    existingTrades
+      .filter((trade) => trade?.status === "open")
+      .map((trade) => trade.coin_gecko_id)
+      .filter(Boolean)
+  );
+  const usedSignals = new Set(
+    existingTrades.map((trade) => trade?.signal_event_id).filter(Boolean)
+  );
+
+  const sourcePriority = { best_entries: 3, blue_chip_dip: 2, discovery: 1 };
+  const prioritized = [...signals].sort((a, b) => {
+    const pa = sourcePriority[a?.signal_source] || 0;
+    const pb = sourcePriority[b?.signal_source] || 0;
+    if (pb !== pa) return pb - pa;
+    const sa = num(a?.signal_score) ?? -Infinity;
+    const sb = num(b?.signal_score) ?? -Infinity;
+    if (sb !== sa) return sb - sa;
+    return String(a?.symbol || "").localeCompare(String(b?.symbol || ""));
+  });
+
+  for (const event of prioritized) {
+    if (!shouldExecuteSignal(event)) continue;
+    const id = event?.coin_gecko_id;
+    if (!id) continue;
+    if (openById.has(id)) continue;
+    if (usedSignals.has(event.signal_event_id)) continue;
+
+    const trade = createPaperTradeFromSignal(event, nowIso, btcPrice);
+    if (!trade) continue;
+    created.push(trade);
+    openById.add(id);
+    usedSignals.add(event.signal_event_id);
+  }
+
+  return created;
+}
+
+function buildLatestSignalMap(signalEvents) {
+  const map = new Map();
+  for (const event of signalEvents) {
+    const id = normalizeCoinGeckoId(event?.coin_gecko_id || "");
+    if (!id) continue;
+    const ts = Date.parse(event?.timestamp || "");
+    if (!Number.isFinite(ts)) continue;
+    const current = map.get(id);
+    if (!current || ts > current.ts) {
+      map.set(id, { ts, event });
+    }
+  }
+  return map;
+}
+
+function daysBetween(startIso, endIso) {
+  const start = Date.parse(startIso || "");
+  const end = Date.parse(endIso || "");
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.floor((end - start) / (1000 * 60 * 60 * 24));
+}
+
+function shouldExitOnScoreDecay(trade, latestSignal) {
+  if (!trade?.exit_strategy?.score_decay_exit) return false;
+  if (!latestSignal) return false;
+  if ((trade.days_held || 0) < 3) return false;
+
+  const entryMs = Date.parse(trade.entry_date || "");
+  const signalMs = Date.parse(latestSignal.timestamp || "");
+  if (Number.isFinite(entryMs) && Number.isFinite(signalMs) && signalMs <= entryMs) {
+    return false;
+  }
+
+  const signalScore = num(latestSignal.signal_score);
+  const signalType = latestSignal.signal_type;
+  if (signalType === "overbought" || signalType === "wait") return true;
+  if (signalScore !== null && signalScore < PAPER_TRADE_SCORE_EXIT_MIN) return true;
+  return false;
+}
+
+function updatePaperTrades({ trades, priceById, btcPriceNow, signalEvents, nowIso }) {
+  const latestSignalById = buildLatestSignalMap(signalEvents);
+
+  for (const trade of trades) {
+    if (trade?.status !== "open") continue;
+    const id = trade.coin_gecko_id;
+    const market = id ? priceById.get(id) : null;
+    const currentPrice = num(market?.current_price) ?? num(trade.current_price);
+    if (currentPrice === null || currentPrice <= 0) continue;
+
+    trade.current_price = currentPrice;
+    if (market?.total_volume !== undefined) {
+      trade.volume_24h = num(market.total_volume);
+    }
+
+    const entryRaw = num(trade.entry_price_raw) ?? num(trade.entry_price);
+    const daysHeld = daysBetween(trade.entry_date, nowIso);
+    trade.days_held = daysHeld !== null ? daysHeld : trade.days_held || 0;
+
+    const maxPrice = Math.max(num(trade.max_price) ?? entryRaw ?? currentPrice, currentPrice);
+    const minPrice = Math.min(num(trade.min_price) ?? entryRaw ?? currentPrice, currentPrice);
+    trade.max_price = maxPrice;
+    trade.min_price = minPrice;
+
+    if (entryRaw !== null && entryRaw > 0) {
+      trade.baseline_return_pct = ((currentPrice - entryRaw) / entryRaw) * 100;
+      trade.mae_pct = ((minPrice - entryRaw) / entryRaw) * 100;
+      trade.mfe_pct = ((maxPrice - entryRaw) / entryRaw) * 100;
+    }
+
+    if (
+      Number.isFinite(trade.btc_entry_price) &&
+      Number.isFinite(btcPriceNow) &&
+      trade.btc_entry_price > 0
+    ) {
+      trade.btc_return_pct =
+        ((btcPriceNow - trade.btc_entry_price) / trade.btc_entry_price) * 100;
+    }
+
+    trade.current_pnl_pct = computeTradePnlPct({
+      entry_price: trade.entry_price,
+      qty: trade.qty,
+      fee_pct: trade.fee_pct,
+      slippage_pct: trade.slippage_pct,
+      current_price: currentPrice,
+    });
+
+    const targets = Array.isArray(trade.exit_strategy?.take_profit_targets)
+      ? trade.exit_strategy.take_profit_targets
+      : [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3];
+    if (!Array.isArray(trade.take_profit_hits)) trade.take_profit_hits = [];
+    const hitSet = new Set(
+      trade.take_profit_hits.map((hit) => hit?.pct).filter((v) => Number.isFinite(v))
+    );
+    if (entryRaw !== null && entryRaw > 0) {
+      for (const target of targets) {
+        const targetPct = num(target);
+        if (targetPct === null) continue;
+        const targetPrice = entryRaw * (1 + targetPct / 100);
+        if (currentPrice >= targetPrice && !hitSet.has(targetPct)) {
+          trade.take_profit_hits.push({
+            pct: targetPct,
+            hit_at: nowIso,
+            price: currentPrice,
+          });
+          hitSet.add(targetPct);
+        }
+      }
+    }
+    if (trade.take_profit_hits.length > 0) {
+      trade.trailing_active = true;
+    }
+
+    const feeRate = pctToDecimal(num(trade.fee_pct) ?? PAPER_TRADE_FEE_PCT);
+    const slippageRate = pctToDecimal(num(trade.slippage_pct) ?? 0);
+    const entryCost = num(trade.entry_price) * num(trade.qty);
+    const exitPrice = currentPrice * (1 - slippageRate);
+    const exitValue = exitPrice * num(trade.qty);
+    if (Number.isFinite(entryCost) && Number.isFinite(exitValue)) {
+      trade.fees_estimate_usd = entryCost * feeRate + exitValue * feeRate;
+    }
+
+    let exitReason = null;
+    const timeStopDays =
+      num(trade.exit_strategy?.time_stop_days) ?? PAPER_TRADE_TIME_STOP_DAYS;
+    if (trade.days_held !== null && trade.days_held >= timeStopDays) {
+      exitReason = "time_stop";
+    }
+
+    const finalTarget =
+      targets.length > 0 ? num(targets[targets.length - 1]) : null;
+    if (!exitReason && entryRaw !== null && finalTarget !== null) {
+      const targetPrice = entryRaw * (1 + finalTarget / 100);
+      if (currentPrice >= targetPrice) {
+        exitReason = "take_profit";
+      }
+    }
+
+    const trailingStopPct =
+      num(trade.exit_strategy?.trailing_stop_pct) ?? PAPER_TRADE_TRAILING_STOP_PCT;
+    if (
+      !exitReason &&
+      trade.trailing_active &&
+      Number.isFinite(maxPrice) &&
+      trailingStopPct !== null
+    ) {
+      const stopPrice = maxPrice * (1 - trailingStopPct / 100);
+      if (currentPrice <= stopPrice) {
+        exitReason = "trailing_stop";
+      }
+    }
+
+    if (!exitReason) {
+      const latestSignal = latestSignalById.get(id)?.event || null;
+      if (shouldExitOnScoreDecay(trade, latestSignal)) {
+        exitReason = "score_decay";
+      }
+    }
+
+    if (exitReason) {
+      trade.status = "closed";
+      trade.exit_date = nowIso;
+      trade.exit_reason = exitReason;
+      trade.exit_price = currentPrice * (1 - slippageRate);
+      trade.exit_pnl_pct = computeTradePnlPct({
+        entry_price: trade.entry_price,
+        qty: trade.qty,
+        fee_pct: trade.fee_pct,
+        slippage_pct: trade.slippage_pct,
+        current_price: currentPrice,
+      });
+    }
+  }
+
+  return trades;
+}
+
+function tradeReturnPct(trade) {
+  const exitReturn = num(trade?.exit_pnl_pct);
+  if (exitReturn !== null) return exitReturn;
+  return num(trade?.current_pnl_pct);
+}
+
+function scoreRange(score) {
+  const s = num(score);
+  if (s === null) return "unknown";
+  if (s >= 80) return "80+";
+  if (s >= 70) return "70-79";
+  if (s >= 60) return "60-69";
+  if (s >= 50) return "50-59";
+  return "<50";
+}
+
+function computePaperBreakdown(trades, keyFn, labelKey) {
+  const buckets = new Map();
+  for (const trade of trades) {
+    const key = keyFn(trade) || "unknown";
+    let entry = buckets.get(key);
+    if (!entry) {
+      entry = { key, sample_size: 0, wins: 0, returns: [], expectancy: [] };
+      buckets.set(key, entry);
+    }
+    const ret = tradeReturnPct(trade);
+    if (ret === null) continue;
+    entry.sample_size += 1;
+    if (ret > 0) entry.wins += 1;
+    entry.returns.push(ret);
+    const riskPct =
+      num(trade?.exit_strategy?.trailing_stop_pct) ?? PAPER_TRADE_TRAILING_STOP_PCT;
+    if (riskPct > 0) {
+      entry.expectancy.push(ret / riskPct);
+    }
+  }
+
+  const rows = [];
+  for (const entry of buckets.values()) {
+    const avgReturn = average(entry.returns);
+    const winRate =
+      entry.sample_size > 0 ? (entry.wins / entry.sample_size) * 100 : null;
+    const expectancy = average(entry.expectancy);
+    const row = {
+      sample_size: entry.sample_size,
+      win_rate_pct: winRate,
+      avg_return_pct: avgReturn,
+      expectancy_r: expectancy,
+    };
+    row[labelKey || "key"] = entry.key;
+    rows.push(row);
+  }
+
+  rows.sort((a, b) => (b.sample_size || 0) - (a.sample_size || 0));
+  return rows;
+}
+
+function computePaperRecommendations({ byScoreRange, bySource }) {
+  const recommendations = [];
+  const scoreMap = new Map();
+  for (const item of byScoreRange || []) {
+    if (item?.range) scoreMap.set(item.range, item);
+  }
+
+  const high = scoreMap.get("80+");
+  const low = scoreMap.get("60-69");
+  if (
+    high?.sample_size >= PAPER_TRADE_MIN_SAMPLE &&
+    low?.sample_size >= PAPER_TRADE_MIN_SAMPLE
+  ) {
+    const highReturn = high.avg_return_pct || 0;
+    const lowReturn = low.avg_return_pct || 0;
+    if (highReturn > lowReturn + 3) {
+      recommendations.push(
+        "Scores 80+ outperform 60-69. Consider raising the trade threshold to focus on higher-score signals."
+      );
+    }
+  }
+
+  const discovery = Array.isArray(bySource)
+    ? bySource.find((item) => item.source === "discovery")
+    : null;
+  if (
+    discovery?.sample_size >= PAPER_TRADE_MIN_SAMPLE &&
+    (discovery.avg_return_pct || 0) < 0
+  ) {
+    recommendations.push(
+      "Discovery trades are negative on average. Consider raising the discovery score threshold or tagging them as watch-only."
+    );
+  }
+
+  return recommendations;
+}
+
+function computePaperReport({
+  trades,
+  signalEvents,
+  signalEventsAdded,
+  tradesAdded,
+  nowIso,
+}) {
+  const openTrades = trades.filter((trade) => trade?.status === "open");
+  const closedTrades = trades.filter((trade) => trade?.status === "closed");
+  const closedReturns = closedTrades
+    .map((trade) => tradeReturnPct(trade))
+    .filter((value) => value !== null);
+  const wins = closedReturns.filter((value) => value > 0).length;
+  const winRatePct =
+    closedReturns.length > 0 ? (wins / closedReturns.length) * 100 : null;
+  const avgReturn = average(closedReturns);
+  const avgDaysHeld = average(
+    closedTrades.map((trade) => num(trade?.days_held)).filter((v) => v !== null)
+  );
+  const avgMae = average(
+    closedTrades.map((trade) => num(trade?.mae_pct)).filter((v) => v !== null)
+  );
+  const avgMfe = average(
+    closedTrades.map((trade) => num(trade?.mfe_pct)).filter((v) => v !== null)
+  );
+  const worstMae = closedTrades
+    .map((trade) => num(trade?.mae_pct))
+    .filter((v) => v !== null)
+    .sort((a, b) => a - b)[0];
+
+  const bySource = computePaperBreakdown(closedTrades, (t) => t.signal_source, "source");
+  const bySignal = computePaperBreakdown(closedTrades, (t) => t.entry_signal, "signal");
+  const byScoreRange = computePaperBreakdown(closedTrades, (t) => scoreRange(t.entry_score), "range");
+  const byMarketPhase = computePaperBreakdown(
+    closedTrades,
+    (t) => t.market_phase,
+    "market_phase"
+  );
+
+  const exitReasons = {};
+  for (const trade of closedTrades) {
+    const reason = trade?.exit_reason || "unknown";
+    exitReasons[reason] = (exitReasons[reason] || 0) + 1;
+  }
+
+  const recommendations = computePaperRecommendations({
+    byScoreRange,
+    bySource,
+  });
+
+  const openPositions = [...openTrades]
+    .sort(
+      (a, b) =>
+        (num(b?.current_pnl_pct) || -Infinity) - (num(a?.current_pnl_pct) || -Infinity)
+    )
+    .slice(0, 12)
+    .map((trade) => ({
+      symbol: trade.symbol || null,
+      source: trade.signal_source || null,
+      days_held: trade.days_held ?? null,
+      entry_price: num(trade.entry_price_raw) ?? num(trade.entry_price),
+      current_price: num(trade.current_price),
+      pnl_pct: tradeReturnPct(trade),
+      entry_signal: trade.entry_signal || null,
+      entry_score: trade.entry_score ?? null,
+    }));
+
+  const closedPositions = [...closedTrades]
+    .sort(
+      (a, b) => (num(b?.exit_pnl_pct) || -Infinity) - (num(a?.exit_pnl_pct) || -Infinity)
+    )
+    .slice(0, 12)
+    .map((trade) => ({
+      symbol: trade.symbol || null,
+      source: trade.signal_source || null,
+      days_held: trade.days_held ?? null,
+      entry_price: num(trade.entry_price_raw) ?? num(trade.entry_price),
+      exit_price: num(trade.exit_price),
+      pnl_pct: tradeReturnPct(trade),
+      exit_reason: trade.exit_reason || null,
+      entry_signal: trade.entry_signal || null,
+      entry_score: trade.entry_score ?? null,
+    }));
+
+  return {
+    generated_at: nowIso,
+    signal_events_total: signalEvents.length,
+    signal_events_added: signalEventsAdded,
+    trades_total: trades.length,
+    trades_added: tradesAdded,
+    open_count: openTrades.length,
+    closed_count: closedTrades.length,
+    strategy: {
+      position_size_usd: PAPER_TRADE_POSITION_USD,
+      fee_pct: PAPER_TRADE_FEE_PCT,
+      trailing_stop_pct: PAPER_TRADE_TRAILING_STOP_PCT,
+      time_stop_days: PAPER_TRADE_TIME_STOP_DAYS,
+      take_profit_targets: [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3],
+      discovery_thresholds: {
+        strong_buy: PAPER_TRADE_DISCOVERY_STRONG_BUY,
+        buy: PAPER_TRADE_DISCOVERY_BUY,
+      },
+    },
+    overview: {
+      win_rate_pct: winRatePct,
+      avg_return_pct: avgReturn,
+      expectancy_r: average(
+        closedReturns.map((ret) => ret / PAPER_TRADE_TRAILING_STOP_PCT)
+      ),
+      avg_days_held: avgDaysHeld,
+      avg_mae_pct: avgMae,
+      avg_mfe_pct: avgMfe,
+      worst_mae_pct: worstMae ?? null,
+    },
+    open_positions: openPositions,
+    closed_positions: closedPositions,
+    breakdowns: {
+      by_source: bySource,
+      by_entry_signal: bySignal,
+      by_score_range: byScoreRange,
+      by_market_phase: byMarketPhase,
+      exit_reasons: exitReasons,
+    },
+    recommendations,
+    notes: {
+      entry_price_convention: "Signal price at scan time plus slippage.",
+      signal_sources: ["best_entries", "blue_chip_dip", "discovery"],
+    },
+  };
+}
+
+function renderPaperReportMarkdown(report) {
+  const lines = [];
+  lines.push("# Paper Trading Report");
+  lines.push("");
+  lines.push(`Generated: ${report?.generated_at || "n/a"}`);
+  lines.push("");
+
+  const strategy = report?.strategy || {};
+  const tpTargets = Array.isArray(strategy.take_profit_targets)
+    ? strategy.take_profit_targets.map((t) => `${t}%`).join(", ")
+    : "n/a";
+
+  lines.push("## Strategy");
+  lines.push(`Position size: ${formatUsd(strategy.position_size_usd)}`);
+  lines.push(
+    `Fees: ${
+      Number.isFinite(strategy.fee_pct) ? strategy.fee_pct.toFixed(2) : "n/a"
+    }% per side`
+  );
+  lines.push(
+    `Trailing stop: ${
+      Number.isFinite(strategy.trailing_stop_pct)
+        ? strategy.trailing_stop_pct.toFixed(1)
+        : "n/a"
+    }% | Time stop: ${strategy.time_stop_days || "n/a"} days`
+  );
+  lines.push(`Take profits: ${tpTargets}`);
+  lines.push("");
+
+  const overview = report?.overview || {};
+  const winRate =
+    typeof overview.win_rate_pct === "number"
+      ? `${overview.win_rate_pct.toFixed(1)}%`
+      : "n/a";
+  lines.push("## Overview");
+  lines.push(
+    `Signals tracked: ${report?.signal_events_total ?? 0} (added ${
+      report?.signal_events_added ?? 0
+    } this run)`
+  );
+  lines.push(
+    `Trades: total ${report?.trades_total ?? 0} | open ${
+      report?.open_count ?? 0
+    } | closed ${report?.closed_count ?? 0}`
+  );
+  lines.push(
+    `Win rate: ${winRate} | Avg return: ${formatSignedPct(
+      num(overview.avg_return_pct),
+      1
+    )} | Expectancy: ${
+      Number.isFinite(overview.expectancy_r)
+        ? `${overview.expectancy_r.toFixed(2)}R`
+        : "n/a"
+    }`
+  );
+  lines.push(
+    `Avg days held: ${
+      Number.isFinite(overview.avg_days_held)
+        ? overview.avg_days_held.toFixed(1)
+        : "n/a"
+    } | Avg MAE: ${formatSignedPct(num(overview.avg_mae_pct), 1)} | Avg MFE: ${formatSignedPct(
+      num(overview.avg_mfe_pct),
+      1
+    )}`
+  );
+  lines.push("");
+
+  const openPositions = Array.isArray(report?.open_positions)
+    ? report.open_positions
+    : [];
+  lines.push("## Open Trades");
+  if (openPositions.length === 0) {
+    lines.push("- None");
+    lines.push("");
+  } else {
+    lines.push("| Symbol | Source | Days | Entry | Current | PnL | Signal | Score |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+    for (const trade of openPositions) {
+      lines.push(
+        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${
+          trade.days_held ?? "n/a"
+        } | ${formatUsd(trade.entry_price)} | ${formatUsd(
+          trade.current_price
+        )} | ${formatSignedPct(num(trade.pnl_pct), 1)} | ${
+          trade.entry_signal || "n/a"
+        } | ${Number.isFinite(trade.entry_score) ? trade.entry_score : "n/a"} |`
+      );
+    }
+    lines.push("");
+  }
+
+  const closedPositions = Array.isArray(report?.closed_positions)
+    ? report.closed_positions
+    : [];
+  lines.push("## Closed Trades (Top)");
+  if (closedPositions.length === 0) {
+    lines.push("- None");
+    lines.push("");
+  } else {
+    lines.push("| Symbol | Source | Days | PnL | Exit | Reason | Signal | Score |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+    for (const trade of closedPositions) {
+      lines.push(
+        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${
+          trade.days_held ?? "n/a"
+        } | ${formatSignedPct(num(trade.pnl_pct), 1)} | ${formatUsd(
+          trade.exit_price
+        )} | ${trade.exit_reason || "n/a"} | ${
+          trade.entry_signal || "n/a"
+        } | ${Number.isFinite(trade.entry_score) ? trade.entry_score : "n/a"} |`
+      );
+    }
+    lines.push("");
+  }
+
+  const breakdowns = report?.breakdowns || {};
+  const bySource = Array.isArray(breakdowns.by_source) ? breakdowns.by_source : [];
+  if (bySource.length > 0) {
+    lines.push("## Performance by Source");
+    lines.push("| Source | Sample | Win Rate | Avg Return | Expectancy (R) |");
+    lines.push("| --- | --- | --- | --- | --- |");
+    for (const row of bySource) {
+      const win =
+        typeof row.win_rate_pct === "number" ? `${row.win_rate_pct.toFixed(1)}%` : "n/a";
+      lines.push(
+        `| ${row.source || "n/a"} | ${row.sample_size ?? 0} | ${win} | ${formatSignedPct(
+          num(row.avg_return_pct),
+          1
+        )} | ${
+          Number.isFinite(row.expectancy_r) ? row.expectancy_r.toFixed(2) : "n/a"
+        } |`
+      );
+    }
+    lines.push("");
+  }
+
+  const byScore = Array.isArray(breakdowns.by_score_range)
+    ? breakdowns.by_score_range
+    : [];
+  if (byScore.length > 0) {
+    lines.push("## Performance by Score Range");
+    lines.push("| Score | Sample | Win Rate | Avg Return | Expectancy (R) |");
+    lines.push("| --- | --- | --- | --- | --- |");
+    for (const row of byScore) {
+      const win =
+        typeof row.win_rate_pct === "number" ? `${row.win_rate_pct.toFixed(1)}%` : "n/a";
+      lines.push(
+        `| ${row.range || "n/a"} | ${row.sample_size ?? 0} | ${win} | ${formatSignedPct(
+          num(row.avg_return_pct),
+          1
+        )} | ${
+          Number.isFinite(row.expectancy_r) ? row.expectancy_r.toFixed(2) : "n/a"
+        } |`
+      );
+    }
+    lines.push("");
+  }
+
+  lines.push("## Recommendations");
+  if (Array.isArray(report?.recommendations) && report.recommendations.length > 0) {
+    for (const item of report.recommendations) {
+      lines.push(`- ${item}`);
+    }
+  } else {
+    lines.push("- None yet (need more closed trades).");
+  }
+  lines.push("");
+
+  if (report?.notes?.entry_price_convention) {
+    lines.push("## Notes");
+    lines.push(`- Entry price: ${report.notes.entry_price_convention}`);
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+async function runPaperTrading({ layer1Report, discoveryReport, discoveryQueue, btcData }) {
+  if (!layer1Report) return null;
+  ensureDir(PAPER_DIR);
+  const nowIso = layer1Report?.generated_at || new Date().toISOString();
+
+  const newSignals = buildPaperSignalEvents({
+    layer1Report,
+    discoveryReport,
+    discoveryQueue,
+  });
+  const existingSignals = loadPaperSignalEvents();
+
+  const existingTrades = loadPaperTrades();
+  const openIds = new Set(
+    existingTrades
+      .filter((trade) => trade?.status === "open")
+      .map((trade) => trade.coin_gecko_id)
+      .filter(Boolean)
+  );
+  const missingSignalIds = new Set(
+    newSignals
+      .filter((event) => !Number.isFinite(event.signal_price))
+      .map((event) => event.coin_gecko_id)
+      .filter(Boolean)
+  );
+
+  const priceIds = new Set([...openIds, ...missingSignalIds]);
+  const priceById = new Map();
+  if (priceIds.size > 0) {
+    const markets = await fetchMarketData(Array.from(priceIds));
+    for (const entry of markets) {
+      if (entry?.id) priceById.set(entry.id, entry);
+    }
+  }
+
+  for (const event of newSignals) {
+    if (Number.isFinite(event.signal_price)) continue;
+    const market = event.coin_gecko_id ? priceById.get(event.coin_gecko_id) : null;
+    if (!market) continue;
+    event.signal_price = num(market.current_price);
+    if (!Number.isFinite(event.volume_24h)) {
+      event.volume_24h = num(market.total_volume);
+    }
+    event.liquidity_bucket = classifyLiquidity(event.volume_24h);
+  }
+
+  const mergedSignals = mergePaperSignalEvents(existingSignals, newSignals);
+  if (mergedSignals.added > 0) {
+    savePaperSignalEvents(mergedSignals.merged);
+  }
+
+  const btcPrice = num(btcData?.current_price);
+  const newTrades = createPaperTradesFromSignals({
+    signals: newSignals,
+    existingTrades,
+    nowIso,
+    btcPrice,
+  });
+  const allTrades = [...existingTrades, ...newTrades];
+
+  const updatedTrades = updatePaperTrades({
+    trades: allTrades,
+    priceById,
+    btcPriceNow: btcPrice,
+    signalEvents: mergedSignals.merged,
+    nowIso,
+  });
+  savePaperTrades(updatedTrades);
+
+  const report = computePaperReport({
+    trades: updatedTrades,
+    signalEvents: mergedSignals.merged,
+    signalEventsAdded: mergedSignals.added,
+    tradesAdded: newTrades.length,
+    nowIso,
+  });
+
+  writeJsonFile(PAPER_REPORT_JSON_PATH, report);
+  fs.writeFileSync(PAPER_REPORT_MD_PATH, renderPaperReportMarkdown(report), "utf8");
+
+  return { report, signal_events_added: mergedSignals.added, trades_created: newTrades.length };
+}
+
 function buildSummary(
   layer1Report,
   supervisorResult,
@@ -6253,6 +7409,10 @@ function buildSummary(
     lines.push(
       "Backtest report: [backtest/BacktestReport.md](backtest/BacktestReport.md)"
     );
+    lines.push("");
+  }
+  if (fs.existsSync(PAPER_REPORT_MD_PATH)) {
+    lines.push("Paper trading report: [paper/PaperReport.md](paper/PaperReport.md)");
     lines.push("");
   }
 
@@ -7151,6 +8311,25 @@ async function main() {
     console.warn(`Backtest module failed: ${err.message}`);
   }
 
+  let paperReport = null;
+  let discoveryReport = null;
+  try {
+    discoveryReport = readJsonFile(path.join(REPORTS_DIR, "DiscoveryReport.json"), null);
+  } catch {
+    discoveryReport = null;
+  }
+  try {
+    const paperResult = await runPaperTrading({
+      layer1Report,
+      discoveryReport,
+      discoveryQueue,
+      btcData,
+    });
+    paperReport = paperResult?.report || null;
+  } catch (err) {
+    console.warn(`Paper trading failed: ${err.message}`);
+  }
+
   let supervisorResult = null;
   let supervisorOutput = null;
   try {
@@ -7244,6 +8423,7 @@ async function main() {
       backtestStats,
       funnelStats,
       macroPulse,
+      paperReport,
     });
     fs.writeFileSync(DASHBOARD_PATH, dashboardHtml, "utf8");
   } catch (err) {
@@ -7323,6 +8503,9 @@ async function main() {
   }
   if (fs.existsSync(BACKTEST_REPORT_MD_PATH)) {
     console.log(`Saved: ${BACKTEST_REPORT_MD_PATH}`);
+  }
+  if (fs.existsSync(PAPER_REPORT_MD_PATH)) {
+    console.log(`Saved: ${PAPER_REPORT_MD_PATH}`);
   }
   if (supervisorResult && supervisorResult.status === "ok") {
     console.log(`Saved: ${path.join(REPORTS_DIR, "SupervisorSummary.json")}`);

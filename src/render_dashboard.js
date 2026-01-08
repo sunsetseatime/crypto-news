@@ -1630,6 +1630,123 @@ function buildBacktestHtml(backtestStats) {
   `;
 }
 
+function buildPaperTradingHtml(paperReport) {
+  if (!paperReport) {
+    return `
+      <div class="card">
+        <h2>Paper Trading</h2>
+        <p class="muted">No paper trading stats yet.</p>
+      </div>
+    `;
+  }
+
+  const overview = paperReport.overview || {};
+  const open = Array.isArray(paperReport.open_positions) ? paperReport.open_positions : [];
+  const closed = Array.isArray(paperReport.closed_positions) ? paperReport.closed_positions : [];
+  const winRate =
+    typeof overview.win_rate_pct === "number" ? `${overview.win_rate_pct.toFixed(1)}%` : "n/a";
+  const avgReturn = formatSignedPct(num(overview.avg_return_pct), 1);
+  const expectancy =
+    typeof overview.expectancy_r === "number" ? `${overview.expectancy_r.toFixed(2)}R` : "n/a";
+  const avgDays =
+    typeof overview.avg_days_held === "number" ? `${overview.avg_days_held.toFixed(1)}d` : "n/a";
+
+  const openRows = open.slice(0, 6).map((trade) => {
+    const signal = trade.entry_signal ? String(trade.entry_signal).replace(/_/g, " ") : "n/a";
+    const score =
+      typeof trade.entry_score === "number" ? trade.entry_score.toFixed(0) : "n/a";
+    return `
+      <tr>
+        <td>${escapeHtml(trade.symbol || "n/a")}</td>
+        <td>${escapeHtml(trade.source || "n/a")}</td>
+        <td class="num">${escapeHtml(trade.days_held ?? "n/a")}</td>
+        <td class="num">${escapeHtml(formatUsd(num(trade.entry_price)))}</td>
+        <td class="num">${escapeHtml(formatUsd(num(trade.current_price)))}</td>
+        <td class="num">${escapeHtml(formatSignedPct(num(trade.pnl_pct), 1))}</td>
+        <td>${escapeHtml(signal)}</td>
+        <td class="num">${escapeHtml(score)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  const closedRows = closed.slice(0, 6).map((trade) => {
+    const signal = trade.entry_signal ? String(trade.entry_signal).replace(/_/g, " ") : "n/a";
+    const score =
+      typeof trade.entry_score === "number" ? trade.entry_score.toFixed(0) : "n/a";
+    return `
+      <tr>
+        <td>${escapeHtml(trade.symbol || "n/a")}</td>
+        <td>${escapeHtml(trade.source || "n/a")}</td>
+        <td class="num">${escapeHtml(trade.days_held ?? "n/a")}</td>
+        <td class="num">${escapeHtml(formatSignedPct(num(trade.pnl_pct), 1))}</td>
+        <td class="num">${escapeHtml(formatUsd(num(trade.exit_price)))}</td>
+        <td>${escapeHtml(trade.exit_reason || "n/a")}</td>
+        <td>${escapeHtml(signal)}</td>
+        <td class="num">${escapeHtml(score)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  return `
+    <div class="card">
+      <div class="row space-between">
+        <h2>Paper Trading</h2>
+        <div class="muted"><a href="paper/PaperReport.md">Open report</a></div>
+      </div>
+      <div class="muted small">
+        Signals tracked: ${paperReport.signal_events_total ?? 0} | Open trades: ${paperReport.open_count ?? 0} | Closed trades: ${paperReport.closed_count ?? 0}
+      </div>
+      <div class="muted small" style="margin-top: 6px;">
+        Win rate: ${escapeHtml(winRate)} | Avg return: ${escapeHtml(avgReturn)} | Expectancy: ${escapeHtml(expectancy)} | Avg hold: ${escapeHtml(avgDays)}
+      </div>
+      <div class="table-wrap" style="margin-top: 10px;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Source</th>
+              <th class="num">Days</th>
+              <th class="num">Entry</th>
+              <th class="num">Current</th>
+              <th class="num">PnL</th>
+              <th>Signal</th>
+              <th class="num">Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              openRows ||
+              `<tr><td colspan="8" class="muted">No open trades.</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+      <div class="table-wrap" style="margin-top: 12px;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Source</th>
+              <th class="num">Days</th>
+              <th class="num">PnL</th>
+              <th class="num">Exit</th>
+              <th>Reason</th>
+              <th>Signal</th>
+              <th class="num">Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              closedRows ||
+              `<tr><td colspan="8" class="muted">No closed trades yet.</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 function buildFunnelHtml(funnelStats, backtestStats) {
   if (!funnelStats && !backtestStats) {
     return `
@@ -1811,7 +1928,7 @@ function buildFunnelHtml(funnelStats, backtestStats) {
   `;
 }
 
-function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLatest, alertsReport, backtestStats, funnelStats, macroPulse }) {
+function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLatest, alertsReport, backtestStats, funnelStats, macroPulse, paperReport }) {
   const coins = Array.isArray(layer1Report?.coins) ? layer1Report.coins : [];
   const mainCoins = coins.filter((c) => (c.watchlist_source || "main") !== "staging");
   const stagingCoins = coins.filter((c) => c.watchlist_source === "staging");
@@ -1846,6 +1963,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
     { name: "DiffReport.json", href: "DiffReport.json" },
     { name: "SupervisorSummary.json", href: "SupervisorSummary.json" },
     { name: "BacktestReport.md", href: path.posix.join("backtest", "BacktestReport.md") },
+    { name: "PaperReport.md", href: path.posix.join("paper", "PaperReport.md") },
     { name: "DiscoveryReport.md", href: "DiscoveryReport.md" },
     { name: "DeFi Latest.md", href: path.posix.join("defi", "Latest.md") },
   ];
@@ -2165,6 +2283,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       <details class="collapsible-section">
         <summary><h2>Backtest & History</h2><span class="muted small">How accurate is this scanner?</span></summary>
         <div class="section-content">
+          ${buildPaperTradingHtml(paperReport)}
           ${buildFunnelHtml(funnelStats, backtestStats)}
           ${buildBacktestHtml(backtestStats)}
         </div>

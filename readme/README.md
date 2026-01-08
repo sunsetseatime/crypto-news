@@ -177,6 +177,10 @@ Notes:
 | `reports/DiffReport.json` | Changes since the last run (for “what’s new”) |
 | `reports/backtest/BacktestReport.md` | Backtest stats report |
 | `reports/backtest/predictions.json` | Prediction history used for backtesting |
+| `reports/paper/PaperReport.md` | Paper trading stats (open/closed trades, performance) |
+| `reports/paper/PaperReport.json` | Paper trading stats (structured JSON) |
+| `reports/paper/SignalEvents.json` | Logged signal events used for paper trading |
+| `reports/paper/PaperTrades.json` | Paper trade ledger (open + closed positions) |
 | `reports/defi/Latest.md` | Latest DeFi protocol scan report |
 | `reports/defi/snapshots/*.json` | Historical DeFi scan snapshots |
 | `reports/MacroPulse.json` | Macro pulse data (flows, leverage, share, alt strength/news) |

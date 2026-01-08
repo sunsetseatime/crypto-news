@@ -112,10 +112,11 @@ async function loadReports() {
     defi: `${baseUrl}/defi/Latest.json`,
     supervisor: `${baseUrl}/SupervisorSummary.json`,
     backtest: `${baseUrl}/backtest/BacktestReport.json`,
+    paper: `${baseUrl}/paper/PaperReport.json`,
     macroPulse: `${baseUrl}/MacroPulse.json`,
   };
 
-  const [layer1, diff, alerts, discovery, defi, supervisor, backtest, macroPulse] =
+  const [layer1, diff, alerts, discovery, defi, supervisor, backtest, paper, macroPulse] =
     await Promise.all([
       fetchJson(urls.layer1),
       fetchJson(urls.diff),
@@ -124,6 +125,7 @@ async function loadReports() {
       fetchJson(urls.defi),
       fetchJson(urls.supervisor),
       fetchJson(urls.backtest),
+      fetchJson(urls.paper),
       fetchJson(urls.macroPulse),
     ]);
 
@@ -136,6 +138,7 @@ async function loadReports() {
     defi,
     supervisor,
     backtest,
+    paper,
     macroPulse,
   };
   reportCache.data = data;
@@ -578,6 +581,37 @@ function summarizeGlobal(reports) {
       }
     : null;
 
+  const paper = reports?.paper
+    ? {
+        generated_at: reports.paper.generated_at || null,
+        open_count:
+          typeof reports.paper.open_count === 'number' ? reports.paper.open_count : null,
+        closed_count:
+          typeof reports.paper.closed_count === 'number' ? reports.paper.closed_count : null,
+        win_rate_pct:
+          typeof reports.paper.overview?.win_rate_pct === 'number'
+            ? Number(reports.paper.overview.win_rate_pct.toFixed(1))
+            : null,
+        avg_return_pct:
+          typeof reports.paper.overview?.avg_return_pct === 'number'
+            ? Number(reports.paper.overview.avg_return_pct.toFixed(2))
+            : null,
+        open_positions: Array.isArray(reports.paper.open_positions)
+          ? reports.paper.open_positions.slice(0, 8).map((t) => ({
+              symbol: t.symbol || null,
+              source: t.source || null,
+              days_held: typeof t.days_held === 'number' ? t.days_held : null,
+              pnl_pct: typeof t.pnl_pct === 'number' ? Number(t.pnl_pct.toFixed(2)) : null,
+              entry_signal: t.entry_signal || null,
+              entry_score: typeof t.entry_score === 'number' ? t.entry_score : null,
+            }))
+          : [],
+        recommendations: Array.isArray(reports.paper.recommendations)
+          ? reports.paper.recommendations.slice(0, 5)
+          : [],
+      }
+    : null;
+
   return {
     data_freshness: reports?.layer1?.data_freshness || null,
     portfolio_guidance: reports?.layer1?.portfolio_guidance || null,
@@ -589,6 +623,7 @@ function summarizeGlobal(reports) {
       diff: reports?.diff?.current_scan_date || null,
       supervisor: reports?.supervisor?.generated_at || null,
       backtest: reports?.backtest?.generated_at || null,
+      paper: reports?.paper?.generated_at || null,
     },
     discovery_criteria: reports?.discovery?.criteria || null,
     discovery_total_candidates:
@@ -602,6 +637,7 @@ function summarizeGlobal(reports) {
     macro_pulse: macroPulse,
     supervisor,
     backtest,
+    paper_trading: paper,
   };
 }
 
