@@ -130,6 +130,13 @@ function explainAlert(alert) {
     if (details.hygiene_label) pushUnique(why, `Verdict: ${details.hygiene_label}.`);
     pushUnique(risks, "A good entry can still fail if the market turns down.");
     pushUnique(risks, "Check recent news and use a stop or smaller size.");
+  } else if (source === "signal_score") {
+    pushUnique(why, "This coin has a strong overall signal score and an actionable entry setup.");
+    if (details.entry_signal) pushUnique(why, `Entry signal: ${String(details.entry_signal).replace(/_/g, " ")}.`);
+    if (Number.isFinite(details.total_score)) pushUnique(why, `Signal score: ${details.total_score}.`);
+    if (details.trend_regime) pushUnique(why, `Trend: ${details.trend_regime}.`);
+    pushUnique(risks, "High scores can still fail if the market turns down.");
+    pushUnique(risks, "Double-check liquidity, unlocks, and news before sizing up.");
   } else if (source === "take_profit" || source === "take_profit_approaching") {
     pushUnique(why, "This alert is based on your portfolio entry price and current price.");
     if (Number.isFinite(details.profit_pct)) pushUnique(why, `Current profit: ${details.profit_pct.toFixed(1)}%.`);
@@ -217,9 +224,18 @@ function computeAlerts({
   const alertOnActionable = thresholds.alert_actionable !== false;
   const defiThreshold = num(thresholds.defi_score_threshold);
   const discoveryThreshold = num(thresholds.discovery_score_threshold);
+  const signalThreshold = num(thresholds.signal_score_threshold);
 
   const coins = Array.isArray(layer1Report?.coins) ? layer1Report.coins : [];
   const marketCondition = layer1Report?.market_condition?.signals;
+  const prevCoins = Array.isArray(previousLayer1Report?.coins)
+    ? previousLayer1Report.coins
+    : [];
+  const prevById = new Map();
+  for (const prev of prevCoins) {
+    const idKey = normalizeId(prev?.coin_gecko_id) || normalizeId(prev?.symbol);
+    if (idKey && !prevById.has(idKey)) prevById.set(idKey, prev);
+  }
 
   const hygieneRank = (label) => {
     switch (label) {
@@ -275,6 +291,25 @@ function computeAlerts({
       default:
         return "Unknown";
     }
+  };
+
+  const didSignalChange = (coin, prev, { requireNewsChange = false } = {}) => {
+    if (!prev) return true;
+    const scoreNow = num(coin?.score_breakdown?.total_score);
+    const scorePrev = num(prev?.score_breakdown?.total_score);
+    const scoreDelta =
+      scoreNow !== null && scorePrev !== null ? Math.abs(scoreNow - scorePrev) : null;
+    const entryChanged = (coin?.entry_signal || null) !== (prev?.entry_signal || null);
+    const trendChanged = (coin?.trend_regime || null) !== (prev?.trend_regime || null);
+    const newsChanged =
+      (coin?.news_activity || null) !== (prev?.news_activity || null) ||
+      (coin?.news_count_24h || 0) !== (prev?.news_count_24h || 0) ||
+      (coin?.news_count_7d || 0) !== (prev?.news_count_7d || 0);
+
+    if (requireNewsChange) return newsChanged;
+    if (entryChanged || trendChanged) return true;
+    if (scoreDelta !== null && scoreDelta >= 5) return true;
+    return false;
   };
   
   // === MARKET CONDITION ALERTS (HIGHEST PRIORITY) ===
@@ -508,6 +543,8 @@ function computeAlerts({
   const bestEntries = layer1Report?.best_entries?.best_entries || [];
   for (const entry of bestEntries.slice(0, 3)) { // Top 3 best entries
     if (entry.entry_signal !== "strong_buy" && entry.entry_signal !== "buy") continue;
+    const prev = prevById.get(normalizeId(entry?.coin_gecko_id) || normalizeId(entry?.symbol) || "");
+    if (prev && !didSignalChange(entry, prev)) continue;
 
     const priority = entry.adjusted_score;
     const reasonsText = entry.reasons.slice(0, 2).join(", ");
@@ -534,6 +571,36 @@ function computeAlerts({
         action: entry.action,
       },
     });
+  }
+
+  // === SIGNAL SCORE ALERTS (score-based signals) ===
+  if (Number.isFinite(signalThreshold)) {
+    for (const coin of coins) {
+      const totalScore = num(coin?.score_breakdown?.total_score);
+      if (totalScore === null || totalScore < signalThreshold) continue;
+      if (coin?.entry_signal !== "strong_buy" && coin?.entry_signal !== "buy") continue;
+      if (coin?.trend_regime === "Downtrend") continue;
+      const prev = prevById.get(normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || "");
+      if (prev && !didSignalChange(coin, prev)) continue;
+
+      const idKey = normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || "unknown";
+      alerts.push({
+        key: `signal_score:${idKey}:${totalScore}`,
+        source: "signal_score",
+        watchlist_source: coin?.watchlist_source || "main",
+        symbol: coin?.symbol || "n/a",
+        title: `${coin?.symbol || "Coin"} strong signal score (${totalScore})`,
+        score: totalScore,
+        url: coin?.coin_gecko_id
+          ? `https://www.coingecko.com/en/coins/${encodeURIComponent(coin.coin_gecko_id)}`
+          : null,
+        details: {
+          entry_signal: coin?.entry_signal || null,
+          total_score: totalScore,
+          trend_regime: coin?.trend_regime || null,
+        },
+      });
+    }
   }
   
   // === TAKE-PROFIT ALERTS (highest priority) ===
@@ -602,6 +669,8 @@ function computeAlerts({
     if (coin?.volume_trend !== "spike") continue;
     const newsActivity = coin?.news_activity || "quiet";
     if (newsActivity === "quiet") continue;
+    const prev = prevById.get(normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || "");
+    if (prev && !didSignalChange(coin, prev, { requireNewsChange: true })) continue;
 
     const idKey = normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || "unknown";
     const sentiment = coin?.news_sentiment || "neutral";
@@ -649,6 +718,8 @@ function computeAlerts({
     const newsIsViral = coin?.news_is_viral === true || newsActivity === "very active";
 
     if (newsIsViral) {
+      const prev = prevById.get(normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || "");
+      if (prev && !didSignalChange(coin, prev, { requireNewsChange: true })) continue;
       const idKey = normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || "unknown";
       const sentiment = coin?.news_sentiment || "neutral";
       const tone =
@@ -711,17 +782,7 @@ function computeAlerts({
   }
 
   // === IMPROVING COINS (since last run) ===
-  const prevCoins = Array.isArray(previousLayer1Report?.coins)
-    ? previousLayer1Report.coins
-    : [];
-  if (prevCoins.length > 0) {
-    const prevById = new Map();
-    for (const prev of prevCoins) {
-      const idKey = normalizeId(prev?.coin_gecko_id) || normalizeId(prev?.symbol);
-      if (!idKey) continue;
-      if (!prevById.has(idKey)) prevById.set(idKey, prev);
-    }
-
+  if (prevById.size > 0) {
     const improvements = [];
     for (const coin of coins) {
       const idKey = normalizeId(coin?.coin_gecko_id) || normalizeId(coin?.symbol) || null;
@@ -861,6 +922,7 @@ function computeAlerts({
       discovery_score_threshold: Number.isFinite(discoveryThreshold)
         ? discoveryThreshold
         : null,
+      signal_score_threshold: Number.isFinite(signalThreshold) ? signalThreshold : null,
       alert_actionable: alertOnActionable,
     },
     alerts,
@@ -879,6 +941,9 @@ function renderAlertsMarkdown(alertsReport) {
   );
   lines.push(
     `- Discovery score >= ${alertsReport.thresholds.discovery_score_threshold ?? "n/a"}`
+  );
+  lines.push(
+    `- Signal score >= ${alertsReport.thresholds.signal_score_threshold ?? "n/a"}`
   );
   lines.push(
     `- Actionable (KEEP + catalyst): ${alertsReport.thresholds.alert_actionable ? "on" : "off"}`
@@ -1023,6 +1088,3 @@ module.exports = {
   writeJson,
   maybeShowPopup,
 };
-
-
-

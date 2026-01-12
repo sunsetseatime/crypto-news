@@ -89,6 +89,7 @@ const BACKTEST_REPORT_JSON_PATH = path.join(BACKTEST_DIR, "BacktestReport.json")
 const PAPER_DIR = path.join(REPORTS_DIR, "paper");
 const PAPER_SIGNAL_EVENTS_PATH = path.join(PAPER_DIR, "SignalEvents.json");
 const PAPER_TRADES_PATH = path.join(PAPER_DIR, "PaperTrades.json");
+const PAPER_TRADE_INTENTS_PATH = path.join(PAPER_DIR, "PaperTradeIntents.json");
 const PAPER_REPORT_MD_PATH = path.join(PAPER_DIR, "PaperReport.md");
 const PAPER_REPORT_JSON_PATH = path.join(PAPER_DIR, "PaperReport.json");
 const MACRO_PULSE_JSON_PATH = path.join(REPORTS_DIR, "MacroPulse.json");
@@ -160,6 +161,8 @@ const PORTFOLIO_MULTIPLIER = Math.max(0.1, Math.min(1, PORTFOLIO_SIZE / 100000))
 // - $5K portfolio: $250K low, $50K drop (more aggressive)
 const VOLUME_LOW = Math.max(250_000, Math.round(5_000_000 * PORTFOLIO_MULTIPLIER));
 const VOLUME_DROP = Math.max(50_000, Math.round(1_000_000 * PORTFOLIO_MULTIPLIER));
+const MIN_MARKET_CAP_USD = envNumber("MIN_MARKET_CAP_USD", 50_000_000);
+const MIN_VOLUME_TO_MCAP = envNumber("MIN_VOLUME_TO_MCAP", 0.01);
 const CHASING_7D = 40;
 const CHASING_24H = 20;
 
@@ -168,6 +171,12 @@ const CHASING_24H = 20;
 // Paid plan ($199/mo) gives real-time news + sentiment
 // We primarily use CoinGecko status updates (free) as fallback
 const CRYPTOPANIC_API_KEY = process.env.CRYPTOPANIC_API_KEY || "";
+const EXCHANGE_NEWS_SOURCES = [
+  { name: "Binance", url: "https://www.binance.com/en/support/announcement/rss" },
+  { name: "Coinbase", url: "https://www.coinbase.com/blog/rss.xml" },
+  { name: "Kraken", url: "https://blog.kraken.com/feed" },
+  { name: "OKX", url: "https://www.okx.com/support/hc/en-us/rss/200104636" },
+];
 
 // Take-profit configuration (default targets in %)
 const TAKE_PROFIT_TARGET_1 = Number(process.env.TAKE_PROFIT_TARGET_1 || 15); // First target: 15%
@@ -1149,6 +1158,89 @@ function getTechnicalSignals(marketChart, currentPrice) {
   return result;
 }
 
+function computeTrendRegime({ priceChange7d, priceChange30d }) {
+  const pc7 = num(priceChange7d);
+  const pc30 = num(priceChange30d);
+  if (pc7 === null || pc30 === null) {
+    return { label: "Unknown", score: null, reason: "Missing 7d/30d trend data." };
+  }
+
+  if (pc7 >= 4 && pc30 >= 8) {
+    return { label: "Uptrend", score: 80, reason: `+${pc7.toFixed(1)}% (7d), +${pc30.toFixed(1)}% (30d)` };
+  }
+  if (pc7 <= -4 && pc30 <= -8) {
+    return { label: "Downtrend", score: 20, reason: `${pc7.toFixed(1)}% (7d), ${pc30.toFixed(1)}% (30d)` };
+  }
+  if (Math.abs(pc7) <= 3 && Math.abs(pc30) <= 5) {
+    return { label: "Sideways", score: 50, reason: `Flat: ${pc7.toFixed(1)}% (7d), ${pc30.toFixed(1)}% (30d)` };
+  }
+
+  if (pc7 >= 0 && pc30 >= 0) {
+    return { label: "Uptrend", score: 70, reason: `+${pc7.toFixed(1)}% (7d), +${pc30.toFixed(1)}% (30d)` };
+  }
+  if (pc7 <= 0 && pc30 <= 0) {
+    return { label: "Downtrend", score: 30, reason: `${pc7.toFixed(1)}% (7d), ${pc30.toFixed(1)}% (30d)` };
+  }
+
+  return { label: "Sideways", score: 50, reason: "Mixed 7d/30d trend." };
+}
+
+function evaluateEntryConfirmations({ volumeRatio, distanceFromLow, distanceFromHigh, priceChange24h, priceChange7d }) {
+  const confirmations = [];
+  if (Number.isFinite(volumeRatio) && volumeRatio >= 1.3) {
+    confirmations.push("volume confirmation");
+  }
+  if (Number.isFinite(distanceFromLow) && distanceFromLow <= 8) {
+    confirmations.push("near support (30d low)");
+  } else if (Number.isFinite(distanceFromHigh) && distanceFromHigh >= 20) {
+    confirmations.push("meaningful pullback");
+  }
+  if (
+    Number.isFinite(priceChange24h) &&
+    Number.isFinite(priceChange7d) &&
+    priceChange24h >= -2 &&
+    priceChange7d >= -5
+  ) {
+    confirmations.push("momentum slowing");
+  }
+
+  return {
+    confirmations,
+    score: confirmations.length,
+  };
+}
+
+function computeDataConfidence({ hasNews, hasOnchain, hasTvl }) {
+  if (hasOnchain && hasNews && hasTvl) return "price + news + on-chain + tvl";
+  if (hasOnchain && hasNews) return "price + news + on-chain";
+  if (hasNews) return "price + news";
+  return "price-only";
+}
+
+function evaluateCorrelationGuardrail({ coin, portfolio }) {
+  const hasBtc = Boolean(portfolio?.BTC);
+  const hasEth = Boolean(portfolio?.ETH);
+  if (!hasBtc && !hasEth) {
+    return { blocked: false, reason: null };
+  }
+
+  const rs7d = num(coin?.relative_strength_7d);
+  const entrySignal = coin?.entry_signal;
+  const materiallyDifferent =
+    coin?.has_clean_catalyst ||
+    (Number.isFinite(rs7d) && rs7d >= 10) ||
+    entrySignal === "strong_buy";
+
+  if (materiallyDifferent) {
+    return { blocked: false, reason: null };
+  }
+
+  return {
+    blocked: true,
+    reason: "Portfolio already holds BTC/ETH; avoid adding another similar beta unless the setup is clearly different.",
+  };
+}
+
 // ============================================================================
 // BLUE CHIP SCANNER - Top Cryptos by Market Cap
 // ============================================================================
@@ -1821,10 +1913,15 @@ function generateBestEntries(coins, marketCondition) {
     const label = coin.hygiene_label;
     const entryScore = coin.entry_score;
     const entrySignal = coin.entry_signal;
+    const downtrendConfirmation =
+      coin?.has_clean_catalyst &&
+      coin?.volume_trend === "spike" &&
+      entrySignal === "strong_buy";
     
     // Skip junk - only consider KEEP or solid WATCH-ONLY
     if (label === "DROP") continue;
     if (!entryScore || entryScore < 40) continue; // Overbought
+    if (coin?.trend_regime === "Downtrend" && !downtrendConfirmation) continue;
     
     // Skip coins with severe risks
     const highRisk = coin.holder_concentration_level === "HIGH" || 
@@ -1857,6 +1954,9 @@ function generateBestEntries(coins, marketCondition) {
         reasons.push("beating BTC");
       }
     }
+    if (coin.trend_regime) {
+      reasons.push(`Trend: ${coin.trend_regime.toLowerCase()}`);
+    }
     if (coin.news_activity && coin.news_activity !== "quiet") {
       const tone =
         coin.news_sentiment === "bullish"
@@ -1871,6 +1971,9 @@ function generateBestEntries(coins, marketCondition) {
             ? "News is active"
             : "Some recent news";
       reasons.push(`${activityLabel} (${tone})`);
+    }
+    if (Array.isArray(coin.entry_confirmations) && coin.entry_confirmations.length > 0) {
+      reasons.push(`Confirmations: ${coin.entry_confirmations.slice(0, 2).join(", ")}`);
     }
     
     // Calculate adjusted score based on phase
@@ -1889,6 +1992,9 @@ function generateBestEntries(coins, marketCondition) {
     }
     if (coin.volume_trend === "spike") {
       adjustedScore += 5;
+    }
+    if (Number.isFinite(num(coin.entry_confirmation_score))) {
+      adjustedScore += Math.min(10, coin.entry_confirmation_score * 3);
     }
     if (coin.low_liquidity) {
       adjustedScore -= 10; // Liquidity penalty
@@ -2107,6 +2213,115 @@ function computeDilution(market) {
   };
 }
 
+function computeLiquidityScore({ volume24h, marketCap, volumeToMcap }) {
+  if (volume24h === null || marketCap === null) return { score: null, note: "Missing volume or market cap." };
+
+  let score = 50;
+  if (volume24h >= VOLUME_LOW) score += 20;
+  if (volume24h >= VOLUME_LOW * 2) score += 10;
+  if (volume24h < VOLUME_DROP) score -= 20;
+  if (marketCap >= MIN_MARKET_CAP_USD) score += 20;
+  if (marketCap < MIN_MARKET_CAP_USD) score -= 15;
+  if (volumeToMcap !== null) {
+    if (volumeToMcap >= MIN_VOLUME_TO_MCAP) score += 10;
+    if (volumeToMcap < MIN_VOLUME_TO_MCAP / 2) score -= 10;
+  }
+
+  score = clamp(score, 0, 100);
+  const note = `24h vol ${formatUsdCompact(volume24h)} | MCap ${formatUsdCompact(marketCap)} | Vol/MCap ${volumeToMcap !== null ? (volumeToMcap * 100).toFixed(2) + "%" : "n/a"}`;
+  return { score, note };
+}
+
+function computeScoreBreakdown(coin) {
+  const trendScore = coin?.trend_score;
+  const entryScore = num(coin?.entry_score);
+  const liquidity = computeLiquidityScore({
+    volume24h: num(coin?.volume_24h),
+    marketCap: num(coin?.market_cap),
+    volumeToMcap: num(coin?.volume_to_mcap),
+  });
+
+  const newsActivity = coin?.news_activity || "quiet";
+  const newsIntensityScore =
+    newsActivity === "very active"
+      ? 80
+      : newsActivity === "active"
+        ? 65
+        : newsActivity === "some"
+          ? 55
+          : 40;
+
+  const sentimentScore =
+    coin?.news_sentiment === "bullish"
+      ? 70
+      : coin?.news_sentiment === "bearish"
+        ? 30
+        : 50;
+
+  const catalystScore = Number.isFinite(num(coin?.catalyst_quality_score))
+    ? num(coin?.catalyst_quality_score)
+    : coin?.has_clean_catalyst
+      ? 75
+      : 45;
+
+  let riskPenalty = 0;
+  if (coin?.low_liquidity) riskPenalty -= 12;
+  if (coin?.high_slippage_risk) riskPenalty -= 6;
+  if (coin?.high_dilution_risk) riskPenalty -= 15;
+  if (coin?.unlock_risk_flag) riskPenalty -= 10;
+  if (coin?.holder_concentration_level === "HIGH") riskPenalty -= 12;
+  if (coin?.github_archived) riskPenalty -= 10;
+  if (coin?.defi_hack_count > 0) riskPenalty -= 8;
+  if (coin?.defi_audit_status === "NO") riskPenalty -= 6;
+
+  const rawTotal =
+    (trendScore ?? 50) * 0.2 +
+    (entryScore ?? 50) * 0.25 +
+    (liquidity.score ?? 50) * 0.2 +
+    newsIntensityScore * 0.1 +
+    sentimentScore * 0.1 +
+    catalystScore * 0.15 +
+    riskPenalty;
+
+  const totalScore = clamp(Math.round(rawTotal), 0, 100);
+
+  return {
+    trend_regime: {
+      score: trendScore,
+      label: coin?.trend_regime || "Unknown",
+      note: coin?.trend_reason || null,
+    },
+    entry_setup: {
+      score: entryScore,
+      label: coin?.entry_signal || "unknown",
+      note: entryScore !== null
+        ? `Entry score ${entryScore}${Array.isArray(coin?.entry_confirmations) && coin.entry_confirmations.length > 0 ? ` | ${coin.entry_confirmations.length} confirmations` : ""}`
+        : "Entry data missing.",
+    },
+    liquidity: {
+      score: liquidity.score,
+      note: liquidity.note,
+    },
+    news_intensity: {
+      score: newsIntensityScore,
+      label: newsActivity,
+    },
+    sentiment: {
+      score: sentimentScore,
+      label: coin?.news_sentiment || "unknown",
+    },
+    catalyst_quality: {
+      score: catalystScore,
+      label: coin?.catalyst_quality_label || (coin?.has_clean_catalyst ? "verified catalyst" : "no clean catalyst"),
+    },
+    risk_penalty: {
+      score: riskPenalty,
+      label: riskPenalty < 0 ? "risk deductions applied" : "no major risk penalties",
+    },
+    total_score: totalScore,
+  };
+}
+
 function evaluateGates(coin) {
   const trackableData =
     coin.price !== null &&
@@ -2119,7 +2334,13 @@ function evaluateGates(coin) {
       coin.total_supply !== null ||
       coin.max_supply !== null);
 
-  const liquidity = coin.volume_24h !== null && coin.volume_24h >= VOLUME_LOW;
+  const volumeToMcap = num(coin?.volume_to_mcap);
+  const liquidity =
+    coin.volume_24h !== null &&
+    coin.volume_24h >= VOLUME_LOW &&
+    coin.market_cap !== null &&
+    coin.market_cap >= MIN_MARKET_CAP_USD &&
+    (volumeToMcap === null || volumeToMcap >= MIN_VOLUME_TO_MCAP);
   
   // Unlock transparency: now uses dilution proxy when no direct unlock data
   // A coin is considered "transparent" if:
@@ -2143,6 +2364,9 @@ function evaluateGates(coin) {
   const newsFlow = !(
     coin.news_signal === "hot" && coin.news_sentiment === "bearish"
   );
+  const trendRegime = coin.trend_regime !== "Downtrend";
+  const unlockRisk = !coin.unlock_risk_flag;
+  const portfolioGuardrail = !coin?.correlation_guardrail?.blocked;
 
   return {
     trackable_data: trackableData,
@@ -2152,6 +2376,9 @@ function evaluateGates(coin) {
     concentration_risk: concentrationRisk,
     entry_timing: entryTiming,
     news_flow: newsFlow,
+    trend_regime: trendRegime,
+    unlock_risk: unlockRisk,
+    portfolio_guardrail: portfolioGuardrail,
   };
 }
 
@@ -2162,7 +2389,10 @@ function decideLabel(coin, gates, ruleConfidence = {}) {
     (gates.liquidity ? 1 : 0) +
     (gates.unlock_transparency ? 1 : 0) +
     (gates.traction ? 1 : 0) +
-    (gates.concentration_risk ? 1 : 0);
+    (gates.concentration_risk ? 1 : 0) +
+    (gates.trend_regime ? 1 : 0) +
+    (gates.unlock_risk ? 1 : 0) +
+    (gates.portfolio_guardrail ? 1 : 0);
 
   let label = "WATCH-ONLY";
   const severeLiquidity = coin.volume_24h !== null && coin.volume_24h < VOLUME_DROP;
@@ -2184,8 +2414,8 @@ function decideLabel(coin, gates, ruleConfidence = {}) {
 
   if (!gates.trackable_data || severeLiquidity) {
     label = "DROP";
-  } else if (score >= 3 && !effectiveConcentrationRisk && !effectiveDilutionRisk) {
-    // KEEP: passes at least 3 of 5 gates + no severe risks
+  } else if (score >= 6 && !effectiveConcentrationRisk && !effectiveDilutionRisk) {
+    // KEEP: passes at least 6 of 8 gates + no severe risks
     label = "KEEP";
   }
 
@@ -2214,6 +2444,19 @@ function decideLabel(coin, gates, ruleConfidence = {}) {
     label = "WATCH-ONLY";
   }
   if (label === "KEEP" && !gates.news_flow) {
+    label = "WATCH-ONLY";
+  }
+  if (label === "KEEP" && !gates.unlock_risk) {
+    label = "WATCH-ONLY";
+  }
+  if (label === "KEEP" && !gates.portfolio_guardrail) {
+    label = "WATCH-ONLY";
+  }
+  const downtrendConfirmation =
+    coin?.has_clean_catalyst &&
+    coin?.entry_signal === "strong_buy" &&
+    coin?.volume_trend === "spike";
+  if (label === "KEEP" && coin?.trend_regime === "Downtrend" && !downtrendConfirmation) {
     label = "WATCH-ONLY";
   }
 
@@ -2258,6 +2501,8 @@ function buildPortfolioGuidance(marketPhase) {
     suggested_max_buy_watch_usd: watchCap,
     volume_low_threshold_usd: VOLUME_LOW,
     volume_drop_threshold_usd: VOLUME_DROP,
+    market_cap_min_usd: MIN_MARKET_CAP_USD,
+    volume_to_mcap_min: MIN_VOLUME_TO_MCAP,
     notes,
   };
 }
@@ -2318,7 +2563,12 @@ function explainGateFailure(key, coin) {
     case "liquidity": {
       const vol = num(coin?.volume_24h);
       const volText = vol !== null ? formatUsdCompact(vol) : "n/a";
-      return `Trading activity looks too low for your portfolio (24h volume ${volText}; target at least ${formatUsdCompact(VOLUME_LOW)}).`;
+      const mcap = num(coin?.market_cap);
+      const mcapText = mcap !== null ? formatUsdCompact(mcap) : "n/a";
+      const volToMcap = num(coin?.volume_to_mcap);
+      const volToMcapText =
+        volToMcap !== null ? `${(volToMcap * 100).toFixed(2)}%` : "n/a";
+      return `Liquidity is below target (24h volume ${volText}, market cap ${mcapText}, vol/mcap ${volToMcapText}; targets: ${formatUsdCompact(VOLUME_LOW)}+ volume, ${formatUsdCompact(MIN_MARKET_CAP_USD)}+ mcap).`;
     }
     case "unlock_transparency":
       return coin?.unlock_confidence === "UNKNOWN"
@@ -2336,6 +2586,12 @@ function explainGateFailure(key, coin) {
       return "Entry timing looks overheated right now (could pull back).";
     case "news_flow":
       return "News is hot and negative right now (worth double-checking).";
+    case "trend_regime":
+      return "Trend is still down on the 7d/30d timeframe (avoid falling knives).";
+    case "unlock_risk":
+      return "Upcoming unlock looks risky (possible sell pressure soon).";
+    case "portfolio_guardrail":
+      return "Portfolio already has similar BTC/ETH exposure; avoid doubling up.";
     default:
       return String(key || "unknown").replace(/_/g, " ");
   }
@@ -2362,12 +2618,14 @@ function buildCoinChecklist(coin) {
   );
 
   const vol = num(coin?.volume_24h);
+  const mcap = num(coin?.market_cap);
+  const volToMcap = num(coin?.volume_to_mcap);
   add(
     "Trading activity",
     Boolean(gates.liquidity),
-    vol !== null
-      ? `24h volume ${formatUsdCompact(vol)} (target >= ${formatUsdCompact(VOLUME_LOW)})`
-      : "24h volume missing"
+    vol !== null || mcap !== null
+      ? `24h volume ${formatUsdCompact(vol)} (target >= ${formatUsdCompact(VOLUME_LOW)}), mcap ${formatUsdCompact(mcap)} (target >= ${formatUsdCompact(MIN_MARKET_CAP_USD)}), vol/mcap ${volToMcap !== null ? (volToMcap * 100).toFixed(2) + "%" : "n/a"}`
+      : "Liquidity data missing"
   );
 
   const unlockConf = coin?.unlock_confidence || "UNKNOWN";
@@ -2397,6 +2655,32 @@ function buildCoinChecklist(coin) {
     coin?.entry_signal ? `Entry: ${coin.entry_signal.replace(/_/g, " ")}` : "Entry signal missing"
   );
 
+  add(
+    "Entry confirmations",
+    Array.isArray(coin?.entry_confirmations) && coin.entry_confirmations.length > 0,
+    Array.isArray(coin?.entry_confirmations) && coin.entry_confirmations.length > 0
+      ? `Confirmations: ${coin.entry_confirmations.join(", ")}`
+      : "No extra confirmations (volume/levels/momentum)."
+  );
+
+  add(
+    "Unlock risk clear",
+    Boolean(gates.unlock_risk),
+    coin?.unlock_risk_flag ? "Unlock risk flagged in next 30 days." : "No major unlock risk flagged."
+  );
+
+  add(
+    "Portfolio correlation check",
+    Boolean(gates.portfolio_guardrail),
+    coin?.correlation_guardrail?.reason || "No guardrail triggered."
+  );
+
+  add(
+    "Trend/regime supports entry",
+    Boolean(gates.trend_regime),
+    coin?.trend_regime ? `Trend: ${coin.trend_regime}` : "Trend data missing"
+  );
+
   const activity = coin?.news_activity || "quiet";
   const sentiment = coin?.news_sentiment || "unknown";
   add(
@@ -2414,6 +2698,9 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
 
   const positives = [];
   if (coin?.has_clean_catalyst) positives.push("Recent catalyst/news found.");
+  if (Number.isFinite(num(coin?.catalyst_quality_score)) && coin.catalyst_quality_score >= 70) {
+    positives.push(`Catalyst quality looks strong (${coin.catalyst_quality_label || "high impact"}).`);
+  }
   if (coin?.traction_status === "OK") positives.push("Traction signals look okay.");
   if (coin?.github_active) positives.push("Development looks active recently.");
   if (coin?.outperforming_btc) {
@@ -2421,6 +2708,8 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
     positives.push(rs !== null ? `Beating BTC by ${rs.toFixed(1)}% this week.` : "Beating BTC this week.");
   }
   if (!coin?.low_liquidity && num(coin?.volume_24h) !== null) positives.push("Easy to trade (healthy daily volume).");
+  if (coin?.trend_regime === "Uptrend") positives.push("Trend is up on the 7d/30d timeframe.");
+  if (coin?.trend_regime === "Sideways") positives.push("Trend is sideways (not accelerating lower).");
   if (coin?.entry_signal === "strong_buy") positives.push("Entry timing looks very good right now.");
   else if (coin?.entry_signal === "buy") positives.push("Entry timing looks good right now.");
   if (coin?.news_sentiment === "bullish" && coin?.news_activity && coin.news_activity !== "quiet") {
@@ -2434,21 +2723,29 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
   if (coin?.low_liquidity) risks.push("Low trading activity can make exits harder.");
   if (coin?.chasing) risks.push("Price has already run up; pullbacks can be sharp.");
   if (!coin?.gates?.news_flow) risks.push("Recent news looks negative; double-check headlines before buying.");
+  if (coin?.has_clean_catalyst && coin?.catalyst_confidence === "low") {
+    risks.push("Catalyst source confidence is low; verify the announcement manually.");
+  }
   if (coin?.github_archived) risks.push("Project code repo is archived (development may have stopped).");
   if (coin?.defi_hack_count > 0) risks.push("Protocol has a history of hacks/exploits.");
   if (coin?.defi_audit_status === "NO") risks.push("No audit found; smart contract risk is higher.");
+  if (coin?.trend_regime === "Downtrend") risks.push("Trend is still down; falling knives can bounce and fail.");
+  if (coin?.unlock_risk_flag) risks.push("Upcoming unlock could add near-term sell pressure.");
+  if (coin?.correlation_guardrail?.blocked) {
+    risks.push("Portfolio already has similar BTC/ETH exposure; avoid doubling up without a unique catalyst.");
+  }
 
   const why = [];
   if (label === "KEEP") {
     why.push("Verdict is Buy because it passes most of the safety checks.");
-    for (const line of positives.slice(0, 2)) why.push(line);
+    for (const line of positives.slice(0, 3)) why.push(line);
     if (why.length < 3) {
       const missing = failures.map((f) => explainGateFailure(f, coin)).slice(0, 1);
       if (missing.length > 0) why.push(`One thing to watch: ${missing[0]}`);
     }
   } else if (label === "WATCH-ONLY") {
     why.push("Verdict is Watch because it has some positives, but not enough to buy confidently yet.");
-    if (positives.length > 0) why.push(positives[0]);
+    for (const line of positives.slice(0, 2)) why.push(line);
     const mainIssue = failures.length > 0 ? explainGateFailure(failures[0], coin) : null;
     if (mainIssue) why.push(`Main issue: ${mainIssue}`);
   } else if (label === "DROP") {
@@ -2478,18 +2775,50 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
   const ownershipRule = ruleEffectiveness?.high_concentration_risk || null;
   const dilutionRule = ruleEffectiveness?.high_dilution_risk || null;
 
+  const gatePassCount = Object.values(coin?.gates || {}).filter(Boolean).length;
+  const gateCount = Object.keys(coin?.gates || {}).length || 1;
+  const hasStrongSetup =
+    coin?.entry_signal === "strong_buy" && coin?.trend_regime === "Uptrend";
+  const confidenceLevel =
+    gatePassCount >= gateCount - 1 && hasStrongSetup
+      ? "high"
+      : gatePassCount >= Math.ceil(gateCount / 2)
+        ? "medium"
+        : "low";
+
+  const confidenceReason = `${gatePassCount}/${gateCount} gates passed` +
+    (coin?.trend_regime ? `, trend ${coin.trend_regime.toLowerCase()}` : "") +
+    (coin?.data_confidence ? `, data ${coin.data_confidence}` : "");
+
+  const low30 = num(coin?.low_30d);
+  const invalidationRule = low30
+    ? `Close below ${formatUsd(low30 * 0.97)} (≈3% under 30d low).`
+    : coin?.trend_regime === "Downtrend"
+      ? "Trend stays down on 7d/30d; wait for a reversal."
+      : "Breaks below recent support or entry signal flips to overbought.";
+
+  const timeHorizon =
+    coin?.trend_regime === "Uptrend"
+      ? "days to weeks"
+      : coin?.trend_regime === "Sideways"
+        ? "days"
+        : "hours to days";
+
   return {
-    why: why.slice(0, 3),
-    risks: risks.slice(0, 2),
+    why: why.slice(0, 5),
+    risks: risks.slice(0, 3),
     checklist,
     headline: Array.isArray(coin?.news_headlines) && coin.news_headlines.length > 0 ? coin.news_headlines[0]?.title || null : null,
     news: {
       source: coin?.news_source || null,
       fetched_at: coin?.news_fetched_at || null,
     },
-    holder_note: holderNote,
-    sizing,
+    data_confidence: coin?.data_confidence || null,
+    time_horizon: timeHorizon,
+    invalidation_rule: invalidationRule,
     confidence: {
+      level: confidenceLevel,
+      reason: confidenceReason,
       ownership_rule: ownershipRule
         ? {
             confidence: ownershipRule.confidence || null,
@@ -2505,6 +2834,8 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
           }
         : null,
     },
+    holder_note: holderNote,
+    sizing,
   };
 }
 
@@ -3336,6 +3667,75 @@ function summarizeAltNews(newsEntries) {
   return items.slice(0, 3);
 }
 
+function shouldIncludeExchangeHeadline(title) {
+  const text = String(title || "").toLowerCase();
+  if (!text) return false;
+  const keywords = [
+    "listing",
+    "listings",
+    "delist",
+    "delisting",
+    "support",
+    "trading",
+    "launch",
+    "futures",
+    "perpetual",
+    "margin",
+    "staking",
+    "airdrop",
+    "upgrade",
+    "migration",
+    "mainnet",
+    "integration",
+    "hack",
+    "exploit",
+    "outage",
+    "maintenance",
+    "suspension",
+    "incident",
+    "security",
+  ];
+  return keywords.some((keyword) => text.includes(keyword));
+}
+
+function summarizeExchangeNews(newsItems) {
+  const now = Date.now();
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const items = [];
+
+  for (const entry of newsItems) {
+    const title = entry?.title;
+    if (!title) continue;
+    const publishedMs = entry?.date ? Date.parse(entry.date) : null;
+    const isRecent = Number.isFinite(publishedMs) && publishedMs >= sevenDaysAgo;
+    const isRelevant = shouldIncludeExchangeHeadline(title);
+    if (!isRecent && !isRelevant) continue;
+
+    const windowLabel =
+      Number.isFinite(publishedMs) && publishedMs >= now - 24 * 60 * 60 * 1000
+        ? "today"
+        : "this week";
+
+    items.push({
+      source: entry?.source || "",
+      title,
+      url: entry?.url || "",
+      published_at: Number.isFinite(publishedMs)
+        ? new Date(publishedMs).toISOString()
+        : null,
+      window: windowLabel,
+    });
+  }
+
+  items.sort((a, b) => {
+    const at = a.published_at ? Date.parse(a.published_at) : 0;
+    const bt = b.published_at ? Date.parse(b.published_at) : 0;
+    return bt - at;
+  });
+
+  return items.slice(0, 5);
+}
+
 function summarizeBtcShare(globalSnapshot) {
   if (!globalSnapshot || !Number.isFinite(globalSnapshot.btc_dominance_pct)) {
     return { error: "BTC share unavailable." };
@@ -3453,6 +3853,7 @@ async function buildMacroPulse({ btcData } = {}) {
   let btcShare = null;
   let altStrength = null;
   let altNews = [];
+  let exchangeNews = [];
   let mood = null;
   try {
     const flows = await fetchEtfFlows();
@@ -3501,6 +3902,21 @@ async function buildMacroPulse({ btcData } = {}) {
     altNews = [];
   }
 
+  try {
+    const exchangeEntries = await Promise.all(
+      EXCHANGE_NEWS_SOURCES.map(async (source) => {
+        const items = await fetchRSSFeed(source.url);
+        return items.map((item) => ({
+          ...item,
+          source: source.name,
+        }));
+      })
+    );
+    exchangeNews = summarizeExchangeNews(exchangeEntries.flat());
+  } catch (err) {
+    exchangeNews = [];
+  }
+
   mood = deriveMacroMood({ etfSummary, leverage, altStrength });
 
   return {
@@ -3512,6 +3928,7 @@ async function buildMacroPulse({ btcData } = {}) {
     btc_share: btcShare,
     alt_strength: altStrength,
     alt_news: altNews,
+    exchange_news: exchangeNews,
     mood,
   };
 }
@@ -3631,6 +4048,22 @@ function renderMacroPulseMarkdown(macroPulse) {
       const title = item?.title || "";
       const symbol = item?.symbol || "n/a";
       lines.push(`- ${symbol} (${tone}, ${windowLabel}): ${title}`);
+    }
+  }
+  lines.push("");
+
+  const exchangeNews = Array.isArray(macroPulse.exchange_news)
+    ? macroPulse.exchange_news
+    : [];
+  lines.push("## Exchange announcements");
+  if (exchangeNews.length === 0) {
+    lines.push("- No major exchange announcements found.");
+  } else {
+    for (const item of exchangeNews.slice(0, 5)) {
+      const source = item?.source || "Exchange";
+      const windowLabel = item?.window || "recent";
+      const title = item?.title || "";
+      lines.push(`- ${source} (${windowLabel}): ${title}`);
     }
   }
   lines.push("");
@@ -4951,6 +5384,47 @@ async function fetchRSSFeed(url) {
   }
 }
 
+function classifyCatalystType(title) {
+  const text = (title || "").toLowerCase();
+  if (!text) return { type: "unknown", label: "unknown", score: 0 };
+  if (text.includes("listing") || text.includes("listings")) {
+    return { type: "listing", label: "Exchange listing", score: 80 };
+  }
+  if (
+    text.includes("mainnet") ||
+    text.includes("upgrade") ||
+    text.includes("hard fork") ||
+    text.includes("v2") ||
+    text.includes("v3")
+  ) {
+    return { type: "upgrade", label: "Protocol upgrade", score: 75 };
+  }
+  if (text.includes("partnership") || text.includes("integration") || text.includes("collaboration")) {
+    return { type: "partnership", label: "Partnership/integration", score: 65 };
+  }
+  if (text.includes("regulation") || text.includes("regulatory") || text.includes("compliance")) {
+    return { type: "regulatory", label: "Regulatory update", score: 70 };
+  }
+  if (text.includes("hack") || text.includes("exploit") || text.includes("breach")) {
+    return { type: "exploit", label: "Security incident", score: 30 };
+  }
+  if (text.includes("governance") || text.includes("vote") || text.includes("proposal")) {
+    return { type: "governance", label: "Governance decision", score: 55 };
+  }
+  if (text.includes("funding") || text.includes("raise") || text.includes("round")) {
+    return { type: "funding", label: "Funding round", score: 60 };
+  }
+  if (text.includes("launch") || text.includes("release") || text.includes("announcement")) {
+    return { type: "release", label: "Product release", score: 60 };
+  }
+  return { type: "other", label: "General catalyst", score: 50 };
+}
+
+function computeCatalystScore({ typeScore, sourceWeight, ageDays }) {
+  const agePenalty = ageDays !== null && ageDays > 7 ? Math.min(20, (ageDays - 7) * 2) : 0;
+  return clamp(Math.round(typeScore * sourceWeight - agePenalty), 0, 100);
+}
+
 // Check for clean catalysts (GitHub releases + RSS feeds within 14 days)
 function checkCatalysts(githubReleases, rssItems) {
   const now = Date.now();
@@ -4962,12 +5436,17 @@ function checkCatalysts(githubReleases, rssItems) {
     for (const release of githubReleases) {
       const publishedAt = release.published_at ? new Date(release.published_at).getTime() : null;
       if (publishedAt && publishedAt >= fourteenDaysAgo) {
+        const typeMeta = classifyCatalystType(release.name || release.tag_name || "Release");
         catalysts.push({
           type: "github_release",
           title: release.name || release.tag_name || "Release",
           date: release.published_at,
           url: release.html_url,
           description: release.body || "",
+          catalyst_type: typeMeta.type,
+          catalyst_label: typeMeta.label,
+          type_score: typeMeta.score,
+          source_weight: 1.0,
         });
       }
     }
@@ -5000,12 +5479,17 @@ function checkCatalysts(githubReleases, rssItems) {
           title.includes('announcement');
         
         if (isSignificant) {
+          const typeMeta = classifyCatalystType(item.title || "");
           catalysts.push({
             type: "blog_post",
             title: item.title,
             date: item.date,
             url: item.url,
             description: "",
+            catalyst_type: typeMeta.type,
+            catalyst_label: typeMeta.label,
+            type_score: typeMeta.score,
+            source_weight: 0.65,
           });
         }
       }
@@ -5019,13 +5503,36 @@ function checkCatalysts(githubReleases, rssItems) {
     return dateB - dateA;
   });
   
+  const top = catalysts[0];
+  const topAgeDays = top?.date
+    ? Math.floor((now - new Date(top.date).getTime()) / (1000 * 60 * 60 * 24))
+    : null;
+  const catalystScore = top
+    ? computeCatalystScore({
+        typeScore: top.type_score ?? 50,
+        sourceWeight: top.source_weight ?? 0.6,
+        ageDays: topAgeDays,
+      })
+    : 0;
+  const catalystConfidence = top
+    ? top.source_weight >= 0.9
+      ? "high"
+      : top.source_weight >= 0.7
+        ? "medium"
+        : "low"
+    : "low";
+
   return {
     has_clean_catalyst: catalysts.length > 0,
-    clean_catalyst: catalysts.length > 0 
+    clean_catalyst: catalysts.length > 0
       ? `${catalysts[0].title} (${new Date(catalysts[0].date).toLocaleDateString()})`
       : "No clean catalyst in last 14 days",
     catalyst_sources: catalysts,
     catalyst_checked: true,
+    catalyst_quality_score: catalystScore,
+    catalyst_quality_label: top?.catalyst_label || null,
+    catalyst_type: top?.catalyst_type || null,
+    catalyst_confidence: catalystConfidence,
   };
 }
 
@@ -6310,6 +6817,11 @@ function loadPaperTrades() {
   return Array.isArray(trades) ? trades : [];
 }
 
+function loadPaperTradeIntents() {
+  const intents = readJsonFile(PAPER_TRADE_INTENTS_PATH, []);
+  return Array.isArray(intents) ? intents : [];
+}
+
 function savePaperTrades(trades) {
   writeJsonFile(PAPER_TRADES_PATH, Array.isArray(trades) ? trades : []);
 }
@@ -6325,6 +6837,22 @@ function buildMarketContext(layer1Report) {
     btc_trend: btcTrend,
     fear_greed: num(layer1Report?.market_condition?.fear_greed?.value),
   };
+}
+
+function buildSignalTags({ coin, entry, marketPhase }) {
+  const tags = [];
+  if (marketPhase) tags.push(`phase:${marketPhase}`);
+  const trend = coin?.trend_regime || entry?.trend_regime;
+  if (trend) tags.push(`trend:${String(trend).toLowerCase()}`);
+  const catalystType = coin?.catalyst_type || entry?.catalyst_type;
+  if (catalystType) tags.push(`catalyst:${String(catalystType).toLowerCase()}`);
+  const sentiment = coin?.news_sentiment || entry?.news_sentiment;
+  if (sentiment && sentiment !== "unknown") tags.push(`sentiment:${String(sentiment).toLowerCase()}`);
+  const entrySignal = entry?.entry_signal || coin?.entry_signal;
+  if (entrySignal) tags.push(`signal:${String(entrySignal).toLowerCase()}`);
+  const source = entry?.signal_source || entry?.source;
+  if (source) tags.push(`source:${String(source).toLowerCase()}`);
+  return tags;
 }
 
 function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue }) {
@@ -6382,6 +6910,8 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
     const signalType = entry?.entry_signal || null;
     const score = num(entry?.entry_score);
 
+    const tags = buildSignalTags({ coin, entry, marketPhase });
+
     pushEvent({
       signal_event_id: buildSignalEventId({
         timestamp: nowIso,
@@ -6409,6 +6939,10 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
         adjusted_score: num(entry?.adjusted_score),
         reasons,
         risks,
+        trend_regime: coin?.trend_regime || null,
+        catalyst_type: coin?.catalyst_type || null,
+        news_sentiment: coin?.news_sentiment || null,
+        tags,
       },
     });
   }
@@ -6439,6 +6973,8 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
       const score = num(opp?.signal_strength);
       const price = num(opp?.price);
       const volume24h = num(opp?.volume_24h);
+
+      const tags = buildSignalTags({ coin: null, entry: opp, marketPhase });
 
       pushEvent({
         signal_event_id: buildSignalEventId({
@@ -6473,6 +7009,7 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
           change_24h: num(opp?.change_24h),
           market_in_fear: Boolean(blueData?.market_in_fear),
           stabilizing: Boolean(opp?.stabilizing),
+          tags,
         },
       });
     }
@@ -6518,6 +7055,8 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
     if (candidate?.source) reasonParts.push(`Source ${candidate.source}`);
     const reason = reasonParts.filter(Boolean).join("; ");
 
+    const tags = buildSignalTags({ coin: null, entry: candidate, marketPhase });
+
     pushEvent({
       signal_event_id: buildSignalEventId({
         timestamp: nowIso,
@@ -6547,10 +7086,58 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
         volume_to_mcap: volToMcap,
         price_change_7d: priceChange7d,
         discovery_generated_at: discoveryGeneratedAt,
+        tags,
       },
     });
   }
 
+  return events;
+}
+
+function buildManualSignalEvents({ intents, nowIso, marketPhase, marketContext }) {
+  if (!Array.isArray(intents) || intents.length === 0) return [];
+  const events = [];
+  for (const intent of intents) {
+    if (!intent || typeof intent !== "object") continue;
+    const coinId = normalizeCoinGeckoId(intent.coin_gecko_id || intent.coinGeckoId || "");
+    if (!coinId) continue;
+    const symbol = intent.symbol ? String(intent.symbol).toUpperCase() : null;
+    const signalType = intent.entry_signal || "buy";
+    const score = num(intent.entry_score);
+    const price = num(intent.price);
+    const tags = Array.isArray(intent.tags) ? intent.tags.filter(Boolean) : [];
+
+    events.push({
+      signal_event_id: buildSignalEventId({
+        timestamp: nowIso,
+        source: "manual",
+        coinGeckoId: coinId,
+        symbol,
+        signalType,
+      }),
+      timestamp: nowIso,
+      symbol: symbol || null,
+      coin_gecko_id: coinId,
+      signal_type: signalType,
+      signal_score: score,
+      signal_reason: intent.invalidation_rule ? `Manual intent. ${intent.invalidation_rule}` : "Manual intent.",
+      signal_source: "manual",
+      market_phase: marketPhase,
+      market_context: marketContext,
+      signal_version: PAPER_TRADE_SIGNAL_VERSION,
+      signal_price: price,
+      volume_24h: num(intent.volume_24h),
+      liquidity_bucket: classifyLiquidity(num(intent.volume_24h)),
+      meta: {
+        trend_regime: intent.trend_regime || null,
+        catalyst_type: intent.catalyst_type || null,
+        news_sentiment: intent.news_sentiment || null,
+        time_horizon: intent.time_horizon || null,
+        invalidation_rule: intent.invalidation_rule || null,
+        tags,
+      },
+    });
+  }
   return events;
 }
 
@@ -6584,6 +7171,9 @@ function shouldExecuteSignal(event) {
       Number.isFinite(event.signal_score) &&
       event.signal_score >= PAPER_TRADE_DISCOVERY_BUY
     );
+  }
+  if (event.signal_source === "manual") {
+    return true;
   }
   return false;
 }
@@ -6663,6 +7253,14 @@ function createPaperTradeFromSignal(event, nowIso, btcPrice) {
     btc_return_pct: 0,
     signal_reason: event.signal_reason || null,
     liquidity_bucket: event.liquidity_bucket || null,
+    signal_tags: Array.isArray(event?.meta?.tags) ? event.meta.tags : [],
+    signal_meta: event?.meta || {},
+    post_mortem: {
+      invalidation_hit: null,
+      primary_driver: null,
+      outcome_tag: null,
+      notes: null,
+    },
   };
 
   trade.current_pnl_pct = computeTradePnlPct({
@@ -6887,6 +7485,14 @@ function updatePaperTrades({ trades, priceById, btcPriceNow, signalEvents, nowIs
         slippage_pct: trade.slippage_pct,
         current_price: currentPrice,
       });
+      if (!trade.post_mortem) trade.post_mortem = {};
+      if (!trade.post_mortem.primary_driver) {
+        trade.post_mortem.primary_driver = exitReason;
+      }
+      if (!trade.post_mortem.outcome_tag) {
+        const pnl = num(trade.exit_pnl_pct);
+        trade.post_mortem.outcome_tag = pnl !== null && pnl >= 0 ? "winner" : "loser";
+      }
     }
   }
 
@@ -7052,6 +7658,7 @@ function computePaperReport({
       pnl_pct: tradeReturnPct(trade),
       entry_signal: trade.entry_signal || null,
       entry_score: trade.entry_score ?? null,
+      tags: Array.isArray(trade.signal_tags) ? trade.signal_tags : [],
     }));
 
   const closedPositions = [...closedTrades]
@@ -7069,6 +7676,9 @@ function computePaperReport({
       exit_reason: trade.exit_reason || null,
       entry_signal: trade.entry_signal || null,
       entry_score: trade.entry_score ?? null,
+      tags: Array.isArray(trade.signal_tags) ? trade.signal_tags : [],
+      outcome_tag: trade?.post_mortem?.outcome_tag || null,
+      primary_driver: trade?.post_mortem?.primary_driver || null,
     }));
 
   return {
@@ -7115,6 +7725,11 @@ function computePaperReport({
       entry_price_convention: "Signal price at scan time plus slippage.",
       signal_sources: ["best_entries", "blue_chip_dip", "discovery"],
     },
+    post_mortem_prompts: [
+      "Did the invalidation rule trigger?",
+      "Was this a downtrend trap, news fade, or unlock pressure?",
+      "What would you do differently next time?",
+    ],
   };
 }
 
@@ -7193,9 +7808,10 @@ function renderPaperReportMarkdown(report) {
     lines.push("- None");
     lines.push("");
   } else {
-    lines.push("| Symbol | Source | Days | Entry | Current | PnL | Signal | Score |");
-    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+    lines.push("| Symbol | Source | Days | Entry | Current | PnL | Signal | Score | Tags |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
     for (const trade of openPositions) {
+      const tags = Array.isArray(trade.tags) && trade.tags.length > 0 ? trade.tags.join(", ") : "n/a";
       lines.push(
         `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${
           trade.days_held ?? "n/a"
@@ -7203,7 +7819,7 @@ function renderPaperReportMarkdown(report) {
           trade.current_price
         )} | ${formatSignedPct(num(trade.pnl_pct), 1)} | ${
           trade.entry_signal || "n/a"
-        } | ${Number.isFinite(trade.entry_score) ? trade.entry_score : "n/a"} |`
+        } | ${Number.isFinite(trade.entry_score) ? trade.entry_score : "n/a"} | ${tags} |`
       );
     }
     lines.push("");
@@ -7217,9 +7833,11 @@ function renderPaperReportMarkdown(report) {
     lines.push("- None");
     lines.push("");
   } else {
-    lines.push("| Symbol | Source | Days | PnL | Exit | Reason | Signal | Score |");
-    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+    lines.push("| Symbol | Source | Days | PnL | Exit | Reason | Signal | Score | Outcome | Tags |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
     for (const trade of closedPositions) {
+      const tags = Array.isArray(trade.tags) && trade.tags.length > 0 ? trade.tags.join(", ") : "n/a";
+      const outcome = trade.outcome_tag || "n/a";
       lines.push(
         `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${
           trade.days_held ?? "n/a"
@@ -7227,7 +7845,7 @@ function renderPaperReportMarkdown(report) {
           trade.exit_price
         )} | ${trade.exit_reason || "n/a"} | ${
           trade.entry_signal || "n/a"
-        } | ${Number.isFinite(trade.entry_score) ? trade.entry_score : "n/a"} |`
+        } | ${Number.isFinite(trade.entry_score) ? trade.entry_score : "n/a"} | ${outcome} | ${tags} |`
       );
     }
     lines.push("");
@@ -7286,6 +7904,15 @@ function renderPaperReportMarkdown(report) {
   }
   lines.push("");
 
+  const prompts = Array.isArray(report?.post_mortem_prompts) ? report.post_mortem_prompts : [];
+  if (prompts.length > 0) {
+    lines.push("## Post-mortem prompts");
+    for (const prompt of prompts) {
+      lines.push(`- ${prompt}`);
+    }
+    lines.push("");
+  }
+
   if (report?.notes?.entry_price_convention) {
     lines.push("## Notes");
     lines.push(`- Entry price: ${report.notes.entry_price_convention}`);
@@ -7305,6 +7932,20 @@ async function runPaperTrading({ layer1Report, discoveryReport, discoveryQueue, 
     discoveryReport,
     discoveryQueue,
   });
+  const manualIntents = loadPaperTradeIntents();
+  const manualSignals = buildManualSignalEvents({
+    intents: manualIntents,
+    nowIso,
+    marketPhase:
+      layer1Report?.best_entries?.market_phase ||
+      layer1Report?.market_condition?.signals?.market_phase ||
+      "neutral",
+    marketContext: buildMarketContext(layer1Report),
+  });
+  if (manualSignals.length > 0) {
+    newSignals.push(...manualSignals);
+    writeJsonFile(PAPER_TRADE_INTENTS_PATH, []);
+  }
   const existingSignals = loadPaperSignalEvents();
 
   const existingTrades = loadPaperTrades();
@@ -7919,6 +8560,10 @@ async function main() {
     const priceChange24h = num(market?.price_change_percentage_24h_in_currency);
     const priceChange7d = num(market?.price_change_percentage_7d_in_currency);
     const priceChange30d = num(market?.price_change_percentage_30d_in_currency);
+    const trendRegime = computeTrendRegime({
+      priceChange7d,
+      priceChange30d,
+    });
 
     // Fetch additional data sources
     const defiLlamaSlug = findDefiLlamaSlug(coin.name, coin.symbol, coin.coinGeckoId, defiLlamaProtocols);
@@ -8047,12 +8692,24 @@ async function main() {
     const lowLiquidity = volume24h !== null && volume24h < VOLUME_LOW;
     const highSlippage =
       volume24h !== null && volume24h >= VOLUME_DROP && volume24h < VOLUME_LOW;
+    const volumeToMcap =
+      volume24h !== null && dilution.marketCap !== null && dilution.marketCap > 0
+        ? volume24h / dilution.marketCap
+        : null;
 
     // Compute relative strength vs BTC
     const rs24h = computeRelativeStrength(priceChange24h, btc.price_change_24h);
     const rs7d = computeRelativeStrength(priceChange7d, btc.price_change_7d);
     const rs30d = computeRelativeStrength(priceChange30d, btc.price_change_30d);
     const outperformingBtc = rs7d !== null && rs7d > 0;
+
+    const entryConfirmations = evaluateEntryConfirmations({
+      volumeRatio,
+      distanceFromLow: technicalSignals.distance_from_low,
+      distanceFromHigh: technicalSignals.distance_from_high,
+      priceChange24h,
+      priceChange7d,
+    });
 
     const coinReport = {
       symbol: coin.symbol,
@@ -8069,17 +8726,25 @@ async function main() {
       relative_strength_30d: rs30d,
       outperforming_btc: outperformingBtc,
       volume_24h: volume24h,
+      volume_to_mcap: volumeToMcap,
       volume_avg_7d: volumeStats.avg7d,
       volume_avg_30d: volumeStats.avg30d,
       volume_baseline: volumeBaseline,
       volume_baseline_window: volumeBaselineWindow,
       volume_ratio: volumeRatio,
       volume_trend: volumeTrend,
+      trend_regime: trendRegime.label,
+      trend_score: trendRegime.score,
+      trend_reason: trendRegime.reason,
       volume_note: "Total volume used; spot/perps split unknown.",
       clean_catalyst: catalystInfo.clean_catalyst,
       catalyst_sources: catalystInfo.catalyst_sources,
       catalyst_checked: catalystInfo.catalyst_checked,
       has_clean_catalyst: hasCleanCatalyst,
+      catalyst_quality_score: catalystInfo.catalyst_quality_score ?? null,
+      catalyst_quality_label: catalystInfo.catalyst_quality_label ?? null,
+      catalyst_type: catalystInfo.catalyst_type ?? null,
+      catalyst_confidence: catalystInfo.catalyst_confidence ?? null,
       unlock_confidence: unlockInfo.unlock_confidence,
       unlock_source: unlockInfo.unlock_source || null,
       unlock_next_30d: unlockInfo.unlock_next_30d,
@@ -8152,6 +8817,13 @@ async function main() {
       distance_from_low: technicalSignals.distance_from_low,
       entry_signal: technicalSignals.entry_signal,
       entry_score: technicalSignals.entry_score,
+      entry_confirmations: entryConfirmations.confirmations,
+      entry_confirmation_score: entryConfirmations.score,
+      data_confidence: computeDataConfidence({
+        hasNews: Boolean(newsSentiment && newsSentiment.source),
+        hasOnchain: Boolean(holdersData || holderInfo?.onchain),
+        hasTvl: Boolean(tvlData),
+      }),
       // News sentiment
       news_count_24h: newsSentiment?.news_count_24h || 0,
       news_count_7d: newsSentiment?.news_count_7d || 0,
@@ -8172,6 +8844,11 @@ async function main() {
         return extractDefiData(defiProto) || { defi_matched: false };
       })(),
     };
+
+    coinReport.score_breakdown = computeScoreBreakdown(coinReport);
+
+    const correlationGuardrail = evaluateCorrelationGuardrail({ coin: coinReport, portfolio });
+    coinReport.correlation_guardrail = correlationGuardrail;
 
     const gates = evaluateGates(coinReport);
     const label = decideLabel(coinReport, gates, ruleConfidence);
@@ -8376,6 +9053,7 @@ async function main() {
   const alertsThresholds = {
     defi_score_threshold: parseEnvNumber("ALERT_DEFI_SCORE_THRESHOLD", 70),
     discovery_score_threshold: parseEnvNumber("ALERT_DISCOVERY_SCORE_THRESHOLD", 80),
+    signal_score_threshold: parseEnvNumber("ALERT_SIGNAL_SCORE_THRESHOLD", 75),
     alert_actionable: alertActionableEnabled,
   };
 
