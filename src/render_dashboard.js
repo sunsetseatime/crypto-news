@@ -118,6 +118,7 @@ function notesForCoin(coin) {
   if (coin?.volume_trend === "spike") notes.push("volume jumped");
   if (coin?.high_dilution_risk) notes.push("high dilution");
   if (coin?.low_liquidity) notes.push("low liquidity");
+  if (coin?.trend_regime === "Downtrend") notes.push("downtrend");
   // Updated unlock notes to reflect new estimation system
   if (coin?.unlock_risk_flag) {
     notes.push("unlock risk");
@@ -130,6 +131,9 @@ function notesForCoin(coin) {
     notes.push("vesting unknown");
   }
   if (coin?.has_clean_catalyst) notes.push("recent catalyst");
+  if (Number.isFinite(num(coin?.catalyst_quality_score)) && coin.catalyst_quality_score >= 70) {
+    notes.push("strong catalyst");
+  }
   if (coin?.traction_status === "OK") notes.push("good traction");
   if (coin?.holder_concentration_level === "HIGH") {
     notes.push("few big holders");
@@ -397,6 +401,148 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       </div>
       <h3 style="margin-top: 16px;">Key Findings</h3>
       ${highlightsHtml}
+    </div>
+  `;
+}
+
+function buildStoryCardsHtml(coins) {
+  const items = Array.isArray(coins) ? coins : [];
+  const withNews = items
+    .filter((coin) => Array.isArray(coin?.news_headlines) && coin.news_headlines.length > 0)
+    .slice(0, 8);
+
+  if (withNews.length === 0) {
+    return `
+      <div class="card">
+        <h2>Story Cards</h2>
+        <p class="muted">No recent headlines to cluster yet.</p>
+      </div>
+    `;
+  }
+
+  const cards = withNews
+    .map((coin) => {
+      const headlines = [...coin.news_headlines]
+        .filter((h) => h && h.title)
+        .sort((a, b) => Date.parse(b.published || "") - Date.parse(a.published || ""));
+      const latest = headlines[0];
+      const updates = headlines.slice(0, 3)
+        .map((headline) => {
+          const published = headline.published ? formatUtc(headline.published) : "n/a";
+          const source = headline.source ? `(${headline.source})` : "";
+          const link = headline.url
+            ? `<a href="${escapeHtml(headline.url)}" target="_blank" rel="noreferrer">${escapeHtml(headline.title)}</a>`
+            : escapeHtml(headline.title);
+          return `<li>${link} <span class="muted small">${escapeHtml(published)} ${escapeHtml(source)}</span></li>`;
+        })
+        .join("");
+      const timeline = headlines.slice(0, 6)
+        .map((headline) => {
+          const published = headline.published ? formatUtc(headline.published) : "n/a";
+          const link = headline.url
+            ? `<a href="${escapeHtml(headline.url)}" target="_blank" rel="noreferrer">${escapeHtml(headline.title)}</a>`
+            : escapeHtml(headline.title);
+          return `<li>${link} <span class="muted small">${escapeHtml(published)}</span></li>`;
+        })
+        .join("");
+
+      return `
+        <div class="card story-card">
+          <div class="row space-between">
+            <div>
+              <h3>${escapeHtml(coin.symbol || "Coin")} story</h3>
+              <div class="muted small">${escapeHtml(coin.name || "")}</div>
+            </div>
+            <div class="muted small">Latest: ${escapeHtml(latest?.published ? formatUtc(latest.published) : "n/a")}</div>
+          </div>
+          <div class="story-updates">
+            <ul class="compact">
+              ${updates}
+            </ul>
+          </div>
+          <details class="details" style="margin-top: 8px;">
+            <summary><span class="summary-title">Timeline</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
+            <div class="details-body">
+              <ul class="compact">
+                ${timeline}
+              </ul>
+            </div>
+          </details>
+        </div>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="card">
+      <h2>Story Cards</h2>
+      <p class="muted small">Clustered headlines by coin with the most recent updates first.</p>
+      <div class="story-grid">
+        ${cards}
+      </div>
+    </div>
+  `;
+}
+
+function buildOpportunityBucketsHtml(coins) {
+  const items = Array.isArray(coins) ? coins : [];
+  const buckets = {
+    momentum: [],
+    catalyst: [],
+    narrative: [],
+    rebound: [],
+    contrarian: [],
+    traps: [],
+  };
+
+  for (const coin of items) {
+    if (coin?.trend_regime === "Downtrend" || coin?.unlock_risk_flag || coin?.low_liquidity) {
+      buckets.traps.push(coin);
+      continue;
+    }
+    if (coin?.outperforming_btc && (coin?.entry_signal === "buy" || coin?.entry_signal === "strong_buy")) {
+      buckets.momentum.push(coin);
+    }
+    if (coin?.has_clean_catalyst) {
+      buckets.catalyst.push(coin);
+    }
+    if (coin?.news_activity && coin.news_activity !== "quiet") {
+      buckets.narrative.push(coin);
+    }
+    if (coin?.distance_from_high && coin.distance_from_high > 20 && coin?.entry_signal !== "overbought") {
+      buckets.rebound.push(coin);
+    }
+    if (coin?.rsi_signal === "oversold" && coin?.news_sentiment === "bearish") {
+      buckets.contrarian.push(coin);
+    }
+  }
+
+  const card = (title, list, note) => {
+    const top = list.slice(0, 6);
+    const body = top.length
+      ? `<div class="bucket-list">${top.map((c) => `<span class="badge badge-muted">${escapeHtml(c.symbol)}</span>`).join(" ")}</div>`
+      : `<div class="muted small">No coins here today.</div>`;
+    return `
+      <div class="bucket-card">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="muted small">${escapeHtml(note)}</div>
+        ${body}
+      </div>
+    `;
+  };
+
+  return `
+    <div class="card">
+      <h2>Opportunity Buckets</h2>
+      <div class="muted small">Quick buckets to scan in 10 seconds.</div>
+      <div class="bucket-grid">
+        ${card("Momentum (confirmed)", buckets.momentum, "Uptrend + strong entry + beating BTC")}
+        ${card("Catalyst soon", buckets.catalyst, "Fresh project catalysts or releases")}
+        ${card("Narrative accelerating", buckets.narrative, "News activity is building")}
+        ${card("Rebound candidates", buckets.rebound, "Meaningful pullback + entry signals")}
+        ${card("Contrarian panic", buckets.contrarian, "Oversold + negative tone (high risk)")}
+        ${card("Avoid / traps", buckets.traps, "Downtrend, unlock risk, or low liquidity")}
+      </div>
     </div>
   `;
 }
@@ -1219,6 +1365,43 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       .join("");
   }
 
+  function renderScoreBreakdown(breakdown) {
+    if (!breakdown) return `<div class="muted small">No score data.</div>`;
+    const rows = [
+      { label: "Trend/regime", item: breakdown.trend_regime },
+      { label: "Entry setup", item: breakdown.entry_setup },
+      { label: "Liquidity", item: breakdown.liquidity },
+      { label: "News intensity", item: breakdown.news_intensity },
+      { label: "Sentiment", item: breakdown.sentiment },
+      { label: "Catalyst quality", item: breakdown.catalyst_quality },
+      { label: "Risk penalties", item: breakdown.risk_penalty },
+    ]
+      .map((row) => {
+        const score =
+          row.item?.score === null || row.item?.score === undefined
+            ? "n/a"
+            : row.item.score;
+        const note = row.item?.note ? `<div class="muted small">${escapeHtml(row.item.note)}</div>` : "";
+        const label = row.item?.label ? `<span class="muted small">(${escapeHtml(row.item.label)})</span>` : "";
+        return `
+          <div class="score-row">
+            <div><strong>${escapeHtml(row.label)}</strong> ${label}</div>
+            <div class="score-value">${escapeHtml(score)}</div>
+            ${note}
+          </div>
+        `;
+      })
+      .join("");
+
+    const total = breakdown.total_score ?? "n/a";
+    return `
+      <div class="score-breakdown">
+        <div class="score-total">Score total: <strong>${escapeHtml(total)}</strong></div>
+        ${rows}
+      </div>
+    `;
+  }
+
   const rows = sorted
     .map((coin) => {
       const label = coin.hygiene_label || "UNKNOWN";
@@ -1272,8 +1455,8 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
         : `<strong>${escapeHtml(coin.symbol)}</strong>`;
 
       const explain = coin?.explain || null;
-      const why = Array.isArray(explain?.why) ? explain.why.slice(0, 3) : [];
-      const risks = Array.isArray(explain?.risks) ? explain.risks.slice(0, 2) : [];
+      const why = Array.isArray(explain?.why) ? explain.why.slice(0, 5) : [];
+      const risks = Array.isArray(explain?.risks) ? explain.risks.slice(0, 3) : [];
       const maxBuyUsd = Number.isFinite(explain?.sizing?.suggested_max_buy_usd) ? explain.sizing.suggested_max_buy_usd : null;
       const maxBuyText = maxBuyUsd !== null ? formatUsd(maxBuyUsd) : "n/a";
       const sizingInputs = explain?.sizing?.inputs || {};
@@ -1283,6 +1466,31 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       const volumeCap = Number.isFinite(sizingInputs.volume_cap_usd) ? sizingInputs.volume_cap_usd : null;
       const newsSource = explain?.news?.source ? String(explain.news.source) : "";
       const newsFetchedAt = explain?.news?.fetched_at ? formatUtc(explain.news.fetched_at) : "";
+      const timeHorizon = explain?.time_horizon ? String(explain.time_horizon) : "n/a";
+      const invalidation = explain?.invalidation_rule ? String(explain.invalidation_rule) : "n/a";
+      const confidenceLevel = explain?.confidence?.level ? String(explain.confidence.level) : "n/a";
+      const confidenceReason = explain?.confidence?.reason ? String(explain.confidence.reason) : "";
+      const dataConfidence = explain?.data_confidence ? String(explain.data_confidence) : "n/a";
+      const scoreBreakdown = coin?.score_breakdown || null;
+      const paperTags = [
+        coin?.trend_regime ? `trend:${String(coin.trend_regime).toLowerCase()}` : null,
+        coin?.catalyst_type ? `catalyst:${String(coin.catalyst_type).toLowerCase()}` : null,
+        coin?.news_sentiment ? `sentiment:${String(coin.news_sentiment).toLowerCase()}` : null,
+        coin?.entry_signal ? `signal:${String(coin.entry_signal).toLowerCase()}` : null,
+      ].filter(Boolean);
+      const paperTradePayload = {
+        symbol: coin?.symbol || null,
+        coin_gecko_id: coin?.coin_gecko_id || null,
+        price: Number.isFinite(num(coin?.price)) ? num(coin.price) : null,
+        entry_signal: coin?.entry_signal || null,
+        entry_score: Number.isFinite(num(coin?.entry_score)) ? num(coin.entry_score) : null,
+        trend_regime: coin?.trend_regime || null,
+        catalyst_type: coin?.catalyst_type || null,
+        news_sentiment: coin?.news_sentiment || null,
+        time_horizon: timeHorizon,
+        invalidation_rule: invalidation,
+        tags: paperTags,
+      };
 
       const maxBuyAttrs = [
         basePct !== null ? `data-base-pct="${basePct}"` : "",
@@ -1313,9 +1521,25 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
                     ${explainList(risks)}
                   </div>
                 </div>
+                <div class="coin-explain-meta">
+                  <div><strong>Time horizon:</strong> ${escapeHtml(timeHorizon)}</div>
+                  <div><strong>Invalidation:</strong> ${escapeHtml(invalidation)}</div>
+                  <div><strong>Confidence:</strong> ${escapeHtml(confidenceLevel)}${confidenceReason ? ` <span class="muted small">(${escapeHtml(confidenceReason)})</span>` : ""}</div>
+                  <div><strong>Data confidence:</strong> ${escapeHtml(dataConfidence)}</div>
+                </div>
+                <div style="margin-top: 10px;">
+                  <button class="paper-trade-btn" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}">Paper trade</button>
+                  <span class="muted small" style="margin-left: 8px;">Copies a trade intent to your clipboard.</span>
+                </div>
                 <div class="muted small" style="margin-top: 8px;">
                   <strong>Max buy (rough):</strong> ${maxBuyHtml} | ${newsMeta}
                 </div>
+                <details class="details" style="margin-top: 10px;">
+                  <summary><span class="summary-title">Score breakdown</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
+                  <div class="details-body">
+                    ${renderScoreBreakdown(scoreBreakdown)}
+                  </div>
+                </details>
                 <details class="details" style="margin-top: 10px;">
                   <summary><span class="summary-title">What we checked</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
                   <div class="details-body">
@@ -1650,11 +1874,53 @@ function buildPaperTradingHtml(paperReport) {
     typeof overview.expectancy_r === "number" ? `${overview.expectancy_r.toFixed(2)}R` : "n/a";
   const avgDays =
     typeof overview.avg_days_held === "number" ? `${overview.avg_days_held.toFixed(1)}d` : "n/a";
+  const breakdowns = paperReport.breakdowns || {};
+  const byScore = Array.isArray(breakdowns.by_score_range) ? breakdowns.by_score_range : [];
+  const bySource = Array.isArray(breakdowns.by_source) ? breakdowns.by_source : [];
+  const bySignal = Array.isArray(breakdowns.by_entry_signal) ? breakdowns.by_entry_signal : [];
+
+  function renderPerfTable(title, rows, labelKey) {
+    if (!rows.length) return "";
+    const body = rows
+      .map((row) => {
+        const win =
+          typeof row.win_rate_pct === "number" ? `${row.win_rate_pct.toFixed(1)}%` : "n/a";
+        return `
+          <tr>
+            <td>${escapeHtml(row[labelKey] || "n/a")}</td>
+            <td class="num">${escapeHtml(row.sample_size ?? 0)}</td>
+            <td class="num">${escapeHtml(win)}</td>
+            <td class="num">${escapeHtml(formatSignedPct(num(row.avg_return_pct), 1))}</td>
+            <td class="num">${escapeHtml(row.expectancy_r !== null && row.expectancy_r !== undefined ? row.expectancy_r.toFixed(2) : "n/a")}</td>
+          </tr>
+        `;
+      })
+      .join("");
+    return `
+      <div class="table-wrap" style="margin-top: 10px;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>${escapeHtml(title)}</th>
+              <th class="num">Sample</th>
+              <th class="num">Win rate</th>
+              <th class="num">Avg return</th>
+              <th class="num">Expectancy</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${body}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
 
   const openRows = open.slice(0, 6).map((trade) => {
     const signal = trade.entry_signal ? String(trade.entry_signal).replace(/_/g, " ") : "n/a";
     const score =
       typeof trade.entry_score === "number" ? trade.entry_score.toFixed(0) : "n/a";
+    const tags = Array.isArray(trade.tags) && trade.tags.length > 0 ? trade.tags.join(", ") : "n/a";
     return `
       <tr>
         <td>${escapeHtml(trade.symbol || "n/a")}</td>
@@ -1665,6 +1931,7 @@ function buildPaperTradingHtml(paperReport) {
         <td class="num">${escapeHtml(formatSignedPct(num(trade.pnl_pct), 1))}</td>
         <td>${escapeHtml(signal)}</td>
         <td class="num">${escapeHtml(score)}</td>
+        <td>${escapeHtml(tags)}</td>
       </tr>
     `;
   }).join("");
@@ -1673,6 +1940,8 @@ function buildPaperTradingHtml(paperReport) {
     const signal = trade.entry_signal ? String(trade.entry_signal).replace(/_/g, " ") : "n/a";
     const score =
       typeof trade.entry_score === "number" ? trade.entry_score.toFixed(0) : "n/a";
+    const tags = Array.isArray(trade.tags) && trade.tags.length > 0 ? trade.tags.join(", ") : "n/a";
+    const outcome = trade.outcome_tag ? String(trade.outcome_tag) : "n/a";
     return `
       <tr>
         <td>${escapeHtml(trade.symbol || "n/a")}</td>
@@ -1683,6 +1952,8 @@ function buildPaperTradingHtml(paperReport) {
         <td>${escapeHtml(trade.exit_reason || "n/a")}</td>
         <td>${escapeHtml(signal)}</td>
         <td class="num">${escapeHtml(score)}</td>
+        <td>${escapeHtml(outcome)}</td>
+        <td>${escapeHtml(tags)}</td>
       </tr>
     `;
   }).join("");
@@ -1699,6 +1970,9 @@ function buildPaperTradingHtml(paperReport) {
       <div class="muted small" style="margin-top: 6px;">
         Win rate: ${escapeHtml(winRate)} | Avg return: ${escapeHtml(avgReturn)} | Expectancy: ${escapeHtml(expectancy)} | Avg hold: ${escapeHtml(avgDays)}
       </div>
+      <div class="muted small" style="margin-top: 6px;">
+        Tip: use the Paper trade button on a coin card to copy an intent, then paste it into <code>reports/paper/PaperTradeIntents.json</code> before the next run.
+      </div>
       <div class="table-wrap" style="margin-top: 10px;">
         <table class="table">
           <thead>
@@ -1711,12 +1985,13 @@ function buildPaperTradingHtml(paperReport) {
               <th class="num">PnL</th>
               <th>Signal</th>
               <th class="num">Score</th>
+              <th>Tags</th>
             </tr>
           </thead>
           <tbody>
             ${
               openRows ||
-              `<tr><td colspan="8" class="muted">No open trades.</td></tr>`
+              `<tr><td colspan="9" class="muted">No open trades.</td></tr>`
             }
           </tbody>
         </table>
@@ -1733,15 +2008,32 @@ function buildPaperTradingHtml(paperReport) {
               <th>Reason</th>
               <th>Signal</th>
               <th class="num">Score</th>
+              <th>Outcome</th>
+              <th>Tags</th>
             </tr>
           </thead>
           <tbody>
             ${
               closedRows ||
-              `<tr><td colspan="8" class="muted">No closed trades yet.</td></tr>`
+              `<tr><td colspan="10" class="muted">No closed trades yet.</td></tr>`
             }
           </tbody>
         </table>
+      </div>
+      <div style="margin-top: 14px;">
+        <h3>Performance dashboard</h3>
+        <div class="muted small">Win rate and returns by signal quality.</div>
+        ${renderPerfTable("Score range", byScore, "range")}
+        ${renderPerfTable("Signal source", bySource, "source")}
+        ${renderPerfTable("Entry signal", bySignal, "signal")}
+      </div>
+      <div style="margin-top: 12px;">
+        <h3>Post-mortem prompts</h3>
+        <ul class="compact">
+          ${(paperReport.post_mortem_prompts || [])
+            .map((prompt) => `<li>${escapeHtml(prompt)}</li>`)
+            .join("")}
+        </ul>
       </div>
     </div>
   `;
@@ -2092,6 +2384,22 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       .coin-explain-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; }
       @media (max-width: 980px) { .coin-explain-grid { grid-template-columns: 1fr; } }
       .coin-explain h4 { margin: 0 0 6px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+      .coin-explain-meta { margin-top: 10px; display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+      .coin-explain-meta strong { color: var(--text); }
+      .score-breakdown { display: grid; gap: 10px; }
+      .score-total { font-size: 12px; color: var(--muted); }
+      .score-row { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: rgba(0,0,0,0.18); }
+      .score-value { font-family: var(--mono); font-weight: 700; }
+      .paper-trade-btn {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 6px 10px;
+        background: rgba(31,223,122,0.12);
+        color: var(--text);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .paper-trade-btn:hover { background: rgba(31,223,122,0.2); }
       .max-buy { font-family: var(--mono); font-weight: 700; }
       ul.compact { margin: 8px 0 0; padding-left: 18px; }
       ul.compact li { margin: 4px 0; }
@@ -2126,6 +2434,12 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       .summary-stats .stat-value { font-size: 24px; font-weight: 700; }
       .summary-stats .stat-label { font-size: 11px; color: var(--muted); margin-top: 4px; }
       .help-section { background: rgba(102,168,255,0.08); border-color: rgba(102,168,255,0.3); }
+      .story-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin-top: 12px; }
+      .story-card { background: rgba(0,0,0,0.2); }
+      .story-updates ul { margin-top: 8px; }
+      .bucket-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 12px; }
+      .bucket-card { padding: 12px; border-radius: 12px; border: 1px solid var(--border); background: rgba(0,0,0,0.18); }
+      .bucket-list { margin-top: 8px; }
       .collapsible-section { margin-top: 14px; }
       .collapsible-section summary { cursor: pointer; padding: 14px; background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02)); border: 1px solid var(--border); border-radius: 14px; list-style: none; display: flex; justify-content: space-between; align-items: center; }
       .collapsible-section summary::-webkit-details-marker { display: none; }
@@ -2231,6 +2545,11 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
   ${buildPortfolioGuidanceHtml(layer1Report?.portfolio_guidance)}
 </div>
 
+      <!-- OPPORTUNITY BUCKETS -->
+      <div style="margin-top:14px;">
+        ${buildOpportunityBucketsHtml(coins)}
+      </div>
+
 <!-- BEST ENTRIES TODAY -->
       <div style="margin-top:14px;">
         ${buildBestEntriesHtml(layer1Report?.best_entries)}
@@ -2239,6 +2558,11 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       <!-- BLUE CHIP DIP OPPORTUNITIES -->
       <div style="margin-top:14px;">
         ${buildBlueChipOpportunitiesHtml(layer1Report?.blue_chip_opportunities)}
+      </div>
+
+      <!-- STORY CARDS -->
+      <div style="margin-top:14px;">
+        ${buildStoryCardsHtml(coins)}
       </div>
 
       <!-- WHAT CHANGED & ALERTS -->
@@ -2419,6 +2743,39 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       inputEl.addEventListener("input", updateSizing);
       updateSizing();
     })();
+
+    function handlePaperTradeClick(event) {
+      const btn = event.target.closest(".paper-trade-btn");
+      if (!btn) return;
+      const raw = btn.getAttribute("data-payload");
+      if (!raw) return;
+      let payload = null;
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = null;
+      }
+      if (!payload) return;
+      const intent = {
+        created_at: new Date().toISOString(),
+        source: "dashboard",
+        ...payload,
+      };
+      const text = JSON.stringify(intent, null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          alert("Paper trade intent copied. Paste into reports/paper/PaperTradeIntents.json or your notes.");
+        }).catch(() => {
+          alert("Unable to copy automatically. Use the console to access the payload.");
+          console.log(text);
+        });
+      } else {
+        alert("Clipboard not available. Use the console to access the payload.");
+        console.log(text);
+      }
+    }
+
+    document.addEventListener("click", handlePaperTradeClick);
   })();
 </script>
   </body>
@@ -2426,6 +2783,3 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
 }
 
 module.exports = { renderDashboard };
-
-
-

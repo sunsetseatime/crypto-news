@@ -207,3 +207,30 @@ Phase 3 (data edge)
 9) Story clustering + narrative timeline
 10) Alerts based on signals
 
+---
+
+## Progress tracker (updated 2025-09-27)
+
+### Done
+- Trend/regime gate that blocks buys in downtrends unless confirmed.
+- Explainability details (why, risks, time horizon, invalidation, confidence).
+- Liquidity gate with market cap + volume thresholds.
+- Entry confirmations beyond “dip” (volume/levels/momentum checks).
+- Score breakdown panel.
+- Catalyst quality scoring (type + source weighting).
+- Paper trade one-click (clipboard intent) + outcomes + tags.
+- Performance dashboard for paper trades.
+- Story cards that group recent headlines by coin.
+- Story timeline view inside each story card.
+- Alerts based on signal scores.
+- Portfolio/correlation guardrail (avoid repeating the same BTC/ETH beta).
+- Data confidence labels (price-only vs price+news/on-chain/derivatives).
+- Opportunity bucket navigation (momentum, catalysts soon, narrative, rebound, contrarian, traps).
+- Spam control for alerts (only on score/signal changes).
+- Unlock/dilution gate that blocks buys if a major unlock is near.
+
+### Still to do
+- Paid data layer decision + integration.
+- Improve news inputs with more sources (e.g., exchange announcements).
+- Safety rules: enforce “setup + plan” wording (no raw BUY/SELL).
+- Key/secret hygiene checks.
