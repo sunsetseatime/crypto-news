@@ -6,6 +6,15 @@ const REPORTS_DIR = path.join(__dirname, "..", "reports");
 const CACHE_DIR = path.join(REPORTS_DIR, "cache");
 const ALT_STRENGTH_STATE_PATH = path.join(CACHE_DIR, "alt_strength_state.json");
 
+const DEFENSIVE_BTC_DROP_24H = 1.5;
+const DEFENSIVE_BTC_DROP_7D = 5;
+const DEFENSIVE_RS_24H = 5;
+const DEFENSIVE_RS_7D = 7;
+const DEFENSIVE_PRICE_24H_MIN = 0.5;
+const DEFENSIVE_VOLUME_RATIO_MIN = 1.2;
+const DEFENSIVE_VOLUME_MIN_USD = 5_000_000;
+const DEFENSIVE_MAX_ALERTS = 5;
+
 function normalizeId(value) {
   if (typeof value !== "string") return "";
   return value.trim().toLowerCase();
@@ -102,6 +111,22 @@ function explainAlert(alert) {
     const warnings = Array.isArray(details.risk_warnings) ? details.risk_warnings : [];
     for (const w of warnings) pushUnique(risks, w);
     pushUnique(risks, "Even blue chips can keep dropping; consider waiting for stabilization.");
+  } else if (source === "defensive_strength") {
+    pushUnique(why, `${symbol} is holding up while BTC is down (defensive strength).`);
+    if (Number.isFinite(details.rs_24h)) {
+      pushUnique(why, `24h strength vs BTC: +${details.rs_24h.toFixed(1)}%.`);
+    }
+    if (Number.isFinite(details.rs_7d)) {
+      pushUnique(why, `7d strength vs BTC: +${details.rs_7d.toFixed(1)}%.`);
+    }
+    if (Number.isFinite(details.price_change_24h)) {
+      pushUnique(why, `24h move: ${formatSignedPct(details.price_change_24h, 1)}.`);
+    }
+    if (Number.isFinite(details.volume_ratio)) {
+      pushUnique(why, `Volume vs baseline: ${details.volume_ratio.toFixed(2)}x.`);
+    }
+    pushUnique(risks, "Defensive leaders can fade fast once BTC stabilizes.");
+    pushUnique(risks, "Watch for liquidity drops and sudden news reversals.");
   } else if (source.startsWith("market_")) {
     pushUnique(why, "This alert comes from the overall market condition checks (not a single coin).");
     if (details.signal_type) pushUnique(why, `Signal: ${details.signal_type}.`);
@@ -445,6 +470,92 @@ function computeAlerts({
       inline,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  // === DEFENSIVE STRENGTH (coins holding up while BTC is down) ===
+  const btcChange24h = num(layer1Report?.btc_reference?.price_change_24h);
+  const btcChange7d = num(layer1Report?.btc_reference?.price_change_7d);
+  const marketRiskOff =
+    (btcChange24h !== null && btcChange24h <= -DEFENSIVE_BTC_DROP_24H) ||
+    (btcChange7d !== null && btcChange7d <= -DEFENSIVE_BTC_DROP_7D) ||
+    (Array.isArray(marketCondition?.warnings) && marketCondition.warnings.length > 0);
+
+  if (marketRiskOff) {
+    const candidates = [];
+    for (const coin of coins) {
+      if (!coin) continue;
+      if (coin.low_liquidity || coin.high_slippage_risk || coin.thin_fragile) continue;
+      if (coin.chasing) continue;
+
+      const rs24h = num(coin.relative_strength_24h);
+      const rs7d = num(coin.relative_strength_7d);
+      const price24h = num(coin.price_change_24h);
+      const price7d = num(coin.price_change_7d);
+      const volumeRatio = num(coin.volume_ratio);
+      const volume24h = num(coin.volume_24h);
+
+      const strength24h =
+        rs24h !== null &&
+        rs24h >= DEFENSIVE_RS_24H &&
+        price24h !== null &&
+        price24h >= DEFENSIVE_PRICE_24H_MIN;
+      const strength7d =
+        rs7d !== null && rs7d >= DEFENSIVE_RS_7D && price7d !== null && price7d >= 0;
+      if (!strength24h && !strength7d) continue;
+
+      const volumeOk =
+        (volumeRatio !== null && volumeRatio >= DEFENSIVE_VOLUME_RATIO_MIN) ||
+        (volume24h !== null && volume24h >= DEFENSIVE_VOLUME_MIN_USD);
+      if (!volumeOk) continue;
+
+      const score =
+        (Number.isFinite(rs24h) ? rs24h * 2 : 0) +
+        (Number.isFinite(rs7d) ? rs7d : 0) +
+        (Number.isFinite(volumeRatio) ? volumeRatio * 5 : 0) +
+        (Number.isFinite(price24h) ? price24h : 0);
+
+      candidates.push({
+        coin,
+        score,
+        rs24h,
+        rs7d,
+        price24h,
+        price7d,
+        volumeRatio,
+        volume24h,
+      });
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    for (const hit of candidates.slice(0, DEFENSIVE_MAX_ALERTS)) {
+      const coin = hit.coin;
+      const title = `${coin.symbol} holding up while BTC is down`;
+      const details = {
+        btc_change_24h: btcChange24h,
+        btc_change_7d: btcChange7d,
+        price_change_24h: hit.price24h,
+        price_change_7d: hit.price7d,
+        rs_24h: hit.rs24h,
+        rs_7d: hit.rs7d,
+        volume_ratio: hit.volumeRatio,
+        volume_24h: hit.volume24h,
+        trend_regime: coin.trend_regime || null,
+        news_sentiment: coin.news_sentiment || null,
+      };
+
+      alerts.push({
+        key: `defensive_strength:${coin.coin_gecko_id || coin.symbol}`,
+        source: "defensive_strength",
+        watchlist_source: coin.watchlist_source,
+        symbol: coin.symbol,
+        title,
+        score: 55 + Math.min(30, Math.round(hit.score)),
+        url: coin.coin_gecko_id
+          ? `https://www.coingecko.com/en/coins/${encodeURIComponent(coin.coin_gecko_id)}`
+          : null,
+        details,
+      });
+    }
   }
   
   // === BLUE CHIP DIP ALERTS (safer plays) ===

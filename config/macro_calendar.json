@@ -1,0 +1,15 @@
+{
+  "timezone": "UTC",
+  "events": [],
+  "watchlist": [
+    { "title": "Fed rate decision + press conference", "impact": "high", "tags": ["rates", "USD"] },
+    { "title": "US CPI / Core CPI release", "impact": "high", "tags": ["inflation"] },
+    { "title": "US PCE inflation release", "impact": "high", "tags": ["inflation"] },
+    { "title": "US jobs report (NFP, unemployment)", "impact": "high", "tags": ["labor"] },
+    { "title": "US GDP (advance)", "impact": "medium", "tags": ["growth"] },
+    { "title": "Fed minutes / major Fed speeches", "impact": "medium", "tags": ["rates"] },
+    { "title": "ETF approvals or court rulings", "impact": "high", "tags": ["regulation"] },
+    { "title": "Large stablecoin depeg or supply shock", "impact": "high", "tags": ["stablecoin"] }
+  ],
+  "note": "Add upcoming events with ISO datetime in UTC. Example: 2026-02-12T13:30:00Z"
+}

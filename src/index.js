@@ -99,6 +99,7 @@ const ALERTS_JSON_PATH = path.join(REPORTS_DIR, "Alerts.json");
 const ALERTS_MD_PATH = path.join(REPORTS_DIR, "Alerts.md");
 const ALERT_STATE_PATH = path.join(REPORTS_DIR, "alert_state.json");
 const WATCHLIST_PATH = path.join(__dirname, "..", "config", "watchlist.json");
+const MACRO_CALENDAR_PATH = path.join(__dirname, "..", "config", "macro_calendar.json");
 const PORTFOLIO_PATH = path.join(__dirname, "..", "config", "portfolio.json");
 const STAGING_WATCHLIST_PATH = path.join(
   __dirname,
@@ -232,6 +233,17 @@ const ALT_PULSE_COINS = [
   { id: "monero", symbol: "XMR" },
 ];
 const ALT_PULSE_IDS = ALT_PULSE_COINS.map((coin) => coin.id);
+
+const DEFAULT_MACRO_WATCHLIST = [
+  { title: "Fed rate decision + press conference", impact: "high", tags: ["rates", "USD"] },
+  { title: "US CPI / Core CPI release", impact: "high", tags: ["inflation"] },
+  { title: "US PCE inflation release", impact: "high", tags: ["inflation"] },
+  { title: "US jobs report (NFP, unemployment)", impact: "high", tags: ["labor"] },
+  { title: "US GDP (advance)", impact: "medium", tags: ["growth"] },
+  { title: "Fed minutes / major Fed speeches", impact: "medium", tags: ["rates"] },
+  { title: "ETF approvals or court rulings", impact: "high", tags: ["regulation"] },
+  { title: "Large stablecoin depeg or supply shock", impact: "high", tags: ["stablecoin"] },
+];
 
 // Market condition alert thresholds
 const FEAR_GREED_EXTREME_FEAR = 25;  // Below this = accumulation zone
@@ -3847,6 +3859,131 @@ async function fetchLeverageSnapshot() {
   return leverage;
 }
 
+function normalizeMacroImpact(value) {
+  const raw = String(value || "").toLowerCase();
+  if (raw === "high" || raw === "medium" || raw === "low") return raw;
+  return "medium";
+}
+
+function normalizeMacroEvent(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const title = String(raw.title || raw.name || "").trim();
+  if (!title) return null;
+  const whenRaw = raw.datetime || raw.date || raw.at || raw.time || "";
+  const ts = whenRaw ? Date.parse(whenRaw) : NaN;
+  const datetime = Number.isFinite(ts) ? new Date(ts).toISOString() : null;
+  const region = raw.region ? String(raw.region).trim() : null;
+  const impact = normalizeMacroImpact(raw.impact);
+  const tags = Array.isArray(raw.tags) ? raw.tags.filter(Boolean).map(String) : [];
+  const source = raw.source ? String(raw.source).trim() : null;
+  const url = raw.url ? String(raw.url).trim() : null;
+  return {
+    title,
+    datetime,
+    ts: Number.isFinite(ts) ? ts : null,
+    region,
+    impact,
+    tags,
+    source,
+    url,
+  };
+}
+
+function loadMacroCalendar() {
+  if (!fs.existsSync(MACRO_CALENDAR_PATH)) {
+    return {
+      timezone: "UTC",
+      events: [],
+      watchlist: DEFAULT_MACRO_WATCHLIST,
+      note: "Add events to config/macro_calendar.json to show upcoming macro releases.",
+    };
+  }
+  try {
+    const raw = JSON.parse(fs.readFileSync(MACRO_CALENDAR_PATH, "utf8"));
+    const events = Array.isArray(raw.events) ? raw.events : [];
+    const watchlist =
+      Array.isArray(raw.watchlist) && raw.watchlist.length > 0
+        ? raw.watchlist
+        : DEFAULT_MACRO_WATCHLIST;
+    const timezone =
+      typeof raw.timezone === "string" && raw.timezone.trim()
+        ? raw.timezone.trim()
+        : "UTC";
+    const note =
+      typeof raw.note === "string" && raw.note.trim()
+        ? raw.note.trim()
+        : "Add events to config/macro_calendar.json to show upcoming macro releases.";
+    return { timezone, events, watchlist, note };
+  } catch {
+    return {
+      timezone: "UTC",
+      events: [],
+      watchlist: DEFAULT_MACRO_WATCHLIST,
+      note: "Macro calendar file is invalid JSON.",
+    };
+  }
+}
+
+function formatMacroWindow(hoursUntil) {
+  if (!Number.isFinite(hoursUntil)) return null;
+  if (hoursUntil <= 24) return "next 24h";
+  if (hoursUntil <= 72) return "next 3d";
+  if (hoursUntil <= 168) return "next 7d";
+  if (hoursUntil <= 336) return "next 14d";
+  return "later";
+}
+
+function buildMacroCalendar() {
+  const raw = loadMacroCalendar();
+  const now = Date.now();
+  const maxWindowMs = 14 * 24 * 60 * 60 * 1000;
+  const upcoming = Array.isArray(raw.events)
+    ? raw.events
+        .map((event) => normalizeMacroEvent(event))
+        .filter(Boolean)
+        .filter((event) => event.ts !== null && event.ts >= now && event.ts <= now + maxWindowMs)
+        .sort((a, b) => a.ts - b.ts)
+        .map((event) => {
+          const hoursUntil = (event.ts - now) / (1000 * 60 * 60);
+          return {
+            title: event.title,
+            datetime: event.datetime,
+            region: event.region,
+            impact: event.impact,
+            tags: event.tags,
+            source: event.source,
+            url: event.url,
+            window: formatMacroWindow(hoursUntil),
+            hours_until: Math.round(hoursUntil * 10) / 10,
+          };
+        })
+    : [];
+
+  const watchlist = Array.isArray(raw.watchlist)
+    ? raw.watchlist
+        .map((item) => {
+          if (typeof item === "string") return { title: item, impact: "medium", tags: [] };
+          if (!item || typeof item !== "object") return null;
+          const title = String(item.title || "").trim();
+          if (!title) return null;
+          return {
+            title,
+            impact: normalizeMacroImpact(item.impact),
+            tags: Array.isArray(item.tags) ? item.tags.filter(Boolean).map(String) : [],
+          };
+        })
+        .filter(Boolean)
+    : DEFAULT_MACRO_WATCHLIST;
+
+  return {
+    timezone: raw.timezone || "UTC",
+    updated_at: new Date().toISOString(),
+    upcoming: upcoming.slice(0, 8),
+    watchlist: watchlist.slice(0, 10),
+    note: raw.note || null,
+  };
+}
+
 async function buildMacroPulse({ btcData } = {}) {
   let etfSummary = null;
   let leverage = null;
@@ -3855,6 +3992,7 @@ async function buildMacroPulse({ btcData } = {}) {
   let altNews = [];
   let exchangeNews = [];
   let mood = null;
+  let macroCalendar = null;
   try {
     const flows = await fetchEtfFlows();
     etfSummary = summarizeEtfFlows(flows);
@@ -3918,6 +4056,7 @@ async function buildMacroPulse({ btcData } = {}) {
   }
 
   mood = deriveMacroMood({ etfSummary, leverage, altStrength });
+  macroCalendar = buildMacroCalendar();
 
   return {
     generated_at: new Date().toISOString(),
@@ -3930,6 +4069,7 @@ async function buildMacroPulse({ btcData } = {}) {
     alt_news: altNews,
     exchange_news: exchangeNews,
     mood,
+    macro_calendar: macroCalendar,
   };
 }
 
@@ -4067,6 +4207,39 @@ function renderMacroPulseMarkdown(macroPulse) {
     }
   }
   lines.push("");
+
+  const macroCalendar = macroPulse.macro_calendar || {};
+  const upcoming = Array.isArray(macroCalendar.upcoming) ? macroCalendar.upcoming : [];
+  const watchlist = Array.isArray(macroCalendar.watchlist) ? macroCalendar.watchlist : [];
+  lines.push("## Macro calendar");
+  if (upcoming.length === 0) {
+    const note =
+      typeof macroCalendar.note === "string" && macroCalendar.note.trim()
+        ? macroCalendar.note.trim()
+        : "No upcoming macro events listed.";
+    lines.push(`- ${note}`);
+  } else {
+    for (const item of upcoming.slice(0, 6)) {
+      const impact = item?.impact ? String(item.impact).toUpperCase() : "";
+      const region = item?.region || "";
+      const when = item?.window || item?.datetime || "";
+      const parts = [impact, region, when].filter(Boolean).join(" | ");
+      lines.push(`- ${item?.title || "Event"}${parts ? ` (${parts})` : ""}`);
+    }
+  }
+  lines.push("");
+  if (watchlist.length > 0) {
+    lines.push("### Always watch");
+    for (const item of watchlist.slice(0, 8)) {
+      if (typeof item === "string") {
+        lines.push(`- ${item}`);
+      } else if (item?.title) {
+        const impact = item?.impact ? String(item.impact).toUpperCase() : "";
+        lines.push(`- ${item.title}${impact ? ` (${impact})` : ""}`);
+      }
+    }
+    lines.push("");
+  }
 
   const mood = macroPulse.mood || {};
   lines.push("## Market mood");

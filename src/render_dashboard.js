@@ -663,6 +663,7 @@ function buildMacroPulseHtml(macroPulse) {
   const altStrength = macroPulse.alt_strength || {};
   const altNews = Array.isArray(macroPulse.alt_news) ? macroPulse.alt_news : [];
   const mood = macroPulse.mood || {};
+  const macroCalendar = macroPulse.macro_calendar || {};
   const btcPrice = Number.isFinite(macroPulse.btc_price) ? formatUsd(macroPulse.btc_price) : "n/a";
   const btcChange = Number.isFinite(macroPulse.btc_change_24h)
     ? formatSignedPct(macroPulse.btc_change_24h, 2)
@@ -743,6 +744,37 @@ function buildMacroPulseHtml(macroPulse) {
   const moodReason = mood.reason || "No clear edge right now.";
   const moodText = moodReason ? `${moodLabel} - ${moodReason}` : moodLabel;
 
+  const upcoming = Array.isArray(macroCalendar.upcoming) ? macroCalendar.upcoming : [];
+  const watchlist = Array.isArray(macroCalendar.watchlist) ? macroCalendar.watchlist : [];
+  const calendarNote =
+    typeof macroCalendar.note === "string" && macroCalendar.note.trim()
+      ? macroCalendar.note.trim()
+      : "No upcoming macro events listed.";
+
+  const upcomingLines = upcoming.slice(0, 5).map((item) => {
+    const impact = item?.impact ? String(item.impact).toUpperCase() : "";
+    const region = item?.region || "";
+    const when = item?.window || (item?.datetime ? formatUtc(item.datetime) : "");
+    const meta = [impact, region, when].filter(Boolean).join(" · ");
+    return meta ? `${item?.title || "Event"} (${meta})` : `${item?.title || "Event"}`;
+  });
+  const upcomingHtml = upcomingLines.length
+    ? upcomingLines
+        .map((line) => `<div class="muted small">${escapeHtml(line)}</div>`)
+        .join("")
+    : `<div class="muted small">${escapeHtml(calendarNote)}</div>`;
+
+  const watchLines = watchlist.slice(0, 6).map((item) => {
+    if (typeof item === "string") return item;
+    if (!item || typeof item !== "object") return null;
+    const title = item.title || "";
+    const impact = item.impact ? String(item.impact).toUpperCase() : "";
+    return impact ? `${title} (${impact})` : title;
+  }).filter(Boolean);
+  const watchHtml = watchLines.length
+    ? `<div class="macro-note">Always watch: ${escapeHtml(watchLines.join("; "))}</div>`
+    : "";
+
   return `
     <div class="card macro-pulse">
       <div class="row space-between">
@@ -784,6 +816,11 @@ function buildMacroPulseHtml(macroPulse) {
           <h4>Alt news and mood</h4>
           ${newsHtml}
           <div class="macro-note">Mood: ${escapeHtml(moodText)}</div>
+        </div>
+        <div class="macro-block">
+          <h4>Macro calendar</h4>
+          ${upcomingHtml}
+          ${watchHtml}
         </div>
       </div>
     </div>
