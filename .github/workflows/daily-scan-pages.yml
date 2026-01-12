@@ -16,8 +16,8 @@ on:
         type: boolean
         default: false
   schedule:
-    # GitHub Actions schedules are in UTC. 07:00 Africa/Johannesburg (SAST, UTC+2) = 05:00 UTC.
-    - cron: "0 5 * * *"
+    # GitHub Actions schedules are in UTC. 07:00/15:00/23:00 SAST (UTC+2) = 05:00/13:00/21:00 UTC.
+    - cron: "0 5,13,21 * * *"
 
 concurrency:
   group: crypto-news-pages
@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p reports/backtest reports/defi/snapshots reports/history/watchlist
+          mkdir -p reports/backtest reports/defi/snapshots reports/history/watchlist reports/paper
 
       - name: Restore state cache (history/backtest/queue)
         uses: actions/cache@v4
@@ -59,6 +59,7 @@ jobs:
             reports/backtest
             reports/defi/snapshots
             reports/history/watchlist
+            reports/paper
           key: crypto-news-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             crypto-news-state-${{ runner.os }}-${{ github.ref_name }}-
@@ -135,7 +136,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf site
-          mkdir -p site/backtest site/defi
+          mkdir -p site/backtest site/defi site/paper
 
           # Dashboard
           if [ -f "reports/Dashboard.html" ]; then
@@ -173,6 +174,12 @@ jobs:
           fi
           if [ -f "reports/defi/Latest.json" ]; then
             cp "reports/defi/Latest.json" "site/defi/Latest.json"
+          fi
+          if [ -f "reports/paper/PaperReport.md" ]; then
+            cp "reports/paper/PaperReport.md" "site/paper/PaperReport.md"
+          fi
+          if [ -f "reports/paper/PaperReport.json" ]; then
+            cp "reports/paper/PaperReport.json" "site/paper/PaperReport.json"
           fi
 
       - name: Upload Pages artifact
