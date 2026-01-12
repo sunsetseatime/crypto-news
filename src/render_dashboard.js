@@ -96,6 +96,20 @@ function labelClass(label) {
   }
 }
 
+function friendlyLabel(label, entrySignal = null) {
+  switch (label) {
+    case "KEEP": 
+      // If entry signal says "wait", make it clear this is a "buy later" situation
+      if (entrySignal === "wait" || entrySignal === "overbought") {
+        return "Buy Later";
+      }
+      return "Buy";
+    case "WATCH-ONLY": return "Watch";
+    case "DROP": return "Avoid";
+    default: return "Unknown";
+  }
+}
+
 function severityClass(severity) {
   switch (severity) {
     case "CRITICAL":
@@ -966,7 +980,8 @@ function buildBestEntriesHtml(bestEntriesData) {
     const statsText = [rsiText, dipText].filter(Boolean).join(" | ");
     const reasonsText = Array.isArray(entry.reasons) && entry.reasons.length > 0 ? entry.reasons.slice(0, 2).join(", ") : (kind === "wait" ? "Good coin, but not a buy entry yet" : "Technical entry");
     const label = entry.hygiene_label || null;
-    const labelBadge = label ? `<span style="margin-left: 6px;">${badge(label, labelClass(label))}</span>` : "";
+    const entrySignal = entry.entry_signal || null;
+    const labelBadge = label ? `<span style="margin-left: 6px;">${badge(friendlyLabel(label, entrySignal), labelClass(label))}</span>` : "";
     return `
       <div class="play-item ${entryClass}">
         <span class="play-symbol">${escapeHtml(entry.symbol || "")} ${labelBadge}</span>
@@ -1363,14 +1378,6 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
     return String(a.symbol).localeCompare(String(b.symbol));
   });
 
-  function friendlyLabel(label) {
-    switch (label) {
-      case "KEEP": return "Buy";
-      case "WATCH-ONLY": return "Watch";
-      case "DROP": return "Avoid";
-      default: return "Unknown";
-    }
-  }
 
   function explainList(items) {
     const list = Array.isArray(items) ? items.filter(Boolean) : [];
@@ -1442,7 +1449,8 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
   const rows = sorted
     .map((coin) => {
       const label = coin.hygiene_label || "UNKNOWN";
-      const labelBadge = badge(friendlyLabel(label), labelClass(label));
+      const entrySignal = coin.entry_signal;
+      const labelBadge = badge(friendlyLabel(label, entrySignal), labelClass(label));
       const price = formatUsd(num(coin.price));
       const ch7d = num(coin.price_change_7d);
       const ch7dDisplay = ch7d !== null 
