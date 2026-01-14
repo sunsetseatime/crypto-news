@@ -180,7 +180,7 @@ function explainAlert(alert) {
     pushUnique(why, "This coin has a jump in trading activity alongside an increase in news.");
     if (details.volume_ratio_label) pushUnique(why, `Volume change: ${details.volume_ratio_label}.`);
     if (details.sentiment) pushUnique(why, `News tone: ${details.sentiment}.`);
-    pushUnique(risks, "Volume spikes can fade quickly; avoid buying after a large move.");
+    pushUnique(risks, "Volume spikes can fade quickly; avoid acting after a large move.");
     pushUnique(risks, "Make sure the news is real and relevant, not recycled hype.");
   } else if (source === "news") {
     pushUnique(why, "This coin has unusually active news coverage recently.");
@@ -278,7 +278,7 @@ function computeAlerts({
   const friendlyHygiene = (label) => {
     switch (label) {
       case "KEEP":
-        return "Buy";
+        return "Setup";
       case "WATCH-ONLY":
         return "Watch";
       case "DROP":
@@ -338,7 +338,7 @@ function computeAlerts({
   };
   
   // === MARKET CONDITION ALERTS (HIGHEST PRIORITY) ===
-  // Accumulation alerts - time to buy
+  // Accumulation alerts - time to accumulate
   if (marketCondition?.accumulation?.length > 0) {
     for (const signal of marketCondition.accumulation) {
       const strengthTag = signal.strength === "strong" ? "STRONG " : "";
@@ -354,7 +354,7 @@ function computeAlerts({
         details: {
           signal_type: signal.signal,
           strength: signal.strength,
-          recommendation: "Consider buying / DCA",
+          recommendation: "Consider accumulating / DCA",
         },
       });
     }
@@ -817,6 +817,8 @@ function computeAlerts({
         news_activity: newsActivity,
         news_source: coin?.news_source || null,
         sentiment,
+        news_pressure_score: coin?.news_pressure_score ?? null,
+        news_pressure_label: coin?.news_pressure_label || null,
       },
     });
   }
@@ -861,6 +863,9 @@ function computeAlerts({
           sentiment_score: coin?.news_sentiment_score,
           news_activity: newsActivity,
           news_source: coin?.news_source || null,
+          news_pressure_score: coin?.news_pressure_score ?? null,
+          news_pressure_label: coin?.news_pressure_label || null,
+          news_pressure_confidence: coin?.news_pressure_confidence || null,
           headlines: coin?.news_headlines?.slice(0, 2) || [],
         },
       });
@@ -1089,7 +1094,7 @@ function renderAlertsMarkdown(alertsReport) {
   if (blueChipAlerts.length > 0) {
     lines.push("## Blue Chip Dips");
     lines.push("");
-    lines.push("Top cryptos with buy signals - higher liquidity, lower risk:");
+    lines.push("Top cryptos with entry signals - higher liquidity, lower risk:");
     lines.push("");
     for (const alert of blueChipAlerts) {
       const d = alert.details || {};
@@ -1101,7 +1106,7 @@ function renderAlertsMarkdown(alertsReport) {
       if (extras) {
         lines.push(`  - Price: ${price} | ${extras}`);
       }
-      lines.push(`  - Signal: ${d.entry_signal === "strong_buy" ? "STRONG BUY" : "BUY"}`);
+      lines.push(`  - Signal: ${d.entry_signal === "strong_buy" ? "STRONG SETUP" : "SETUP"}`);
     }
     lines.push("");
   }

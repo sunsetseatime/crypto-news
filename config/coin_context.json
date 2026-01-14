@@ -1,0 +1,23 @@
+﻿{
+  "schema_version": 1,
+  "updated_at": "2026-01-12",
+  "notes": "Manual context entries for coins with known structural narratives.",
+  "coins": [
+    {
+      "coin_gecko_id": "bitcoin-cash",
+      "symbol": "BCH",
+      "name": "Bitcoin Cash",
+      "summary": "Forked from BTC in 2017 to pursue larger-block payments. Narrative weakened after multiple community splits and limited merchant traction.",
+      "short_term_only": true,
+      "structural_headwinds": [
+        "Repeated forks and governance splits weakened long-term cohesion.",
+        "Payments narrative is crowded and BCH has lagged on mindshare.",
+        "Past highs relied on early-cycle fork hype rather than durable adoption."
+      ],
+      "source": {
+        "title": "Bitcoin Cash (BCH) Performance & Price Action (2017–Present)",
+        "path": "to_do_readme/Bitcoin Cash (BCH) Performance & Price Action (2017–Present).pdf"
+      }
+    }
+  ]
+}

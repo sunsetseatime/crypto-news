@@ -68,6 +68,34 @@ function buildSparkline(values, width = 160, height = 36, ariaLabel = "Trend") {
   return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(ariaLabel)}">${zeroLine}<polyline fill="none" stroke="rgba(125,211,252,0.9)" stroke-width="2" points="${points}" /></svg>`;
 }
 
+function buildSparklineWithGrid(values, width = 160, height = 36, ariaLabel = "Trend", gridCount = 6) {
+  const nums = (values || []).filter((v) => Number.isFinite(v));
+  if (nums.length < 2) return "";
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const range = max - min || 1;
+  const points = nums
+    .map((v, i) => {
+      const x = (i / (nums.length - 1)) * width;
+      const y = height - ((v - min) / range) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const gridLines = [];
+  if (gridCount > 1) {
+    for (let i = 1; i < gridCount; i += 1) {
+      const x = (i / gridCount) * width;
+      gridLines.push(`<line x1="${x.toFixed(1)}" y1="0" x2="${x.toFixed(1)}" y2="${height}" stroke="rgba(255,255,255,0.08)" stroke-width="1" />`);
+    }
+  }
+  let zeroLine = "";
+  if (min < 0 && max > 0) {
+    const zeroY = height - ((0 - min) / range) * height;
+    zeroLine = `<line x1="0" y1="${zeroY.toFixed(1)}" x2="${width}" y2="${zeroY.toFixed(1)}" stroke="rgba(255,255,255,0.25)" stroke-width="1" />`;
+  }
+  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(ariaLabel)}">${gridLines.join("")}${zeroLine}<polyline fill="none" stroke="rgba(125,211,252,0.9)" stroke-width="2" points="${points}" /></svg>`;
+}
+
 function formatSignedPct(value, digits = 1) {
   if (!Number.isFinite(value)) return "n/a";
   const sign = value > 0 ? "+" : "";
@@ -101,9 +129,9 @@ function friendlyLabel(label, entrySignal = null) {
     case "KEEP": 
       // If entry signal says "wait", make it clear this is a "buy later" situation
       if (entrySignal === "wait" || entrySignal === "overbought") {
-        return "Buy Later";
+        return "Setup Later";
       }
-      return "Buy";
+      return "Setup";
     case "WATCH-ONLY": return "Watch";
     case "DROP": return "Avoid";
     default: return "Unknown";
@@ -206,6 +234,20 @@ function notesForCoin(coin) {
       notes.push(`some recent news (${tone})`);
     }
   }
+  const pressureScore = num(coin?.news_pressure_score);
+  if (pressureScore !== null) {
+    if (pressureScore >= 30) {
+      notes.push("news pressure positive");
+    } else if (pressureScore <= -30) {
+      notes.push("news pressure negative");
+    }
+  }
+  if (coin?.context_short_term_only) {
+    notes.push("short-term only");
+  }
+  if (coin?.health_label === "weak") {
+    notes.push("weak project health");
+  }
   // Take-profit notes
   const tp = coin?.take_profit;
   if (tp?.signal === "moon") {
@@ -273,7 +315,7 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
   
   // Market condition takes priority
   if (marketSignals?.market_phase === "accumulation") {
-    verdict = "ACCUMULATION ZONE - Good time to buy";
+    verdict = "ACCUMULATION ZONE - Good time to accumulate";
     verdictClass = "badge-positive";
   } else if (marketSignals?.market_phase === "run" && marketSignals?.warnings?.length === 0) {
     verdict = "MARKET RUNNING - Momentum plays available";
@@ -282,13 +324,13 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
     verdict = "MARKET OVERHEATED - Consider taking profits";
     verdictClass = "badge-warning";
   } else if (keepCount > 0) {
-    verdict = `${keepCount} coin${keepCount > 1 ? 's' : ''} look${keepCount === 1 ? 's' : ''} good to buy`;
+    verdict = `${keepCount} coin${keepCount > 1 ? 's' : ''} look${keepCount === 1 ? 's' : ''} actionable`;
     verdictClass = "badge-positive";
   } else if (criticalChanges > 0) {
     verdict = "Nothing actionable - check the warnings";
     verdictClass = "badge-warning";
   } else {
-    verdict = "No strong buy signals today - keep watching";
+    verdict = "No strong setups today - keep watching";
     verdictClass = "badge-muted";
   }
   
@@ -298,28 +340,28 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
   // Market condition highlights (priority)
   if (marketSignals?.accumulation?.length > 0) {
     for (const sig of marketSignals.accumulation.slice(0, 2)) {
-      highlights.push(`<strongBuy signal:</strong> ${sig.message}`);
+      highlights.push(`<strong>Setup signal:</strong> ${sig.message}`);
     }
   }
   
   if (marketSignals?.run?.length > 0) {
     for (const sig of marketSignals.run.slice(0, 2)) {
-      highlights.push(`<strongRun signal:</strong> ${sig.message}`);
+      highlights.push(`<strong>Run signal:</strong> ${sig.message}`);
     }
   }
   
   if (marketSignals?.warnings?.length > 0) {
     for (const sig of marketSignals.warnings) {
-      highlights.push(`<strongWarning:</strong> ${sig.message}`);
+      highlights.push(`<strong>Warning:</strong> ${sig.message}`);
     }
   }
   
   if (topPerformers.length > 0) {
-    highlights.push(`<strongBeating the market:</strong> ${topPerformers.map(c => c.symbol).join(", ")} outperformed Bitcoin this week`);
+    highlights.push(`<strong>Beating the market:</strong> ${topPerformers.map(c => c.symbol).join(", ")} outperformed Bitcoin this week`);
   }
   
   if (withCatalysts.length > 0) {
-    highlights.push(`<strongRecent news:</strong> ${withCatalysts.map(c => c.symbol).join(", ")} had project updates in the last 2 weeks`);
+    highlights.push(`<strong>Recent news:</strong> ${withCatalysts.map(c => c.symbol).join(", ")} had project updates in the last 2 weeks`);
   }
   
   if (highRisk.length > 0) {
@@ -347,13 +389,13 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
     let fgLabel = fearGreed.classification || "Neutral";
     if (fgValue <= 25) {
       fgColor = "var(--keep)";
-      fgLabel = "Extreme Fear (BUY)";
+      fgLabel = "Extreme Fear (accumulate)";
     } else if (fgValue <= 40) {
       fgColor = "#4ade80";
-      fgLabel = "Fear (Good to buy)";
+      fgLabel = "Fear (accumulate)";
     } else if (fgValue >= 75) {
       fgColor = "var(--drop)";
-      fgLabel = "Extreme Greed (SELL)";
+      fgLabel = "Extreme Greed (take profits)";
     } else if (fgValue >= 60) {
       fgColor = "var(--warning)";
       fgLabel = "Greed (Be cautious)";
@@ -365,23 +407,25 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       : "";
     
     const fgHistory = Array.isArray(fearGreed.history) ? fearGreed.history : [];
-    const fgValues10d = fgHistory
-      .slice(-10)
+    const fgValues30d = fgHistory
+      .slice(-30)
       .map((d) => Number(d.value))
       .filter((v) => Number.isFinite(v));
-    const fgSpark = fgValues10d.length >= 2
-      ? buildSparkline(fgValues10d, 140, 28, "Sentiment (10 days)")
+    const fgMin = fgValues30d.length ? Math.min(...fgValues30d) : null;
+    const fgMax = fgValues30d.length ? Math.max(...fgValues30d) : null;
+    const fgSpark = fgValues30d.length >= 2
+      ? buildSparklineWithGrid(fgValues30d, 260, 56, "Sentiment (30 days)", 6)
       : "";
     marketGaugeHtml = `
       <div class="market-gauge" style="margin-bottom: 16px; padding: 12px; background: var(--bg-card); border-radius: 8px; border-left: 4px solid ${fgColor};">
         <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
           <div>
-            <span style="font-size: 32px; font-weight: bold; color: ${fgColor};">${fgValue}</span>
-            <span style="color: var(--muted); margin-left: 8px;">${fgLabel}</span>
+            <span style="font-size: 38px; font-weight: bold; color: ${fgColor};">${fgValue}</span>
+            <span style="color: var(--muted); margin-left: 8px; font-size: 14px;">${fgLabel}</span>
           </div>
           <div style="font-size: 13px; color: var(--muted);">
             Fear & Greed Index - Trend: ${fearGreed.trend || "stable"}${btcMomentumText ? ` - ${btcMomentumText}` : ""}
-            ${fgSpark ? `<div class="muted small" style="margin-top:6px;">Sentiment (10d)</div><div class="sparkline">${fgSpark}</div>` : ""}
+            ${fgSpark ? `<div class="muted small" style="margin-top:6px;">Sentiment (30d)${fgMin !== null && fgMax !== null ? ` • Range ${fgMin}-${fgMax}` : ""}</div><div class="sparkline fg-sparkline">${fgSpark}</div>` : ""}
           </div>
         </div>
       </div>
@@ -398,7 +442,7 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       <div class="summary-stats">
         <div class="stat">
           <div class="stat-value" style="color: var(--keep);">${keepCount}</div>
-          <div class="stat-label">Ready to Buy</div>
+          <div class="stat-label">Ready Setup</div>
         </div>
         <div class="stat">
           <div class="stat-value" style="color: var(--watch);">${watchCount}</div>
@@ -415,6 +459,133 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       </div>
       <h3 style="margin-top: 16px;">Key Findings</h3>
       ${highlightsHtml}
+    </div>
+  `;
+}
+
+function buildTodayFocusHtml({ bestEntriesData, alertsReport, diffReport }) {
+  const entries = Array.isArray(bestEntriesData?.best_entries)
+    ? bestEntriesData.best_entries.slice(0, 3)
+    : [];
+  const alerts = Array.isArray(alertsReport?.alerts)
+    ? alertsReport.alerts.slice(0, 3)
+    : [];
+  const changes = Array.isArray(diffReport?.changes)
+    ? diffReport.changes.filter((c) => c?.severity === "CRITICAL" || c?.severity === "WARNING").slice(0, 3)
+    : [];
+
+  const entryHtml =
+    entries.length === 0
+      ? `<p class="muted small">No watchlist setups right now.</p>`
+      : `<ul class="compact">${entries
+          .map((e) => {
+            const action =
+              e.entry_signal === "strong_buy"
+                ? "Strong setup"
+                : e.entry_signal === "buy"
+                  ? "Entry setup"
+                  : "Watch";
+            const reason = Array.isArray(e.reasons) && e.reasons.length > 0 ? ` - ${e.reasons[0]}` : "";
+            return `<li><strong>${escapeHtml(e.symbol || "")}</strong>: ${escapeHtml(action)}${escapeHtml(reason)}</li>`;
+          })
+          .join("")}</ul>`;
+
+  const alertHtml =
+    alerts.length === 0
+      ? `<p class="muted small">No urgent alerts.</p>`
+      : `<ul class="compact">${alerts
+          .map((a) => {
+            const symbol = a?.symbol ? `${a.symbol}: ` : "";
+            return `<li><strong>${escapeHtml(symbol)}</strong>${escapeHtml(a?.title || "")}</li>`;
+          })
+          .join("")}</ul>`;
+
+  const changeHtml =
+    changes.length === 0
+      ? `<p class="muted small">No critical changes since last scan.</p>`
+      : `<ul class="compact">${changes
+          .map((c) => {
+            const tag = c?.watchlist_source === "staging" ? " (testing)" : "";
+            return `<li><strong>${escapeHtml(c?.symbol || "")}${escapeHtml(tag)}</strong>: ${escapeHtml(c?.description || "")}</li>`;
+          })
+          .join("")}</ul>`;
+
+  return `
+    <div class="card focus-card">
+      <h2>Today's Focus</h2>
+      <div class="focus-grid">
+        <div>
+          <h3>Top Setups</h3>
+          ${entryHtml}
+        </div>
+        <div>
+          <h3>Alerts</h3>
+          ${alertHtml}
+        </div>
+        <div>
+          <h3>Changes</h3>
+          ${changeHtml}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function buildDiscoverySectionHtml(discoveryReport) {
+  if (!discoveryReport) {
+    return `
+      <div class="card">
+        <h2>Discovery</h2>
+        <p class="muted">No discovery report yet. Run the discovery scan to populate this section.</p>
+      </div>
+    `;
+  }
+
+  const candidates = Array.isArray(discoveryReport.candidates)
+    ? discoveryReport.candidates
+    : [];
+  const top = candidates
+    .slice()
+    .sort((a, b) => (b.discovery_score || 0) - (a.discovery_score || 0))
+    .slice(0, 6);
+
+  if (top.length === 0) {
+    return `
+      <div class="card">
+        <h2>Discovery</h2>
+        <p class="muted">No discovery candidates in the latest report.</p>
+      </div>
+    `;
+  }
+
+  const rows = top
+    .map((c) => {
+      const score = Number.isFinite(c.discovery_score) ? c.discovery_score.toFixed(1) : "n/a";
+      const ch7d = Number.isFinite(c.price_change_7d) ? formatSignedPct(c.price_change_7d, 1) : "n/a";
+      const vol = Number.isFinite(c.volume_24h) ? formatUsdCompact(c.volume_24h) : "n/a";
+      return `
+        <div class="play-item play-momentum">
+          <span class="play-symbol">${escapeHtml(String(c.symbol || "").toUpperCase())}</span>
+          <span class="play-action">Score ${escapeHtml(score)}</span>
+          <span class="play-reason">${escapeHtml(`${ch7d} 7d | Vol ${vol}`)}</span>
+        </div>
+      `;
+    })
+    .join("");
+
+  const total = discoveryReport.total_candidates || candidates.length || 0;
+  const generatedAt = discoveryReport.generated_at ? formatUtc(discoveryReport.generated_at) : "n/a";
+
+  return `
+    <div class="card">
+      <div class="row space-between">
+        <h2>Discovery</h2>
+        <div class="muted small">${escapeHtml(total)} candidates • ${escapeHtml(generatedAt)}</div>
+      </div>
+      <p class="muted small">Fresh coins that match discovery filters. Use as research ideas, not trade signals.</p>
+      <div class="play-section">
+        ${rows}
+      </div>
     </div>
   `;
 }
@@ -520,13 +691,19 @@ function buildOpportunityBucketsHtml(coins) {
     if (coin?.has_clean_catalyst) {
       buckets.catalyst.push(coin);
     }
-    if (coin?.news_activity && coin.news_activity !== "quiet") {
+    const pressureScore = num(coin?.news_pressure_score);
+    const hasNewsPressure =
+      pressureScore !== null && Math.abs(pressureScore) >= 20;
+    if (hasNewsPressure || (coin?.news_activity && coin.news_activity !== "quiet")) {
       buckets.narrative.push(coin);
     }
     if (coin?.distance_from_high && coin.distance_from_high > 20 && coin?.entry_signal !== "overbought") {
       buckets.rebound.push(coin);
     }
-    if (coin?.rsi_signal === "oversold" && coin?.news_sentiment === "bearish") {
+    if (
+      coin?.rsi_signal === "oversold" &&
+      (coin?.news_pressure_label === "negative" || coin?.news_sentiment === "bearish")
+    ) {
       buckets.contrarian.push(coin);
     }
   }
@@ -548,7 +725,7 @@ function buildOpportunityBucketsHtml(coins) {
   return `
     <div class="card">
       <h2>Opportunity Buckets</h2>
-      <div class="muted small">Quick buckets to scan in 10 seconds.</div>
+      <div class="muted small">Quick buckets to scan in 10 seconds. Labels explain the criteria.</div>
       <div class="bucket-grid">
         ${card("Momentum (confirmed)", buckets.momentum, "Uptrend + strong entry + beating BTC")}
         ${card("Catalyst soon", buckets.catalyst, "Fresh project catalysts or releases")}
@@ -594,7 +771,7 @@ function buildPortfolioGuidanceHtml(guidance) {
         <h2>Position Sizing</h2>
         <div class="muted small">Market phase: ${escapeHtml(phase)}</div>
       </div>
-      <p class="muted small">This is a rough cap per coin. It updates max-buy guidance only; verdicts update on the next scan.</p>
+      <p class="muted small">Max recommended per coin based on portfolio size and risk. It updates sizing only; verdicts update on the next scan.</p>
       <div class="row" style="gap: 12px; flex-wrap: wrap; margin-top: 10px;">
         <label class="muted small" style="display:flex; align-items:center; gap:8px;">
           Portfolio size ($):
@@ -605,11 +782,11 @@ function buildPortfolioGuidanceHtml(guidance) {
 
       <div style="display:flex; gap:18px; flex-wrap: wrap; margin-top: 12px;">
         <div>
-          <div class="muted small">Typical max buy (Buy)</div>
+          <div class="muted small">Typical max size (Setup)</div>
           <div id="keepCapValue" style="font-weight: 700; font-size: 18px;">${escapeHtml(keepCap)}</div>
         </div>
         <div>
-          <div class="muted small">Typical max buy (Watch)</div>
+          <div class="muted small">Typical max size (Watch)</div>
           <div id="watchCapValue" style="font-weight: 700; font-size: 18px;">${escapeHtml(watchCap)}</div>
         </div>
         <div title="Liquidity targets scale down for smaller portfolios.">
@@ -798,6 +975,7 @@ function buildMacroPulseHtml(macroPulse) {
         </div>
         <div class="muted small">Updated: ${escapeHtml(formatUtc(macroPulse.generated_at))}</div>
       </div>
+      <p class="muted small">Context signals only. Use to size risk, not as a trade trigger.</p>
       <div class="macro-grid">
         <div class="macro-block">
           <h4>ETF money flow (spot BTC)</h4>
@@ -847,7 +1025,7 @@ function buildPlayRecommendationsHtml(playRecs) {
 
   const phase = playRecs.market_phase || "neutral";
   const phaseLabels = {
-    accumulation: { label: "Accumulation", color: "var(--keep)", desc: "Often a good time to slowly buy quality coins" },
+    accumulation: { label: "Accumulation", color: "var(--keep)", desc: "Often a good time to slowly build positions in quality coins" },
     run: { label: "Run", color: "#60a5fa", desc: "Momentum plays may work, but moves can reverse" },
     caution: { label: "Caution", color: "var(--warning)", desc: "Market looks hot - consider taking profits and sizing down" },
     neutral: { label: "Neutral", color: "var(--muted)", desc: "No strong market signal - hold or wait" },
@@ -876,7 +1054,7 @@ function buildPlayRecommendationsHtml(playRecs) {
     sectionsHtml += `
       <div class="play-section">
         <h4>Take Profits</h4>
-        <p class="play-desc">You are up on these - consider selling some</p>
+        <p class="play-desc">You are up on these - consider trimming some</p>
         ${items}
       </div>
     `;
@@ -887,7 +1065,7 @@ function buildPlayRecommendationsHtml(playRecs) {
     const items = renderItems(playRecs.best_buys, "play-buy", null, 5);
     sectionsHtml += `
       <div class="play-section">
-        <h4>Best Buys</h4>
+        <h4>Best Setups</h4>
         <p class="play-desc">Strong fundamentals and a decent entry price</p>
         ${items}
       </div>
@@ -911,7 +1089,7 @@ function buildPlayRecommendationsHtml(playRecs) {
     const items = renderItems(playRecs.watch_for_dip, "play-wait", null, 3);
     sectionsHtml += `
       <div class="play-section">
-        <h4>Good Coins, But Not an Entry Yet</h4>
+        <h4>Wait for Entry</h4>
         <p class="play-desc">Worth watching, but wait for a better price</p>
         ${items}
       </div>
@@ -924,7 +1102,7 @@ function buildPlayRecommendationsHtml(playRecs) {
     sectionsHtml += `
       <div class="play-section">
         <h4>Avoid</h4>
-        <p class="play-desc">Red flags - do not buy these right now</p>
+        <p class="play-desc">Red flags - do not act on these right now</p>
         ${items}
       </div>
     `;
@@ -966,19 +1144,19 @@ function buildBestEntriesHtml(bestEntriesData) {
     return `
       <div class="card best-entries">
         <h2>Best Entries Today ${phaseBadge}</h2>
-        <p class="muted">No buy entries in your watchlist right now.</p>
-        <p class="small muted">Tip: check "What to Play" for setups and watch-for-dip ideas.</p>
+        <p class="muted">No entry setups in your watchlist right now.</p>
+        <p class="small muted">Tip: check "What to Play" for setups and wait-for-entry ideas.</p>
       </div>
     `;
   }
   
   const buildItem = (entry, kind) => {
     const entryClass = kind === "wait" ? "play-wait" : (entry.entry_signal === "strong_buy" ? "play-buy" : "play-momentum");
-    const action = kind === "wait" ? "Wait for dip" : (entry.entry_signal === "strong_buy" ? "Buy entry" : "Buy entry");
+    const action = kind === "wait" ? "Wait for dip" : (entry.entry_signal === "strong_buy" ? "Strong setup" : "Entry setup");
     const rsiText = Number.isFinite(entry.rsi) ? `RSI ${Math.round(entry.rsi)}` : "";
     const dipText = Number.isFinite(entry.distance_from_high) ? `${entry.distance_from_high.toFixed(0)}% off 30d high` : "";
     const statsText = [rsiText, dipText].filter(Boolean).join(" | ");
-    const reasonsText = Array.isArray(entry.reasons) && entry.reasons.length > 0 ? entry.reasons.slice(0, 2).join(", ") : (kind === "wait" ? "Good coin, but not a buy entry yet" : "Technical entry");
+    const reasonsText = Array.isArray(entry.reasons) && entry.reasons.length > 0 ? entry.reasons.slice(0, 2).join(", ") : (kind === "wait" ? "Good coin, but not an entry yet" : "Technical entry");
     const label = entry.hygiene_label || null;
     const entrySignal = entry.entry_signal || null;
     const labelBadge = label ? `<span style="margin-left: 6px;">${badge(friendlyLabel(label, entrySignal), labelClass(label))}</span>` : "";
@@ -997,7 +1175,7 @@ function buildBestEntriesHtml(bestEntriesData) {
   const waitSection = waitList.length > 0
     ? `
       <div class="play-section" style="margin-top: 14px;">
-        <h4>Good Coins, But Not an Entry Yet</h4>
+        <h4>Wait for Entry</h4>
         <p class="play-desc">These are solid coins, but entry timing says to wait for a better dip.</p>
         ${waitHtml}
       </div>
@@ -1007,7 +1185,7 @@ function buildBestEntriesHtml(bestEntriesData) {
   return `
     <div class="card best-entries">
       <h2>Best Entries Today ${phaseBadge}</h2>
-      <p class="small muted" style="margin-bottom: 12px;">Buy entries (Good/Great) from your watchlist, based on price pullbacks + safety checks.</p>
+      <p class="small muted" style="margin-bottom: 12px;">Entry setups (Good/Great) from your watchlist, based on price pullbacks + safety checks.</p>
       <div class="play-section">
         ${entriesHtml}
       </div>
@@ -1049,7 +1227,7 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
   
   const buyHtml = opportunities.slice(0, 5).map((opp) => {
     const entryClass = opp.entry_signal === "strong_buy" ? "play-buy" : "play-momentum";
-    const action = opp.entry_signal === "strong_buy" ? "Buy signal" : "Buy signal";
+    const action = opp.entry_signal === "strong_buy" ? "Entry signal" : "Entry signal";
     const signalsText = Array.isArray(opp.signals) ? opp.signals.slice(0, 2).join(", ") : "";
     const riskWarnings = Array.isArray(opp.risk_warnings) ? opp.risk_warnings : [];
     const cautionText = riskWarnings.length > 0 ? ` | Caution: ${riskWarnings[0]}` : "";
@@ -1255,8 +1433,8 @@ function buildSupervisorHtml(supervisorResult) {
       <h2>AI Analysis</h2>
       <p>${escapeHtml(supervisorResult.executive_summary || "No summary provided.")}</p>
       ${highlightsHtml}
-      ${listVerdicts("Be Careful With", "", watchClosely, "These coins have warning signs - don't buy without doing more research.")}
-      ${listVerdicts("Don't Chase", "", avoidChasing, "These already pumped big without a clear reason - buying now is risky.")}
+      ${listVerdicts("Be Careful With", "", watchClosely, "These coins have warning signs - don't act without doing more research.")}
+      ${listVerdicts("Don't Chase", "", avoidChasing, "These already pumped big without a clear reason - acting now is risky.")}
       ${manualHtml}
     </div>
   `;
@@ -1355,7 +1533,7 @@ function buildAlertsHtml(alertsReport) {
         <h2>Important Alerts</h2>
         <div class="muted"><a href="Alerts.md">See all</a></div>
       </div>
-      <p class="muted small">Click an alert to see why it fired and what could go wrong.</p>
+      <p class="muted small">Click an alert to see why it triggered and what could go wrong.</p>
       ${contentHtml}
       ${moreHtml}
     </div>
@@ -1415,9 +1593,11 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       { label: "Trend/regime", item: breakdown.trend_regime },
       { label: "Entry setup", item: breakdown.entry_setup },
       { label: "Liquidity", item: breakdown.liquidity },
+      { label: "News pressure", item: breakdown.news_pressure },
       { label: "News intensity", item: breakdown.news_intensity },
       { label: "Sentiment", item: breakdown.sentiment },
       { label: "Catalyst quality", item: breakdown.catalyst_quality },
+      { label: "Project health", item: breakdown.project_health },
       { label: "Risk penalties", item: breakdown.risk_penalty },
     ]
       .map((row) => {
@@ -1447,7 +1627,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
   }
 
   const rows = sorted
-    .map((coin) => {
+    .map((coin, idx) => {
       const label = coin.hygiene_label || "UNKNOWN";
       const entrySignal = coin.entry_signal;
       const labelBadge = badge(friendlyLabel(label, entrySignal), labelClass(label));
@@ -1464,7 +1644,6 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
         ? `<span class="muted">All clear</span>`
         : notes.map((n) => badge(n, "badge-muted")).join(" ");
 
-      const entrySignal = coin.entry_signal;
       const rsi = coin.rsi_14d;
       const distFromHigh = num(coin.distance_from_high);
       let entryHtml = `<span class="muted">-</span>`;
@@ -1473,8 +1652,8 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
         let entryColor = "var(--muted)";
         if (entrySignal === "strong_buy") { entryText = "Great"; entryColor = "var(--keep)"; }
         else if (entrySignal === "buy") { entryText = "Good"; entryColor = "var(--keep)"; }
-        else if (entrySignal === "overbought") { entryText = "Wait"; entryColor = "var(--drop)"; }
-        else if (entrySignal === "wait") { entryText = "Wait"; entryColor = "var(--watch)"; }
+        else if (entrySignal === "overbought") { entryText = "Wait for entry"; entryColor = "var(--drop)"; }
+        else if (entrySignal === "wait") { entryText = "Wait for entry"; entryColor = "var(--watch)"; }
 
         let rsiNote = "";
         if (rsi !== null) {
@@ -1516,6 +1695,26 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       const confidenceLevel = explain?.confidence?.level ? String(explain.confidence.level) : "n/a";
       const confidenceReason = explain?.confidence?.reason ? String(explain.confidence.reason) : "";
       const dataConfidence = explain?.data_confidence ? String(explain.data_confidence) : "n/a";
+      const context = explain?.context || null;
+      const contextSummary = context?.summary ? String(context.summary) : "";
+      const contextHeadwinds = Array.isArray(context?.headwinds) ? context.headwinds.filter(Boolean) : [];
+      let contextSourceText = "";
+      if (context?.source) {
+        if (typeof context.source === "string") {
+          contextSourceText = context.source;
+        } else if (context.source?.path) {
+          contextSourceText = context.source.path;
+        } else if (context.source?.title) {
+          contextSourceText = context.source.title;
+        }
+      }
+      const contextMeta = contextSummary
+        ? `
+          <div><strong>Context:</strong> ${escapeHtml(contextSummary)}</div>
+          ${contextHeadwinds.length > 0 ? `<div><strong>Headwinds:</strong> ${escapeHtml(contextHeadwinds.join("; "))}</div>` : ""}
+          ${contextSourceText ? `<div><strong>Context source:</strong> ${escapeHtml(contextSourceText)}</div>` : ""}
+        `
+        : "";
       const scoreBreakdown = coin?.score_breakdown || null;
       const paperTags = [
         coin?.trend_regime ? `trend:${String(coin.trend_regime).toLowerCase()}` : null,
@@ -1545,16 +1744,25 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       ].filter(Boolean).join(" ");
 
       const maxBuyHtml = `<span class="max-buy" ${maxBuyAttrs}>${escapeHtml(maxBuyText)}</span>`;
+      const pressureScore = num(coin?.news_pressure_score);
+      const pressureLabel = coin?.news_pressure_label || "neutral";
+      const pressureText = Number.isFinite(pressureScore)
+        ? ` | Pressure: ${escapeHtml(pressureLabel)} (${escapeHtml(pressureScore)})`
+        : "";
+      const eventText = Number.isFinite(num(coin?.news_event_count)) && coin.news_event_count > 0
+        ? ` | Events: ${escapeHtml(coin.news_event_count)}`
+        : "";
       const newsMeta = (newsFetchedAt || newsSource)
-        ? `News checked: ${escapeHtml(newsFetchedAt || "n/a")}${newsSource ? ` (source: ${escapeHtml(newsSource)})` : ""}`
-        : "News checked: n/a";
+        ? `News checked: ${escapeHtml(newsFetchedAt || "n/a")}${newsSource ? ` (source: ${escapeHtml(newsSource)})` : ""}${pressureText}${eventText}`
+        : `News checked: n/a${pressureText}${eventText}`;
 
       const checklist = explain?.checklist || [];
 
+      const rowId = `row-${String(coin.symbol || "").toLowerCase()}-${idx}`;
       const explainRow = explain
         ? `
-          <tr class="explain-row" data-symbol="${escapeHtml(coin.symbol)}" data-name="${escapeHtml(coin.name || "")}">
-            <td colspan="8">
+          <tr class="explain-row" data-parent-id="${escapeHtml(rowId)}" data-symbol="${escapeHtml(coin.symbol)}" data-name="${escapeHtml(coin.name || "")}">
+            <td colspan="9" data-label="">
               <div class="coin-explain">
                 <div class="coin-explain-grid">
                   <div>
@@ -1571,13 +1779,14 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
                   <div><strong>Invalidation:</strong> ${escapeHtml(invalidation)}</div>
                   <div><strong>Confidence:</strong> ${escapeHtml(confidenceLevel)}${confidenceReason ? ` <span class="muted small">(${escapeHtml(confidenceReason)})</span>` : ""}</div>
                   <div><strong>Data confidence:</strong> ${escapeHtml(dataConfidence)}</div>
+                  ${contextMeta}
                 </div>
                 <div style="margin-top: 10px;">
                   <button class="paper-trade-btn" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}">Paper trade</button>
                   <span class="muted small" style="margin-left: 8px;">Copies a trade intent to your clipboard.</span>
                 </div>
                 <div class="muted small" style="margin-top: 8px;">
-                  <strong>Max buy (rough):</strong> ${maxBuyHtml} | ${newsMeta}
+                  <strong>Max size (rough):</strong> ${maxBuyHtml} | ${newsMeta}
                 </div>
                 <details class="details" style="margin-top: 10px;">
                   <summary><span class="summary-title">Score breakdown</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
@@ -1598,15 +1807,19 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
         : "";
 
       const mainRow = `
-        <tr data-symbol="${escapeHtml(coin.symbol)}" data-name="${escapeHtml(coin.name || "")}">
-          <td class="col-symbol">${symbolHtml}<div class="muted small">${escapeHtml(coin.name || "")}</div></td>
-          <td>${labelBadge}</td>
-          <td class="num">${escapeHtml(price)}</td>
-          <td class="num">${sparkCell}</td>
-          <td class="num">${ch7dDisplay}</td>
-          <td class="num">${rsDisplay}</td>
-          <td class="num">${entryHtml}</td>
-          <td>${notesHtml}</td>
+        <tr class="watch-row" data-row-id="${escapeHtml(rowId)}" data-symbol="${escapeHtml(coin.symbol)}" data-name="${escapeHtml(coin.name || "")}">
+          <td data-label="Details">
+            <button class="row-toggle" type="button" aria-expanded="false"><span class="chev">▸</span> Details</button>
+            <button class="paper-trade-btn paper-trade-mini" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}">Paper trade</button>
+          </td>
+          <td class="col-symbol" data-label="Coin">${symbolHtml}<div class="muted small">${escapeHtml(coin.name || "")}</div></td>
+          <td data-label="Verdict">${labelBadge}</td>
+          <td class="num" data-label="Price">${escapeHtml(price)}</td>
+          <td class="num" data-label="30d">${sparkCell}</td>
+          <td class="num" data-label="Week">${ch7dDisplay}</td>
+          <td class="num" data-label="Beat BTC?">${rsDisplay}</td>
+          <td class="num" data-label="Entry">${entryHtml}</td>
+          <td data-label="Notes">${notesHtml}</td>
         </tr>
       `;
 
@@ -1619,7 +1832,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       <strong>Entry guide:</strong>
       <span style="color: var(--keep); margin-left: 8px;">Great</span> = pulled back, better risk/reward
       <span style="color: var(--keep); margin-left: 8px;">Good</span> = reasonable entry point
-      <span style="color: var(--watch); margin-left: 8px;">Wait</span> = good coin, but wait for a better dip
+      <span style="color: var(--watch); margin-left: 8px;">Wait for entry</span> = good coin, but wait for a better dip
     </div>
   `;
 
@@ -1627,16 +1840,17 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
     <div class="card">
       <h2>${escapeHtml(title)}</h2>
       <div class="table-wrap">
-        <table class="table filterable">
+        <table class="table filterable table-condensed">
           <thead>
             <tr>
+              <th></th>
               <th>Coin</th>
               <th>Verdict</th>
               <th class="num">Price</th>
               <th class="num">30d</th>
               <th class="num">Week</th>
-              <th class="num">Beat BTC?</th>
-              <th class="num">Entry</th>
+              <th class="num" title="Outperformed Bitcoin this week">Beat BTC?</th>
+              <th class="num" title="Timing signal for entry quality">Entry</th>
               <th>Notes</th>
             </tr>
           </thead>
@@ -1646,6 +1860,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
         </table>
       </div>
       ${entryLegend}
+      <div class="muted small" style="margin-top: 6px;">Verdict = coin quality. Entry = timing signal. Paper trading is inside Details.</div>
     </div>
   `;
 }
@@ -1837,7 +2052,7 @@ function buildDefiHtml(defiLatest) {
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <p class="muted small" style="margin-top:10px;"><strong>What this means:</strong> Projects with more money locked and growing TVL are generally more trusted. The token column shows what coin you'd buy to invest in these projects.</p>
+      <p class="muted small" style="margin-top:10px;"><strong>What this means:</strong> Projects with more money locked and growing TVL are generally more trusted. The token column shows which coin you'd use to gain exposure.</p>
     </div>
   `;
 }
@@ -2265,7 +2480,7 @@ function buildFunnelHtml(funnelStats, backtestStats) {
   `;
 }
 
-function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLatest, alertsReport, backtestStats, funnelStats, macroPulse, paperReport }) {
+function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLatest, alertsReport, backtestStats, funnelStats, macroPulse, paperReport, discoveryReport }) {
   const coins = Array.isArray(layer1Report?.coins) ? layer1Report.coins : [];
   const mainCoins = coins.filter((c) => (c.watchlist_source || "main") !== "staging");
   const stagingCoins = coins.filter((c) => c.watchlist_source === "staging");
@@ -2423,8 +2638,28 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       .col-symbol { min-width: 180px; }
       .sparkline { width: 120px; max-width: 160px; }
       .sparkline svg { display: block; width: 100%; height: 28px; }
+      .fg-sparkline { width: 260px; max-width: 100%; }
+      .fg-sparkline svg { height: 56px; }
+      .table-condensed th:nth-child(5),
+      .table-condensed td:nth-child(5),
+      .table-condensed th:nth-child(7),
+      .table-condensed td:nth-child(7) { display: none; }
       tr.explain-row td { background: rgba(0,0,0,0.10); }
       tr.explain-row td { padding-top: 0; padding-bottom: 14px; }
+      tr.explain-row { display: none; }
+      tr.explain-row.is-open { display: table-row; }
+      .watch-row { cursor: pointer; }
+      .row-toggle {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 4px 8px;
+        background: rgba(255,255,255,0.03);
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .watch-row.is-open .row-toggle { color: var(--text); }
+      .watch-row.is-open .row-toggle .chev { transform: rotate(90deg); }
+      .row-toggle .chev { display: inline-block; transition: transform 0.2s ease; }
       .coin-explain { padding: 10px 0 2px; }
       .coin-explain-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; }
       @media (max-width: 980px) { .coin-explain-grid { grid-template-columns: 1fr; } }
@@ -2445,6 +2680,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         cursor: pointer;
       }
       .paper-trade-btn:hover { background: rgba(31,223,122,0.2); }
+      .paper-trade-mini { margin-left: 6px; padding: 4px 8px; font-size: 11px; }
       .max-buy { font-family: var(--mono); font-weight: 700; }
       ul.compact { margin: 8px 0 0; padding-left: 18px; }
       ul.compact li { margin: 4px 0; }
@@ -2485,6 +2721,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       .bucket-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 12px; }
       .bucket-card { padding: 12px; border-radius: 12px; border: 1px solid var(--border); background: rgba(0,0,0,0.18); }
       .bucket-list { margin-top: 8px; }
+      .focus-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 10px; }
       .collapsible-section { margin-top: 14px; }
       .collapsible-section summary { cursor: pointer; padding: 14px; background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02)); border: 1px solid var(--border); border-radius: 14px; list-style: none; display: flex; justify-content: space-between; align-items: center; }
       .collapsible-section summary::-webkit-details-marker { display: none; }
@@ -2552,6 +2789,21 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         .play-item { flex-direction: column; align-items: flex-start; gap: 4px; }
         .play-action { min-width: auto; }
       }
+      @media (max-width: 720px) {
+        table.table thead { display: none; }
+        table.table tbody tr { display: block; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 10px; }
+        table.table td { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid rgba(255,255,255,0.04); padding: 8px 10px; }
+        table.table td:last-child { border-bottom: none; }
+        table.table td::before {
+          content: attr(data-label);
+          color: var(--muted);
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+        }
+        tr.explain-row td { display: block; }
+        tr.explain-row.is-open { display: block; }
+      }
     </style>
   </head>
   <body>
@@ -2568,41 +2820,57 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
 
       <!-- DAILY SUMMARY - THE MAIN THING TO READ -->
       <div style="margin-top:14px;">
-        ${buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLatest, discoveryReport: null, supervisorResult })}
+        ${buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLatest, discoveryReport, supervisorResult })}
       </div>
-      
-      <!-- DATA FRESHNESS -->
-<div style="margin-top:14px;">
-  ${buildDataFreshnessHtml(layer1Report)}
-</div>
-
-<!-- MARKET PULSE -->
+      <!-- TODAY'S FOCUS -->
       <div style="margin-top:14px;">
-        ${buildMacroPulseHtml(macroPulse)}
+        ${buildTodayFocusHtml({ bestEntriesData: layer1Report?.best_entries, alertsReport, diffReport })}
       </div>
+      <div style="margin-top:14px;">
+        ${buildDiscoverySectionHtml(discoveryReport)}
+      </div>
+
       <!-- WHAT TO PLAY - ACTIONABLE RECOMMENDATIONS -->
       <div style="margin-top:14px;">
         ${buildPlayRecommendationsHtml(layer1Report?.play_recommendations)}
       </div>
-      
-      <!-- POSITION SIZING -->
-<div style="margin-top:14px;">
-  ${buildPortfolioGuidanceHtml(layer1Report?.portfolio_guidance)}
-</div>
+
+      <!-- BEST ENTRIES TODAY -->
+      <div style="margin-top:14px;">
+        ${buildBestEntriesHtml(layer1Report?.best_entries)}
+      </div>
+
+      <!-- BLUE CHIP DIP OPPORTUNITIES -->
+      <div style="margin-top:14px;">
+        ${buildBlueChipOpportunitiesHtml(layer1Report?.blue_chip_opportunities)}
+      </div>
 
       <!-- OPPORTUNITY BUCKETS -->
       <div style="margin-top:14px;">
         ${buildOpportunityBucketsHtml(coins)}
       </div>
 
-<!-- BEST ENTRIES TODAY -->
+      <!-- YOUR WATCHLIST -->
       <div style="margin-top:14px;">
-        ${buildBestEntriesHtml(layer1Report?.best_entries)}
+        ${buildWatchlistTableHtml({ title: "Your Watchlist", coins: mainCoins, rankBySymbol })}
       </div>
-      
-      <!-- BLUE CHIP DIP OPPORTUNITIES -->
       <div style="margin-top:14px;">
-        ${buildBlueChipOpportunitiesHtml(layer1Report?.blue_chip_opportunities)}
+        ${buildWatchlistTableHtml({ title: "Testing (Staging)", coins: stagingCoins, rankBySymbol })}
+      </div>
+
+      <!-- MARKET PULSE -->
+      <div style="margin-top:14px;">
+        ${buildMacroPulseHtml(macroPulse)}
+      </div>
+
+      <!-- DATA FRESHNESS -->
+      <div style="margin-top:14px;">
+        ${buildDataFreshnessHtml(layer1Report)}
+      </div>
+
+      <!-- POSITION SIZING -->
+      <div style="margin-top:14px;">
+        ${buildPortfolioGuidanceHtml(layer1Report?.portfolio_guidance)}
       </div>
 
       <!-- STORY CARDS -->
@@ -2618,14 +2886,6 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         <div>
           ${buildAlertsHtml(alertsReport)}
         </div>
-      </div>
-
-            <!-- YOUR WATCHLIST -->
-      <div style="margin-top:14px;">
-        ${buildWatchlistTableHtml({ title: "Your Watchlist", coins: mainCoins, rankBySymbol })}
-      </div>
-      <div style="margin-top:14px;">
-        ${buildWatchlistTableHtml({ title: "Testing (Staging)", coins: stagingCoins, rankBySymbol })}
       </div>
 <!-- EXPANDABLE SECTIONS FOR MORE DETAIL -->
       <details class="collapsible-section" open>
@@ -2649,7 +2909,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         </div>
       </details>
 
-      <details class="collapsible-section">
+      <details class="collapsible-section" open>
         <summary><h2>Backtest & History</h2><span class="muted small">How accurate is this scanner?</span></summary>
         <div class="section-content">
           ${buildPaperTradingHtml(paperReport)}
@@ -2663,16 +2923,16 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         <h2>How to Read This Dashboard</h2>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 12px;">
           <div>
-            <h3 style="color: var(--keep);">Ready to Buy (KEEP)</h3>
+            <h3 style="color: var(--keep);">Ready Setup (KEEP)</h3>
             <p class="small muted">These coins passed all safety checks. They have good trading volume, aren't overly controlled by a few wallets, and show signs of real project activity.</p>
           </div>
           <div>
             <h3 style="color: var(--watch);">Keep Watching (WATCH)</h3>
-            <p class="small muted">Interesting but not ready yet. Maybe missing data, or has some warning signs. Keep an eye on them but don't buy without more research.</p>
+            <p class="small muted">Interesting but not ready yet. Maybe missing data, or has some warning signs. Keep an eye on them but don't act without more research.</p>
           </div>
           <div>
             <h3 style="color: var(--drop);">Avoid (DROP)</h3>
-            <p class="small muted">Failed basic checks. Could be too illiquid (hard to sell), or has serious red flags. Better to skip these.</p>
+            <p class="small muted">Failed basic checks. Could be too illiquid (hard to exit), or has serious red flags. Better to skip these.</p>
           </div>
           <div>
             <h3>Testing (Staging)</h3>
@@ -2704,6 +2964,33 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       }
     }
     if (input) input.addEventListener("input", applyFilter);
+
+    function toggleExplain(row) {
+      if (!row) return;
+      const rowId = row.getAttribute("data-row-id");
+      if (!rowId) return;
+      const explainRow = document.querySelector('tr.explain-row[data-parent-id="' + rowId + '"]');
+      if (!explainRow) return;
+      const isOpen = explainRow.classList.toggle("is-open");
+      row.classList.toggle("is-open", isOpen);
+      const toggle = row.querySelector(".row-toggle");
+      if (toggle) toggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    }
+
+    for (const row of document.querySelectorAll("tr.watch-row")) {
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("a, button")) return;
+        toggleExplain(row);
+      });
+      const toggleBtn = row.querySelector(".row-toggle");
+      if (toggleBtn) {
+        toggleBtn.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleExplain(row);
+        });
+      }
+    }
 
     function formatUsd(value) {
       if (typeof value !== "number" || !Number.isFinite(value)) return "n/a";

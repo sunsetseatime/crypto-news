@@ -119,6 +119,12 @@ const AUTO_STAGE_IGNORE_PATH = path.join(
   "config",
   "auto_stage_ignore.json"
 );
+const COIN_CONTEXT_PATH = path.join(
+  __dirname,
+  "..",
+  "config",
+  "coin_context.json"
+);
 
 // Discovery auto-stage (queue -> staging)
 const AUTO_STAGE_DISCOVERY = process.env.AUTO_STAGE_DISCOVERY === "1";
@@ -477,6 +483,47 @@ function readJsonFile(filePath, fallbackValue) {
 function writeJsonFile(filePath, data) {
   ensureDir(path.dirname(filePath));
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+}
+
+function loadCoinContext() {
+  const raw = readJsonFile(COIN_CONTEXT_PATH, null);
+  if (!raw || !Array.isArray(raw?.coins)) {
+    return { byId: new Map(), bySymbol: new Map(), source: null };
+  }
+  const byId = new Map();
+  const bySymbol = new Map();
+  for (const item of raw.coins) {
+    if (!item || typeof item !== "object") continue;
+    const idLower = normalizeCoinGeckoId(item.coin_gecko_id || item.coinGeckoId || "");
+    const symbol = String(item.symbol || "").trim().toUpperCase();
+    if (idLower) byId.set(idLower, item);
+    if (symbol) bySymbol.set(symbol, item);
+  }
+  return { byId, bySymbol, source: raw };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function checkSecretHygiene() {
+  const warnings = [];
+  try {
+    const gitignorePath = path.join(__dirname, "..", ".gitignore");
+    const gitignore = fs.existsSync(gitignorePath)
+      ? fs.readFileSync(gitignorePath, "utf8")
+      : "";
+    const ignoresEnv = gitignore
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .some((line) => line === ".env" || line === ".env.*");
+    if (fs.existsSync(ENV_PATH) && !ignoresEnv) {
+      warnings.push(".env exists but is not ignored by .gitignore.");
+    }
+  } catch {
+    // ignore hygiene check failures
+  }
+  return warnings;
 }
 
 function readCache(filePath) {
@@ -1614,7 +1661,7 @@ function calculateBTCMovingAverages(marketChart) {
  */
 function detectMarketCondition(fearGreed, btcData, btcMAs) {
   const signals = {
-    // Accumulation signals (BUY zones)
+    // Accumulation signals (setup zones)
     accumulation: [],
     // Run signals (momentum plays)
     run: [],
@@ -1632,7 +1679,7 @@ function detectMarketCondition(fearGreed, btcData, btcMAs) {
       signals.accumulation.push({
         signal: "extreme_fear",
         strength: "strong",
-        message: `Fear & Greed at ${fearGreed.value} (Extreme Fear) - historically great buying zone`,
+        message: `Fear & Greed at ${fearGreed.value} (Extreme Fear) - historically strong accumulation zone`,
         value: fearGreed.value,
       });
     } else if (fearGreed.value <= FEAR_GREED_FEAR) {
@@ -1717,7 +1764,7 @@ function detectMarketCondition(fearGreed, btcData, btcMAs) {
     signals.recommendation = "accumulate";
   } else if (signals.run.some(s => s.strength === "strong")) {
     signals.market_phase = "run";
-    signals.recommendation = signals.warnings.length > 0 ? "cautious_buy" : "buy_momentum";
+    signals.recommendation = signals.warnings.length > 0 ? "cautious_setup" : "momentum_setup";
   } else if (signals.warnings.length > 0) {
     signals.market_phase = "caution";
     signals.recommendation = "take_profits";
@@ -1739,9 +1786,9 @@ function generatePlayRecommendations(coins, marketCondition) {
   
   const recommendations = {
     market_phase: phase,
-    best_buys: [],       // Coins to buy now
+    best_buys: [],       // Actionable setups
     momentum_plays: [],  // Quick trades for runs
-    take_profits: [],    // Time to sell
+    take_profits: [],    // Time to de-risk
     avoid: [],           // Stay away
     watch_for_dip: [],   // Good coins, wait for better entry
   };
@@ -1754,9 +1801,13 @@ function generatePlayRecommendations(coins, marketCondition) {
     const vs_btc = coin.relative_strength_7d || 0;
     const outperforming = coin.outperforming_btc === true;
     const chasing = coin.chasing === true;
-    const highRisk = coin.holder_concentration_level === "HIGH" || coin.high_dilution_risk === true;
+    const highRisk =
+      coin.holder_concentration_level === "HIGH" ||
+      coin.high_dilution_risk === true ||
+      coin.health_label === "weak";
     const hasCatalyst = coin.has_clean_catalyst === true;
     const lowLiquidity = coin.low_liquidity === true;
+    const shortTermOnly = coin.context_short_term_only === true;
     
     // Build a simple reason string
     const buildReason = (reasons) => reasons.filter(Boolean).join(", ");
@@ -1769,7 +1820,7 @@ function generatePlayRecommendations(coins, marketCondition) {
         symbol,
         profit_pct: tp.profit_pct,
         reason: `Up ${tp.profit_pct.toFixed(1)}% - hit ${targetName}`,
-        action: tp.signal === "moon" ? "Sell most, keep moonbag" : "Consider selling some",
+        action: tp.signal === "moon" ? "Trim most, keep moonbag" : "Consider trimming some",
         priority: tp.profit_pct,
       });
       continue; // Don't recommend buying something you should be selling
@@ -1781,6 +1832,7 @@ function generatePlayRecommendations(coins, marketCondition) {
       if (chasing) reasons.push("price already pumped");
       if (highRisk) reasons.push("risky ownership");
       if (lowLiquidity) reasons.push("hard to exit");
+      if (coin.health_label === "weak") reasons.push("weak project health");
       recommendations.avoid.push({
         symbol,
         reason: buildReason(reasons) || "multiple red flags",
@@ -1801,11 +1853,12 @@ function generatePlayRecommendations(coins, marketCondition) {
           reasons.push("good fundamentals");
           if (hasCatalyst) reasons.push("recent catalyst");
           if (!lowLiquidity) reasons.push("easy to trade");
+          if (shortTermOnly) reasons.push("short-term only");
           recommendations.best_buys.push({
             symbol,
             reason: buildReason(reasons),
             entry_signal: entry,
-            action: "Strong buy - accumulation zone",
+            action: shortTermOnly ? "Short-term setup only" : "Strong setup - accumulation zone",
             priority: hasCatalyst ? 100 : 80,
           });
         } else if (entryWait) {
@@ -1837,6 +1890,7 @@ function generatePlayRecommendations(coins, marketCondition) {
           reasons.push(`beating BTC by ${vs_btc.toFixed(1)}%`);
           if (hasCatalyst) reasons.push("has catalyst");
           if (entry === "overbought") reasons.push("hot but running");
+          if (shortTermOnly) reasons.push("short-term only");
           recommendations.momentum_plays.push({
             symbol,
             reason: buildReason(reasons),
@@ -1850,7 +1904,7 @@ function generatePlayRecommendations(coins, marketCondition) {
             symbol,
             reason: "Solid fundamentals, market moving",
             entry_signal: entry,
-            action: "Buy with trailing stop",
+            action: "Setup with trailing stop",
             priority: 60,
           });
         } else if (!outperforming || vs_btc < 5) {
@@ -1913,7 +1967,7 @@ function generatePlayRecommendations(coins, marketCondition) {
 
 /**
  * Generate "Best Entries Today" - ranks coins by entry quality
- * Filters out junk, focuses on actionable buy opportunities
+ * Filters out junk, focuses on actionable setups
  */
 function generateBestEntries(coins, marketCondition) {
   const phase = marketCondition?.market_phase || "neutral";
@@ -1984,6 +2038,9 @@ function generateBestEntries(coins, marketCondition) {
             : "Some recent news";
       reasons.push(`${activityLabel} (${tone})`);
     }
+    if (Number.isFinite(num(coin.news_pressure_score)) && Math.abs(coin.news_pressure_score) >= 20) {
+      reasons.push(`News pressure ${coin.news_pressure_label || "mixed"}`);
+    }
     if (Array.isArray(coin.entry_confirmations) && coin.entry_confirmations.length > 0) {
       reasons.push(`Confirmations: ${coin.entry_confirmations.slice(0, 2).join(", ")}`);
     }
@@ -2001,6 +2058,9 @@ function generateBestEntries(coins, marketCondition) {
     }
     if (highRisk) {
       adjustedScore -= 20; // Penalty for risks
+    }
+    if (Number.isFinite(num(coin.health_score)) && coin.health_score < 40) {
+      adjustedScore -= 10;
     }
     if (coin.volume_trend === "spike") {
       adjustedScore += 5;
@@ -2042,9 +2102,9 @@ function generateBestEntries(coins, marketCondition) {
       reasons,
       action:
         entrySignal === "strong_buy"
-          ? "Buy now"
+          ? "Strong setup"
           : entrySignal === "buy"
-            ? "Good entry"
+            ? "Good setup"
             : "Wait for dip",
       risks: highRisk ? ["ownership/dilution risk"] : [],
     });
@@ -2060,7 +2120,7 @@ function generateBestEntries(coins, marketCondition) {
   
   return {
     market_phase: phase,
-    best_entries: bestEntries.slice(0, 5), // Buy signals only
+    best_entries: bestEntries.slice(0, 5), // Entry signals only
     wait_list: waitList.slice(0, 5),
     all_entries: entries,
     generated_at: new Date().toISOString(),
@@ -2270,6 +2330,9 @@ function computeScoreBreakdown(coin) {
         ? 30
         : 50;
 
+  const pressureRaw = num(coin?.news_pressure_score);
+  const pressureScore = pressureRaw !== null ? clamp(Math.round((pressureRaw + 100) / 2), 0, 100) : 50;
+
   const catalystScore = Number.isFinite(num(coin?.catalyst_quality_score))
     ? num(coin?.catalyst_quality_score)
     : coin?.has_clean_catalyst
@@ -2285,13 +2348,15 @@ function computeScoreBreakdown(coin) {
   if (coin?.github_archived) riskPenalty -= 10;
   if (coin?.defi_hack_count > 0) riskPenalty -= 8;
   if (coin?.defi_audit_status === "NO") riskPenalty -= 6;
+  if (pressureRaw !== null && pressureRaw <= -30) riskPenalty -= 8;
 
   const rawTotal =
     (trendScore ?? 50) * 0.2 +
     (entryScore ?? 50) * 0.25 +
     (liquidity.score ?? 50) * 0.2 +
-    newsIntensityScore * 0.1 +
-    sentimentScore * 0.1 +
+    newsIntensityScore * 0.05 +
+    sentimentScore * 0.05 +
+    pressureScore * 0.1 +
     catalystScore * 0.15 +
     riskPenalty;
 
@@ -2322,6 +2387,15 @@ function computeScoreBreakdown(coin) {
       score: sentimentScore,
       label: coin?.news_sentiment || "unknown",
     },
+    news_pressure: {
+      score: pressureScore,
+      label: coin?.news_pressure_label || "neutral",
+      note: coin?.news_pressure_confidence ? `confidence ${coin.news_pressure_confidence}` : null,
+    },
+    project_health: {
+      score: Number.isFinite(num(coin?.health_score)) ? coin.health_score : null,
+      label: coin?.health_label || "unknown",
+    },
     catalyst_quality: {
       score: catalystScore,
       label: coin?.catalyst_quality_label || (coin?.has_clean_catalyst ? "verified catalyst" : "no clean catalyst"),
@@ -2332,6 +2406,39 @@ function computeScoreBreakdown(coin) {
     },
     total_score: totalScore,
   };
+}
+
+function computeHealthScore(coin) {
+  let score = 50;
+
+  if (coin?.github_archived) score -= 25;
+  else if (coin?.github_stale) score -= 10;
+  else if (coin?.github_active) score += 15;
+
+  if (coin?.traction_status === "OK") score += 12;
+  if (coin?.missing_traction) score -= 5;
+
+  if (coin?.low_liquidity) score -= 12;
+  else if (Number.isFinite(num(coin?.volume_24h)) && coin.volume_24h >= VOLUME_LOW) score += 8;
+
+  if (Number.isFinite(num(coin?.market_cap)) && coin.market_cap < MIN_MARKET_CAP_USD) score -= 8;
+  if (coin?.holder_concentration_level === "HIGH") score -= 10;
+  if (coin?.high_dilution_risk) score -= 10;
+  if (coin?.defi_flags?.tvl_collapse) score -= 8;
+
+  if (coin?.context_short_term_only) score -= 5;
+  if (Array.isArray(coin?.context_structural_headwinds) && coin.context_structural_headwinds.length > 0) {
+    score -= 8;
+  }
+
+  return clamp(Math.round(score), 0, 100);
+}
+
+function labelHealthScore(score) {
+  if (!Number.isFinite(score)) return "unknown";
+  if (score >= 70) return "strong";
+  if (score >= 45) return "mixed";
+  return "weak";
 }
 
 function evaluateGates(coin) {
@@ -2373,12 +2480,20 @@ function evaluateGates(coin) {
     coin.holder_concentration_level === "LOW" ||
     coin.holder_concentration_level === "MEDIUM";
   const entryTiming = coin.entry_signal !== "overbought";
-  const newsFlow = !(
-    coin.news_signal === "hot" && coin.news_sentiment === "bearish"
-  );
+  const pressureScore = num(coin?.news_pressure_score);
+  const pressureConfidence = coin?.news_pressure_confidence || "low";
+  const strongNegativePressure =
+    pressureScore !== null && pressureScore <= -25 && pressureConfidence !== "low";
+  const newsFlow =
+    !strongNegativePressure &&
+    !(coin.news_signal === "hot" && coin.news_sentiment === "bearish");
   const trendRegime = coin.trend_regime !== "Downtrend";
   const unlockRisk = !coin.unlock_risk_flag;
   const portfolioGuardrail = !coin?.correlation_guardrail?.blocked;
+  const healthGate =
+    coin?.health_score === null || coin?.health_score === undefined
+      ? true
+      : coin.health_score >= 40;
 
   return {
     trackable_data: trackableData,
@@ -2391,6 +2506,7 @@ function evaluateGates(coin) {
     trend_regime: trendRegime,
     unlock_risk: unlockRisk,
     portfolio_guardrail: portfolioGuardrail,
+    health_gate: healthGate,
   };
 }
 
@@ -2404,7 +2520,8 @@ function decideLabel(coin, gates, ruleConfidence = {}) {
     (gates.concentration_risk ? 1 : 0) +
     (gates.trend_regime ? 1 : 0) +
     (gates.unlock_risk ? 1 : 0) +
-    (gates.portfolio_guardrail ? 1 : 0);
+    (gates.portfolio_guardrail ? 1 : 0) +
+    (gates.health_gate ? 1 : 0);
 
   let label = "WATCH-ONLY";
   const severeLiquidity = coin.volume_24h !== null && coin.volume_24h < VOLUME_DROP;
@@ -2427,7 +2544,7 @@ function decideLabel(coin, gates, ruleConfidence = {}) {
   if (!gates.trackable_data || severeLiquidity) {
     label = "DROP";
   } else if (score >= 6 && !effectiveConcentrationRisk && !effectiveDilutionRisk) {
-    // KEEP: passes at least 6 of 8 gates + no severe risks
+    // KEEP: passes at least 6 of 9 gates + no severe risks
     label = "KEEP";
   }
 
@@ -2464,6 +2581,9 @@ function decideLabel(coin, gates, ruleConfidence = {}) {
   if (label === "KEEP" && !gates.portfolio_guardrail) {
     label = "WATCH-ONLY";
   }
+  if (label === "KEEP" && !gates.health_gate) {
+    label = "WATCH-ONLY";
+  }
   const downtrendConfirmation =
     coin?.has_clean_catalyst &&
     coin?.entry_signal === "strong_buy" &&
@@ -2495,7 +2615,7 @@ function buildPortfolioGuidance(marketPhase) {
 
   const notes = [];
   if (marketPhase === "accumulation") {
-    notes.push("Market looks like an accumulation phase; buying in steps can make sense.");
+    notes.push("Market looks like an accumulation phase; building positions in steps can make sense.");
   } else if (marketPhase === "run") {
     notes.push("Market looks like a run; consider smaller, quicker trades and avoid chasing.");
   } else if (marketPhase === "caution") {
@@ -2538,6 +2658,10 @@ function computeSuggestedMaxBuyUsd({ coin, marketPhase }) {
   if (coin?.defi_audit_status === "NO") riskMultiplier *= 0.85;
   if (!coin?.gates?.news_flow) riskMultiplier *= 0.7;
   if (!coin?.gates?.entry_timing) riskMultiplier *= 0.7;
+  if (coin?.context_short_term_only) riskMultiplier *= 0.7;
+  if (Number.isFinite(num(coin?.health_score)) && coin.health_score < 40) {
+    riskMultiplier *= 0.6;
+  }
 
   riskMultiplier = clamp(riskMultiplier, 0.1, 1);
 
@@ -2597,13 +2721,15 @@ function explainGateFailure(key, coin) {
     case "entry_timing":
       return "Entry timing looks overheated right now (could pull back).";
     case "news_flow":
-      return "News is hot and negative right now (worth double-checking).";
+      return "News pressure looks negative right now (worth double-checking).";
     case "trend_regime":
       return "Trend is still down on the 7d/30d timeframe (avoid falling knives).";
     case "unlock_risk":
       return "Upcoming unlock looks risky (possible sell pressure soon).";
     case "portfolio_guardrail":
       return "Portfolio already has similar BTC/ETH exposure; avoid doubling up.";
+    case "health_gate":
+      return "Project health looks weak (dev activity, liquidity, or ownership risks).";
     default:
       return String(key || "unknown").replace(/_/g, " ");
   }
@@ -2696,9 +2822,22 @@ function buildCoinChecklist(coin) {
   const activity = coin?.news_activity || "quiet";
   const sentiment = coin?.news_sentiment || "unknown";
   add(
-    "News tone not strongly negative",
+    "News pressure not strongly negative",
     Boolean(gates.news_flow),
-    `News: ${activity}${sentiment && sentiment !== "unknown" ? ` (${sentiment})` : ""}`
+    `News: ${activity}${sentiment && sentiment !== "unknown" ? ` (${sentiment})` : ""}${
+      Number.isFinite(num(coin?.news_pressure_score))
+        ? `, pressure ${coin.news_pressure_score}`
+        : ""
+    }`
+  );
+
+  const healthScore = num(coin?.health_score);
+  add(
+    "Project health filter",
+    Boolean(gates.health_gate),
+    healthScore !== null
+      ? `Health score ${healthScore} (${coin?.health_label || "unknown"})`
+      : "Health score unavailable"
   );
 
   return items;
@@ -2715,6 +2854,7 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
   }
   if (coin?.traction_status === "OK") positives.push("Traction signals look okay.");
   if (coin?.github_active) positives.push("Development looks active recently.");
+  if (coin?.health_label === "strong") positives.push("Project health looks strong.");
   if (coin?.outperforming_btc) {
     const rs = num(coin?.relative_strength_7d);
     positives.push(rs !== null ? `Beating BTC by ${rs.toFixed(1)}% this week.` : "Beating BTC this week.");
@@ -2724,7 +2864,9 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
   if (coin?.trend_regime === "Sideways") positives.push("Trend is sideways (not accelerating lower).");
   if (coin?.entry_signal === "strong_buy") positives.push("Entry timing looks very good right now.");
   else if (coin?.entry_signal === "buy") positives.push("Entry timing looks good right now.");
-  if (coin?.news_sentiment === "bullish" && coin?.news_activity && coin.news_activity !== "quiet") {
+  if (coin?.news_pressure_label === "positive") {
+    positives.push("News pressure looks positive recently.");
+  } else if (coin?.news_sentiment === "bullish" && coin?.news_activity && coin.news_activity !== "quiet") {
     positives.push("News tone looks positive recently.");
   }
 
@@ -2734,7 +2876,7 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
   if (coin?.holder_concentration_level === "HIGH") risks.push("A few holders control a large share of supply.");
   if (coin?.low_liquidity) risks.push("Low trading activity can make exits harder.");
   if (coin?.chasing) risks.push("Price has already run up; pullbacks can be sharp.");
-  if (!coin?.gates?.news_flow) risks.push("Recent news looks negative; double-check headlines before buying.");
+  if (!coin?.gates?.news_flow) risks.push("Recent news pressure looks negative; double-check headlines before acting.");
   if (coin?.has_clean_catalyst && coin?.catalyst_confidence === "low") {
     risks.push("Catalyst source confidence is low; verify the announcement manually.");
   }
@@ -2746,17 +2888,23 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
   if (coin?.correlation_guardrail?.blocked) {
     risks.push("Portfolio already has similar BTC/ETH exposure; avoid doubling up without a unique catalyst.");
   }
+  if (coin?.context_short_term_only) {
+    risks.push("Historical context suggests this is a short-term setup only.");
+  }
+  if (Array.isArray(coin?.context_structural_headwinds) && coin.context_structural_headwinds.length > 0) {
+    risks.push(`Context headwind: ${coin.context_structural_headwinds[0]}`);
+  }
 
   const why = [];
   if (label === "KEEP") {
-    why.push("Verdict is Buy because it passes most of the safety checks.");
+    why.push("Verdict is Setup because it passes most of the safety checks.");
     for (const line of positives.slice(0, 3)) why.push(line);
     if (why.length < 3) {
       const missing = failures.map((f) => explainGateFailure(f, coin)).slice(0, 1);
       if (missing.length > 0) why.push(`One thing to watch: ${missing[0]}`);
     }
   } else if (label === "WATCH-ONLY") {
-    why.push("Verdict is Watch because it has some positives, but not enough to buy confidently yet.");
+    why.push("Verdict is Watch because it has some positives, but not enough to act confidently yet.");
     for (const line of positives.slice(0, 2)) why.push(line);
     const mainIssue = failures.length > 0 ? explainGateFailure(failures[0], coin) : null;
     if (mainIssue) why.push(`Main issue: ${mainIssue}`);
@@ -2809,12 +2957,15 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
       ? "Trend stays down on 7d/30d; wait for a reversal."
       : "Breaks below recent support or entry signal flips to overbought.";
 
-  const timeHorizon =
+  let timeHorizon =
     coin?.trend_regime === "Uptrend"
       ? "days to weeks"
       : coin?.trend_regime === "Sideways"
         ? "days"
         : "hours to days";
+  if (coin?.context_short_term_only) {
+    timeHorizon = "short-term only (hours to days)";
+  }
 
   return {
     why: why.slice(0, 5),
@@ -2825,6 +2976,16 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
       source: coin?.news_source || null,
       fetched_at: coin?.news_fetched_at || null,
     },
+    context: coin?.context_summary
+      ? {
+          summary: coin.context_summary,
+          source: coin.context_source || null,
+          short_term_only: Boolean(coin.context_short_term_only),
+          headwinds: Array.isArray(coin.context_structural_headwinds)
+            ? coin.context_structural_headwinds.slice(0, 3)
+            : [],
+        }
+      : null,
     data_confidence: coin?.data_confidence || null,
     time_horizon: timeHorizon,
     invalidation_rule: invalidationRule,
@@ -3202,11 +3363,432 @@ async function fetchCoinGeckoNews(coinGeckoId) {
   }
 }
 
-function evaluateNewsMomentum(newsSentiment) {
+const NEWS_EVENT_RULES = [
+  {
+    type: "exploit",
+    label: "Security incident",
+    direction: -1,
+    severity: 90,
+    half_life_hours: 168,
+    keywords: ["hack", "exploit", "breach", "vulnerability", "attack", "drain", "compromise"],
+  },
+  {
+    type: "delisting",
+    label: "Exchange delisting/halts",
+    direction: -1,
+    severity: 85,
+    half_life_hours: 120,
+    keywords: ["delist", "delisting", "suspend", "suspension", "trading halt", "halt trading"],
+  },
+  {
+    type: "regulatory_enforcement",
+    label: "Regulatory enforcement",
+    direction: -1,
+    severity: 80,
+    half_life_hours: 168,
+    keywords: ["lawsuit", "investigation", "ban", "enforcement", "cease", "sanction", "charges"],
+  },
+  {
+    type: "chain_outage",
+    label: "Chain outage",
+    direction: -1,
+    severity: 75,
+    half_life_hours: 96,
+    keywords: ["outage", "downtime", "halted", "paused", "consensus failure", "reorg", "rollback"],
+  },
+  {
+    type: "team_exit",
+    label: "Team/governance break",
+    direction: -1,
+    severity: 70,
+    half_life_hours: 96,
+    keywords: ["resigns", "resigned", "steps down", "stepped down", "departure", "quit", "governance split", "civil war"],
+  },
+  {
+    type: "regulatory_approval",
+    label: "Regulatory approval",
+    direction: 1,
+    severity: 70,
+    half_life_hours: 120,
+    keywords: ["approved", "approval", "licensed", "license", "registered", "compliance approval"],
+  },
+  {
+    type: "listing",
+    label: "Exchange listing",
+    direction: 1,
+    severity: 65,
+    half_life_hours: 48,
+    keywords: ["listing", "listed", "will list", "adds support", "adds trading", "launches trading", "futures listing", "perpetual"],
+  },
+  {
+    type: "upgrade",
+    label: "Protocol upgrade",
+    direction: 1,
+    severity: 55,
+    half_life_hours: 72,
+    keywords: ["mainnet", "upgrade", "hard fork", "v2", "v3", "release", "testnet"],
+  },
+  {
+    type: "supply_change",
+    label: "Supply change",
+    direction: 1,
+    severity: 60,
+    half_life_hours: 120,
+    keywords: ["burn", "token burn", "halving", "supply reduction", "emission cut"],
+  },
+  {
+    type: "partnership",
+    label: "Partnership",
+    direction: 1,
+    severity: 40,
+    half_life_hours: 36,
+    keywords: ["partnership", "partner", "integration", "collaboration"],
+  },
+  {
+    type: "funding",
+    label: "Funding round",
+    direction: 1,
+    severity: 45,
+    half_life_hours: 48,
+    keywords: ["funding", "raised", "raise", "round", "investment"],
+  },
+  {
+    type: "marketing",
+    label: "Marketing/news",
+    direction: 0,
+    severity: 25,
+    half_life_hours: 24,
+    keywords: ["airdrop", "campaign", "giveaway", "community", "ambassador"],
+  },
+];
+
+const NEWS_PRIMARY_DOMAINS = new Set([
+  "binance.com",
+  "coinbase.com",
+  "kraken.com",
+  "okx.com",
+  "sec.gov",
+  "cftc.gov",
+  "treasury.gov",
+  "github.com",
+]);
+
+const NEWS_HIGH_CRED_DOMAINS = new Set([
+  "coindesk.com",
+  "reuters.com",
+  "bloomberg.com",
+  "theblock.co",
+  "decrypt.co",
+]);
+
+const NEWS_MID_CRED_DOMAINS = new Set([
+  "cointelegraph.com",
+  "bitcoinmagazine.com",
+  "messari.io",
+]);
+
+const NEWS_SOCIAL_DOMAINS = new Set([
+  "twitter.com",
+  "x.com",
+  "reddit.com",
+  "medium.com",
+  "discord.com",
+  "t.me",
+]);
+
+function extractUrlDomain(url) {
+  if (!url) return "";
+  try {
+    const host = new URL(url).hostname || "";
+    return host.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function containsKeyword(text, keywords) {
+  for (const keyword of keywords) {
+    if (text.includes(keyword)) return true;
+  }
+  return false;
+}
+
+function classifyNewsEvent(title) {
+  const text = String(title || "").toLowerCase();
+  if (!text) {
+    return {
+      type: "general",
+      label: "General update",
+      direction: 0,
+      severity: 20,
+      half_life_hours: 24,
+    };
+  }
+
+  for (const rule of NEWS_EVENT_RULES) {
+    if (containsKeyword(text, rule.keywords)) {
+      return rule;
+    }
+  }
+
+  return {
+    type: "general",
+    label: "General update",
+    direction: 0,
+    severity: 20,
+    half_life_hours: 24,
+  };
+}
+
+function normalizeEventKey(title, { symbol, name } = {}) {
+  const text = String(title || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ");
+  const tokens = text.split(/\s+/).filter(Boolean);
+  const stopwords = new Set([
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "for",
+    "to",
+    "from",
+    "with",
+    "without",
+    "in",
+    "on",
+    "of",
+    "by",
+    "at",
+    "into",
+    "over",
+    "new",
+    "launch",
+    "launches",
+    "announces",
+    "announcement",
+    "update",
+    "updates",
+    "token",
+    "coins",
+    "crypto",
+    "project",
+    "network",
+    "protocol",
+  ]);
+  if (symbol) stopwords.add(String(symbol).toLowerCase());
+  if (name) {
+    for (const part of String(name).toLowerCase().split(/\s+/)) {
+      if (part) stopwords.add(part);
+    }
+  }
+  const filtered = tokens.filter((token) => token.length > 2 && !stopwords.has(token));
+  const unique = Array.from(new Set(filtered));
+  const key = unique.slice(0, 6).join("_");
+  return key || "misc";
+}
+
+function getSourceCredibility(sourceName, url) {
+  const name = String(sourceName || "").toLowerCase();
+  const domain = extractUrlDomain(url);
+  if (NEWS_PRIMARY_DOMAINS.has(domain)) return { weight: 0.95, tier: "primary" };
+  if (NEWS_HIGH_CRED_DOMAINS.has(domain)) return { weight: 0.9, tier: "high" };
+  if (NEWS_MID_CRED_DOMAINS.has(domain)) return { weight: 0.8, tier: "medium" };
+  if (NEWS_SOCIAL_DOMAINS.has(domain)) return { weight: 0.45, tier: "social" };
+  if (name.includes("coindesk") || name.includes("reuters") || name.includes("bloomberg")) {
+    return { weight: 0.9, tier: "high" };
+  }
+  if (name.includes("cointelegraph") || name.includes("decrypt") || name.includes("the block")) {
+    return { weight: 0.8, tier: "medium" };
+  }
+  if (name.includes("binance") || name.includes("coinbase") || name.includes("kraken")) {
+    return { weight: 0.9, tier: "primary" };
+  }
+  return { weight: 0.7, tier: "unknown" };
+}
+
+function mergeHeadlines(baseHeadlines, extraHeadlines) {
+  const merged = [];
+  const seen = new Set();
+  const pushHeadline = (headline) => {
+    if (!headline || !headline.title) return;
+    const titleKey = `title:${String(headline.title).toLowerCase()}`;
+    const urlKey = headline.url ? `url:${String(headline.url).toLowerCase()}` : null;
+    if (urlKey && seen.has(urlKey)) return;
+    if (seen.has(titleKey)) return;
+    if (urlKey) seen.add(urlKey);
+    seen.add(titleKey);
+    merged.push(headline);
+  };
+
+  const base = Array.isArray(baseHeadlines) ? baseHeadlines : [];
+  const extra = Array.isArray(extraHeadlines) ? extraHeadlines : [];
+  for (const item of base) pushHeadline(item);
+  for (const item of extra) pushHeadline(item);
+  return merged;
+}
+
+function computeNewsCounts(headlines) {
+  const items = Array.isArray(headlines) ? headlines : [];
+  const now = Date.now();
+  const oneDayAgo = now - 24 * 60 * 60 * 1000;
+  const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  let count24h = 0;
+  let count7d = 0;
+
+  for (const item of items) {
+    const publishedMs = Date.parse(item?.published || "");
+    if (!Number.isFinite(publishedMs)) continue;
+    if (publishedMs >= oneDayAgo) count24h += 1;
+    if (publishedMs >= oneWeekAgo) count7d += 1;
+  }
+
+  return { count24h, count7d };
+}
+
+function marketRegimeMultiplier(phase, direction) {
+  if (!direction) return 1;
+  if (phase === "run") {
+    return direction > 0 ? 1.1 : 0.9;
+  }
+  if (phase === "caution" || phase === "accumulation") {
+    return direction < 0 ? 1.1 : 0.85;
+  }
+  return 1;
+}
+
+function buildNewsPressureSummary({ headlines, symbol, name, marketPhase }) {
+  const items = Array.isArray(headlines) ? headlines : [];
+  const now = Date.now();
+  const eventsByKey = new Map();
+
+  for (const item of items) {
+    const title = String(item?.title || "").trim();
+    if (!title) continue;
+    const publishedMs = Date.parse(item?.published || "");
+    const eventMeta = classifyNewsEvent(title);
+    const key = `${eventMeta.type}|${normalizeEventKey(title, { symbol, name })}`;
+    const sourceName = item?.source || "";
+    const url = item?.url || "";
+    const credibility = getSourceCredibility(sourceName, url);
+
+    if (!eventsByKey.has(key)) {
+      eventsByKey.set(key, {
+        key,
+        type: eventMeta.type,
+        label: eventMeta.label,
+        direction: eventMeta.direction,
+        severity: eventMeta.severity,
+        half_life_hours: eventMeta.half_life_hours,
+        sources: new Set(),
+        headlines: [],
+        latest_ms: null,
+        first_ms: null,
+        credibility_sum: 0,
+        credibility_count: 0,
+      });
+    }
+
+    const entry = eventsByKey.get(key);
+    entry.sources.add(String(sourceName || "unknown"));
+    entry.headlines.push({
+      title,
+      url,
+      source: sourceName || null,
+      published: item?.published || null,
+    });
+    if (Number.isFinite(publishedMs)) {
+      entry.latest_ms = entry.latest_ms === null ? publishedMs : Math.max(entry.latest_ms, publishedMs);
+      entry.first_ms = entry.first_ms === null ? publishedMs : Math.min(entry.first_ms, publishedMs);
+    }
+    entry.credibility_sum += credibility.weight;
+    entry.credibility_count += 1;
+  }
+
+  const events = [];
+  let totalScore = 0;
+  let totalCred = 0;
+  let totalCredCount = 0;
+
+  for (const entry of eventsByKey.values()) {
+    const eventCount = entry.headlines.length;
+    if (eventCount === 0) continue;
+
+    const avgCred =
+      entry.credibility_count > 0
+        ? entry.credibility_sum / entry.credibility_count
+        : 0.7;
+    const surpriseWeight = eventCount >= 5 ? 0.6 : eventCount >= 3 ? 0.7 : eventCount >= 2 ? 0.85 : 1;
+    const ageHours =
+      Number.isFinite(entry.latest_ms) ? Math.max(0, (now - entry.latest_ms) / (1000 * 60 * 60)) : null;
+    const halfLife = entry.half_life_hours || 48;
+    const decay =
+      ageHours === null || !Number.isFinite(ageHours) ? 1 : Math.exp((-Math.log(2) * ageHours) / halfLife);
+    const regimeMult = marketRegimeMultiplier(marketPhase, entry.direction);
+
+    const rawScore = entry.severity * entry.direction;
+    const score = rawScore * avgCred * surpriseWeight * decay * regimeMult;
+
+    totalScore += score;
+    totalCred += avgCred;
+    totalCredCount += 1;
+
+    const sources = Array.from(entry.sources.values()).filter(Boolean);
+    events.push({
+      key: entry.key,
+      type: entry.type,
+      label: entry.label,
+      direction: entry.direction > 0 ? "positive" : entry.direction < 0 ? "negative" : "neutral",
+      score: Math.round(score),
+      severity: entry.severity,
+      half_life_hours: entry.half_life_hours,
+      source_count: sources.length,
+      sources: sources.slice(0, 3),
+      first_seen: Number.isFinite(entry.first_ms) ? new Date(entry.first_ms).toISOString() : null,
+      latest_seen: Number.isFinite(entry.latest_ms) ? new Date(entry.latest_ms).toISOString() : null,
+      headlines: entry.headlines.slice(0, 2).map((h) => h.title),
+    });
+  }
+
+  events.sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
+
+  const pressureScore = clamp(Math.round(totalScore), -100, 100);
+  const avgCred = totalCredCount > 0 ? totalCred / totalCredCount : 0.6;
+  let confidence = "low";
+  if (totalCredCount >= 2 && avgCred >= 0.75) confidence = "high";
+  else if (avgCred >= 0.6 || totalCredCount >= 2) confidence = "medium";
+
+  let label = "neutral";
+  if (pressureScore >= 20) label = "positive";
+  else if (pressureScore <= -20) label = "negative";
+  else if (events.length >= 2) label = "mixed";
+
+  return {
+    pressure_score: pressureScore,
+    pressure_label: label,
+    pressure_confidence: confidence,
+    event_count: events.length,
+    events: events.slice(0, 4),
+  };
+}
+
+function evaluateNewsMomentum(newsSentiment, context = {}) {
   const signal = newsSentiment?.news_signal || "quiet";
-  const sentiment = newsSentiment?.sentiment || "neutral";
-  const count24h = num(newsSentiment?.news_count_24h);
-  const count7d = num(newsSentiment?.news_count_7d);
+  const baseSentiment = newsSentiment?.sentiment || "neutral";
+  const baseHeadlines = Array.isArray(newsSentiment?.headlines)
+    ? newsSentiment.headlines
+    : [];
+  const extraHeadlines = Array.isArray(context.extraHeadlines)
+    ? context.extraHeadlines
+    : [];
+  const mergedHeadlines = mergeHeadlines(baseHeadlines, extraHeadlines);
+  const counts = computeNewsCounts(mergedHeadlines);
+  const count24h = Number.isFinite(counts.count24h) && counts.count24h > 0
+    ? counts.count24h
+    : num(newsSentiment?.news_count_24h);
+  const count7d = Number.isFinite(counts.count7d) && counts.count7d > 0
+    ? counts.count7d
+    : num(newsSentiment?.news_count_7d);
+  let sentiment = baseSentiment;
 
   let activityLabel = "quiet";
   let score = 0;
@@ -3228,14 +3810,53 @@ function evaluateNewsMomentum(newsSentiment) {
     score -= 10;
   }
 
+  const pressureSummary = buildNewsPressureSummary({
+    headlines: mergedHeadlines,
+    symbol: context.symbol,
+    name: context.name,
+    marketPhase: context.marketPhase,
+  });
+
+  if (pressureSummary.pressure_score >= 15) {
+    score += Math.min(15, Math.round(pressureSummary.pressure_score / 10));
+  } else if (pressureSummary.pressure_score <= -15) {
+    score += Math.max(-15, Math.round(pressureSummary.pressure_score / 10));
+  }
+
+  if (sentiment === "neutral" || sentiment === "unknown") {
+    if (pressureSummary.pressure_score >= 20) sentiment = "bullish";
+    else if (pressureSummary.pressure_score <= -20) sentiment = "bearish";
+  }
+
   const viral24h = count24h !== null && count24h >= 5;
   const viral7d = count7d !== null && count7d >= 8;
-  const isViral = signal === "hot" || viral24h || viral7d;
+  const isViral = signal === "hot" || viral24h || viral7d || Math.abs(pressureSummary.pressure_score) >= 40;
+
+  let derivedSignal = signal;
+  if (count24h !== null && count24h >= 5) derivedSignal = "hot";
+  else if (count24h !== null && count24h >= 2) derivedSignal = "active";
+  else if (count7d !== null && count7d >= 4) derivedSignal = "moderate";
+  if (Math.abs(pressureSummary.pressure_score) >= 40) {
+    derivedSignal = "hot";
+  }
+
+  const sources = new Set();
+  if (newsSentiment?.source) sources.add(String(newsSentiment.source));
+  for (const headline of mergedHeadlines) {
+    if (headline?.source) sources.add(String(headline.source));
+  }
 
   return {
     activity_label: activityLabel,
     momentum_score: score,
     is_viral: isViral,
+    news_count_24h: count24h || 0,
+    news_count_7d: count7d || 0,
+    news_signal: derivedSignal,
+    sentiment,
+    headlines: mergedHeadlines,
+    sources_label: Array.from(sources.values()).filter(Boolean).join("+") || null,
+    ...pressureSummary,
   };
 }
 
@@ -3275,10 +3896,13 @@ function detectNegativeHeadline(headlines) {
   return null;
 }
 
-async function enrichBlueChipOpportunitiesWithNews(blueChipData, maxCoins = 5) {
+async function enrichBlueChipOpportunitiesWithNews(blueChipData, maxCoins = 5, marketPhase = "neutral", coinContext = null) {
   if (!blueChipData || !Array.isArray(blueChipData.opportunities)) return;
   const top = blueChipData.opportunities.slice(0, Math.max(0, maxCoins));
   if (top.length === 0) return;
+
+  const contextLookup =
+    coinContext && coinContext.byId && coinContext.bySymbol ? coinContext : loadCoinContext();
 
   await Promise.all(
     top.map(async (opp) => {
@@ -3294,14 +3918,21 @@ async function enrichBlueChipOpportunitiesWithNews(blueChipData, maxCoins = 5) {
       }
       if (!news) return;
 
-      const summary = evaluateNewsMomentum(news);
-      opp.news_source = news.source || null;
-      opp.news_signal = news.news_signal || "quiet";
-      opp.news_sentiment = news.sentiment || "neutral";
+      const summary = evaluateNewsMomentum(news, {
+        symbol,
+        name: opp?.name || null,
+        marketPhase,
+      });
+      opp.news_source = summary.sources_label || news.source || null;
+      opp.news_signal = summary.news_signal || "quiet";
+      opp.news_sentiment = summary.sentiment || "neutral";
       opp.news_activity = summary.activity_label;
+      opp.news_pressure_score = summary.pressure_score;
+      opp.news_pressure_label = summary.pressure_label;
+      opp.news_event_count = summary.event_count;
 
-      const headline = Array.isArray(news.headlines)
-        ? news.headlines.find((h) => h && h.title)
+      const headline = Array.isArray(summary.headlines)
+        ? summary.headlines.find((h) => h && h.title)
         : null;
       opp.news_headline = headline?.title || null;
 
@@ -3310,12 +3941,24 @@ async function enrichBlueChipOpportunitiesWithNews(blueChipData, maxCoins = 5) {
         opp.risk_warnings = warnings;
       }
 
-      if (opp.news_sentiment === "bearish" && summary.activity_label !== "quiet") {
-        addUniqueWarning(warnings, "news looks negative");
+      const contextEntry =
+        contextLookup.byId.get(normalizeCoinGeckoId(coinId)) ||
+        contextLookup.bySymbol.get(String(symbol).toUpperCase()) ||
+        null;
+      if (contextEntry) {
+        opp.context_summary = contextEntry.summary || contextEntry.context_summary || null;
+        opp.context_short_term_only = contextEntry.short_term_only === true;
+        if (opp.context_short_term_only) {
+          addUniqueWarning(warnings, "context suggests short-term only");
+        }
+      }
+
+      if (opp.news_pressure_label === "negative" && summary.activity_label !== "quiet") {
+        addUniqueWarning(warnings, "news pressure looks negative");
         return;
       }
 
-      const negKeyword = detectNegativeHeadline(news.headlines);
+      const negKeyword = detectNegativeHeadline(summary.headlines);
       if (negKeyword) {
         addUniqueWarning(warnings, `headline mentions ${negKeyword}`);
       }
@@ -3746,6 +4389,80 @@ function summarizeExchangeNews(newsItems) {
   });
 
   return items.slice(0, 5);
+}
+
+function matchCoinInTitle(title, coin) {
+  if (!title || !coin) return false;
+  const symbol = String(coin.symbol || "").trim().toUpperCase();
+  const name = String(coin.name || "").trim().toLowerCase();
+  if (!symbol) return false;
+  const upper = String(title).toUpperCase();
+  const lower = String(title).toLowerCase();
+
+  let symbolMatch = false;
+  if (symbol.length <= 3) {
+    const symRe = new RegExp(`\\(${escapeRegExp(symbol)}\\)|\\b${escapeRegExp(symbol)}\\/|\\/${escapeRegExp(symbol)}\\b`, "i");
+    symbolMatch = symRe.test(upper);
+  } else {
+    const symRe = new RegExp(`\\b${escapeRegExp(symbol)}\\b`, "i");
+    symbolMatch = symRe.test(upper);
+  }
+
+  if (symbolMatch) return true;
+  if (name.length >= 4 && lower.includes(name)) return true;
+  return false;
+}
+
+async function buildExchangeNewsIndex(watchlist) {
+  const coins = Array.isArray(watchlist) ? watchlist : [];
+  const now = Date.now();
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+
+  const exchangeEntries = await Promise.all(
+    EXCHANGE_NEWS_SOURCES.map(async (source) => {
+      const items = await fetchRSSFeed(source.url);
+      return items.map((item) => ({
+        ...item,
+        source: source.name,
+      }));
+    })
+  );
+
+  const flatItems = exchangeEntries.flat();
+  const bySymbol = new Map();
+
+  for (const item of flatItems) {
+    const title = String(item?.title || "").trim();
+    if (!title) continue;
+    const publishedMs = item?.date ? Date.parse(item.date) : null;
+    if (Number.isFinite(publishedMs) && publishedMs < sevenDaysAgo) continue;
+
+    const eventMeta = classifyNewsEvent(title);
+    const sentiment =
+      eventMeta.direction > 0 ? "bullish" : eventMeta.direction < 0 ? "bearish" : "neutral";
+
+    const headline = {
+      title,
+      url: item?.url || "",
+      source: item?.source || "",
+      published: item?.date || null,
+      sentiment,
+      event_type: eventMeta.type,
+    };
+
+    for (const coin of coins) {
+      if (!matchCoinInTitle(title, coin)) continue;
+      const symbol = String(coin.symbol || "").toUpperCase();
+      if (!symbol) continue;
+      if (!bySymbol.has(symbol)) bySymbol.set(symbol, []);
+      bySymbol.get(symbol).push(headline);
+    }
+  }
+
+  return {
+    bySymbol,
+    total_items: flatItems.length,
+  };
 }
 
 function summarizeBtcShare(globalSnapshot) {
@@ -6599,7 +7316,7 @@ function computeBacktestStats(predictions) {
       sample_min: sampleMin,
       confidence,
       verdict: edge === null ? "Not enough data" :
-               edge > 5 ? "Helpful (buy signal)" :
+               edge > 5 ? "Helpful (entry signal)" :
                edge < -5 ? "Helpful (avoid signal)" :
                "Neutral (not predictive)",
     });
@@ -6683,7 +7400,7 @@ function writeBacktestReport(stats) {
         ? `${(row.win_rate_14d * 100).toFixed(0)}%`
         : "n/a";
     const decision =
-      label === "KEEP" ? "Buy" : label === "WATCH-ONLY" ? "Watch" : "Avoid";
+      label === "KEEP" ? "Setup" : label === "WATCH-ONLY" ? "Watch" : "Avoid";
     md.push(
       `| ${decision} | ${sample14d} coins | ${formatSignedPct(row.avg_return_7d, 1)} | ${formatSignedPct(row.avg_return_14d, 1)} | ${formatSignedPct(row.avg_return_30d, 1)} | ${winRate} |`
     );
@@ -8539,6 +9256,7 @@ async function main() {
   ensureDir(CACHE_DIR);
 
   const preScanWarnings = [];
+  preScanWarnings.push(...checkSecretHygiene());
   const defiLatestInfo = ensureDefiFreshness(preScanWarnings);
   const ruleConfidence = loadRuleConfidenceFromBacktest();
   const ruleEffectiveness = loadRuleEffectivenessFromBacktest();
@@ -8566,6 +9284,7 @@ async function main() {
       .filter(Boolean)
   );
   const defiKnowledge = loadDefiKnowledge(); // Load DeFi scan data for audit/hack context
+  const coinContext = loadCoinContext();
 
   const autoStageIgnoreRaw = readJsonFile(AUTO_STAGE_IGNORE_PATH, []);
   const autoStageIgnoreIds = new Set(
@@ -8657,6 +9376,7 @@ async function main() {
     fetchBlueChips(),
   ]);
   const macroPulse = await buildMacroPulse({ btcData });
+  const exchangeNewsIndex = await buildExchangeNewsIndex(watchlist);
   
   const btc = {
     price_change_24h: num(btcData?.price_change_percentage_24h_in_currency),
@@ -8673,7 +9393,12 @@ async function main() {
   
   // Analyze blue chips for dip opportunities
   const blueChipOpportunities = analyzeBlueChipsForDips(blueChipsData, fearGreedData);
-  await enrichBlueChipOpportunitiesWithNews(blueChipOpportunities, 5);
+  await enrichBlueChipOpportunitiesWithNews(
+    blueChipOpportunities,
+    5,
+    marketCondition?.market_phase || "neutral",
+    coinContext
+  );
   console.log(`Blue Chip Scanner: ${blueChipOpportunities.scanned_count} top cryptos scanned, ${blueChipOpportunities.opportunities.length} dip opportunities found`);
   
   // Will be populated after coins are processed
@@ -8791,7 +9516,13 @@ async function main() {
       githubRepo ? fetchGitHubRepoActivity(githubRepo.owner, githubRepo.repo) : Promise.resolve(null),
       fetchNewsSentiment(coin.symbol, coin.coinGeckoId),
     ]);
-    const newsSummary = evaluateNewsMomentum(newsSentiment);
+    const exchangeHeadlines = exchangeNewsIndex?.bySymbol?.get(String(coin.symbol || "").toUpperCase()) || [];
+    const newsSummary = evaluateNewsMomentum(newsSentiment, {
+      symbol: coin.symbol,
+      name: coin.name,
+      extraHeadlines: exchangeHeadlines,
+      marketPhase: marketCondition?.market_phase || "neutral",
+    });
 
     // Evaluate holder concentration
     const supplyForConcentration =
@@ -8834,7 +9565,14 @@ async function main() {
       dataSources.developer_data = "GitHub";
     }
     if (newsSentiment && dataSources.news === "NONE") {
-      dataSources.news = newsSentiment.source || "CryptoPanic";
+      dataSources.news = newsSummary.sources_label || newsSentiment.source || "News";
+    }
+    if (exchangeHeadlines.length > 0) {
+      if (dataSources.news === "NONE") {
+        dataSources.news = "Exchange RSS";
+      } else if (!dataSources.news.includes("Exchange")) {
+        dataSources.news = `${dataSources.news}+Exchange RSS`;
+      }
     }
     if ((githubReleases.length > 0 || rssItems.length > 0) && dataSources.catalysts === "NONE") {
       dataSources.catalysts = githubReleases.length > 0 ? "GitHub" : "RSS";
@@ -8883,6 +9621,17 @@ async function main() {
       priceChange24h,
       priceChange7d,
     });
+
+    const contextEntry =
+      coinContext.byId.get(normalizeCoinGeckoId(coin.coinGeckoId)) ||
+      coinContext.bySymbol.get(String(coin.symbol || "").toUpperCase()) ||
+      null;
+    const contextSummary = contextEntry?.summary || contextEntry?.context_summary || null;
+    const contextShortTermOnly = contextEntry?.short_term_only === true;
+    const contextHeadwinds = Array.isArray(contextEntry?.structural_headwinds)
+      ? contextEntry.structural_headwinds
+      : [];
+    const contextSource = contextEntry?.source || null;
 
     const coinReport = {
       symbol: coin.symbol,
@@ -8993,22 +9742,33 @@ async function main() {
       entry_confirmations: entryConfirmations.confirmations,
       entry_confirmation_score: entryConfirmations.score,
       data_confidence: computeDataConfidence({
-        hasNews: Boolean(newsSentiment && newsSentiment.source),
+        hasNews: Array.isArray(newsSummary.headlines) && newsSummary.headlines.length > 0,
         hasOnchain: Boolean(holdersData || holderInfo?.onchain),
         hasTvl: Boolean(tvlData),
       }),
       // News sentiment
-      news_count_24h: newsSentiment?.news_count_24h || 0,
-      news_count_7d: newsSentiment?.news_count_7d || 0,
-      news_sentiment: newsSentiment?.sentiment || "unknown",
+      news_count_24h: newsSummary.news_count_24h || 0,
+      news_count_7d: newsSummary.news_count_7d || 0,
+      news_sentiment: newsSummary.sentiment || "unknown",
       news_sentiment_score: newsSentiment?.sentiment_score || null,
-      news_signal: newsSentiment?.news_signal || "quiet",
-      news_headlines: newsSentiment?.headlines?.slice(0, 3) || [],
-      news_source: newsSentiment?.source || null,
+      news_signal: newsSummary.news_signal || "quiet",
+      news_headlines: Array.isArray(newsSummary.headlines)
+        ? newsSummary.headlines.slice(0, 3)
+        : [],
+      news_source: newsSummary.sources_label || newsSentiment?.source || null,
       news_fetched_at: newsSentiment?.fetched_at || null,
       news_activity: newsSummary.activity_label,
       news_momentum_score: newsSummary.momentum_score,
       news_is_viral: newsSummary.is_viral,
+      news_pressure_score: newsSummary.pressure_score,
+      news_pressure_label: newsSummary.pressure_label,
+      news_pressure_confidence: newsSummary.pressure_confidence,
+      news_event_count: newsSummary.event_count,
+      news_events: newsSummary.events || [],
+      context_summary: contextSummary,
+      context_short_term_only: contextShortTermOnly,
+      context_structural_headwinds: contextHeadwinds,
+      context_source: contextSource,
       // Take-profit tracking
       take_profit: calculateTakeProfitStatus(coin.symbol, num(market?.current_price), portfolio),
       // DeFi knowledge (from DeFi scan if matched)
@@ -9018,6 +9778,8 @@ async function main() {
       })(),
     };
 
+    coinReport.health_score = computeHealthScore(coinReport);
+    coinReport.health_label = labelHealthScore(coinReport.health_score);
     coinReport.score_breakdown = computeScoreBreakdown(coinReport);
 
     const correlationGuardrail = evaluateCorrelationGuardrail({ coin: coinReport, portfolio });
@@ -9275,6 +10037,7 @@ async function main() {
       funnelStats,
       macroPulse,
       paperReport,
+      discoveryReport,
     });
     fs.writeFileSync(DASHBOARD_PATH, dashboardHtml, "utf8");
   } catch (err) {

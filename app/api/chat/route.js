@@ -345,6 +345,16 @@ function summarizeCoin(coinEntry, reports) {
               : null,
           news_checked_at: coinEntry.explain?.news?.fetched_at || null,
           news_source: coinEntry.explain?.news?.source || null,
+          context:
+            coinEntry.explain?.context && coinEntry.explain.context.summary
+              ? {
+                  summary: safeText(coinEntry.explain.context.summary, 240),
+                  short_term_only: Boolean(coinEntry.explain.context.short_term_only),
+                  headwinds: Array.isArray(coinEntry.explain.context.headwinds)
+                    ? coinEntry.explain.context.headwinds.slice(0, 2)
+                    : [],
+                }
+              : null,
         }
       : null,
   };
