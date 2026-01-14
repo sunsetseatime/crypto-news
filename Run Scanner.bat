@@ -12,6 +12,18 @@ cd /d "%~dp0"
 echo Starting scan...
 echo.
 
+node src/discover.js
+
+if errorlevel 1 (
+  echo.
+  echo ========================================
+  echo   Discovery Failed! See errors above.
+  echo ========================================
+  echo.
+  pause
+  exit /b 1
+)
+
 node src/index.js
 
 if errorlevel 1 (
@@ -39,4 +51,3 @@ if exist "reports\\Dashboard.html" (
 ) else (
   explorer reports
 )
-

@@ -111,6 +111,20 @@ function badge(text, className) {
   return `<span class="badge ${className}">${escapeHtml(text)}</span>`;
 }
 
+function buildHowThisWorks(bullets) {
+  const items = Array.isArray(bullets) ? bullets.filter(Boolean) : [];
+  if (items.length === 0) return "";
+  const list = items.map((b) => `<li>${escapeHtml(b)}</li>`).join("");
+  return `
+    <details class="details how-works">
+      <summary><span class="summary-title">How this works</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
+      <div class="details-body">
+        <ul class="compact">${list}</ul>
+      </div>
+    </details>
+  `;
+}
+
 function labelClass(label) {
   switch (label) {
     case "KEEP":
@@ -366,15 +380,15 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
   
   if (highRisk.length > 0) {
     const riskSymbols = highRisk.slice(0, 3).map(c => c.symbol).join(", ");
-    highlights.push(`<strongBe careful:</strong> ${riskSymbols}${highRisk.length > 3 ? ` +${highRisk.length - 3} more` : ""} have warning signs`);
+    highlights.push(`<strong>Be careful:</strong> ${riskSymbols}${highRisk.length > 3 ? ` +${highRisk.length - 3} more` : ""} have warning signs`);
   }
   
   if (discoveryCount > 0) {
-    highlights.push(`<strongNew discoveries:</strong> Found ${discoveryCount} trending coins worth researching`);
+    highlights.push(`<strong>New discoveries:</strong> Found ${discoveryCount} trending coins worth researching`);
   }
   
   if (topDefi) {
-    highlights.push(`<strongTop DeFi pick:</strong> ${topDefi.name} (${topDefi.market.token_symbol}) with ${formatUsd(num(topDefi.tvl?.focus_current))} locked`);
+    highlights.push(`<strong>Top DeFi pick:</strong> ${topDefi.name} (${topDefi.market.token_symbol}) with ${formatUsd(num(topDefi.tvl?.focus_current))} locked`);
   }
   
   const highlightsHtml = highlights.length > 0 
@@ -425,7 +439,7 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
           </div>
           <div style="font-size: 13px; color: var(--muted);">
             Fear & Greed Index - Trend: ${fearGreed.trend || "stable"}${btcMomentumText ? ` - ${btcMomentumText}` : ""}
-            ${fgSpark ? `<div class="muted small" style="margin-top:6px;">Sentiment (30d)${fgMin !== null && fgMax !== null ? ` • Range ${fgMin}-${fgMax}` : ""}</div><div class="sparkline fg-sparkline">${fgSpark}</div>` : ""}
+            ${fgSpark ? `<div class="muted small" style="margin-top:6px;">Sentiment (30d)${fgMin !== null && fgMax !== null ? ` | Range ${fgMin}-${fgMax}` : ""}</div><div class="sparkline fg-sparkline">${fgSpark}</div>` : ""}
           </div>
         </div>
       </div>
@@ -459,6 +473,12 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       </div>
       <h3 style="margin-top: 16px;">Key Findings</h3>
       ${highlightsHtml}
+      ${buildHowThisWorks([
+        "Uses Fear and Greed plus BTC weekly momentum for market mood.",
+        "Counts come from your watchlist labels (Setup/Watch/Avoid) and staging list.",
+        "Key Findings are pulled from outperformance vs BTC, catalysts, risks, discovery, and DeFi.",
+        "Why it matters: it tells you if the market is friendly before you act.",
+      ])}
     </div>
   `;
 }
@@ -527,6 +547,12 @@ function buildTodayFocusHtml({ bestEntriesData, alertsReport, diffReport }) {
           ${changeHtml}
         </div>
       </div>
+      ${buildHowThisWorks([
+        "Top Setups come from Best Entries (KEEP coins with good timing).",
+        "Alerts are driven by alert rules for big changes or risks.",
+        "Changes show only critical or warning items since the last run.",
+        "Why it matters: this is the fastest place to start each day.",
+      ])}
     </div>
   `;
 }
@@ -537,6 +563,13 @@ function buildDiscoverySectionHtml(discoveryReport) {
       <div class="card">
         <h2>Discovery</h2>
         <p class="muted">No discovery report yet. Run the discovery scan to populate this section.</p>
+        ${buildHowThisWorks([
+          "Scans the wider market for coins outside your watchlist.",
+          "Filters by liquidity, market cap, and 7-day move; excludes stablecoins.",
+          "Scores rank by volume, price action, and size.",
+          "Why it matters: it finds fresh ideas early.",
+          "Results are research leads, not automatic buys.",
+        ])}
       </div>
     `;
   }
@@ -554,6 +587,13 @@ function buildDiscoverySectionHtml(discoveryReport) {
       <div class="card">
         <h2>Discovery</h2>
         <p class="muted">No discovery candidates in the latest report.</p>
+        ${buildHowThisWorks([
+          "Scans the wider market for coins outside your watchlist.",
+          "Filters by liquidity, market cap, and 7-day move; excludes stablecoins.",
+          "Scores rank by volume, price action, and size.",
+          "Why it matters: it finds fresh ideas early.",
+          "Results are research leads, not automatic buys.",
+        ])}
       </div>
     `;
   }
@@ -580,12 +620,18 @@ function buildDiscoverySectionHtml(discoveryReport) {
     <div class="card">
       <div class="row space-between">
         <h2>Discovery</h2>
-        <div class="muted small">${escapeHtml(total)} candidates • ${escapeHtml(generatedAt)}</div>
+        <div class="muted small">${escapeHtml(total)} candidates | ${escapeHtml(generatedAt)}</div>
       </div>
       <p class="muted small">Fresh coins that match discovery filters. Use as research ideas, not trade signals.</p>
       <div class="play-section">
         ${rows}
       </div>
+      ${buildHowThisWorks([
+        "Scores rank new coins by liquidity, volume, and recent price action.",
+        "Higher scores mean stronger short-term attention, not long-term quality.",
+        "Why it matters: it turns a huge market into a short research list.",
+        "Always review project basics before adding to your watchlist.",
+      ])}
     </div>
   `;
 }
@@ -600,7 +646,13 @@ function buildStoryCardsHtml(coins) {
     return `
       <div class="card">
         <h2>Story Cards</h2>
-        <p class="muted">No recent headlines to cluster yet.</p>
+        <p class="muted">No recent headlines to show. The news feed is quiet or delayed.</p>
+        ${buildHowThisWorks([
+          "Shows stories only when a coin has recent headlines.",
+          "Headlines come from news sources and exchange announcements.",
+          "Story cards do not change rankings by themselves.",
+          "News pressure uses the same headlines and affects buckets and alerts.",
+        ])}
       </div>
     `;
   }
@@ -665,6 +717,13 @@ function buildStoryCardsHtml(coins) {
       <div class="story-grid">
         ${cards}
       </div>
+      ${buildHowThisWorks([
+        "Shows stories only when a coin has recent headlines.",
+        "Headlines are grouped into one story to avoid duplicate noise.",
+        "News pressure uses the same headlines and affects buckets and alerts.",
+        "Why it matters: you get context quickly without reading every article.",
+        "Use this for understanding, not instant trade decisions.",
+      ])}
     </div>
   `;
 }
@@ -734,6 +793,14 @@ function buildOpportunityBucketsHtml(coins) {
         ${card("Contrarian panic", buckets.contrarian, "Oversold + negative tone (high risk)")}
         ${card("Avoid / traps", buckets.traps, "Downtrend, unlock risk, or low liquidity")}
       </div>
+      ${buildHowThisWorks([
+        "Momentum = uptrend + good entry + beating BTC.",
+        "Catalyst = clean project update or release.",
+        "Narrative = active news or high news pressure.",
+        "Rebound = big dip and not overbought.",
+        "Contrarian = oversold with negative tone (high risk).",
+        "Avoid = downtrend, unlock risk, or low liquidity.",
+      ])}
     </div>
   `;
 }
@@ -795,6 +862,13 @@ function buildPortfolioGuidanceHtml(guidance) {
         </div>
       </div>
       ${notesHtml}
+      ${buildHowThisWorks([
+        "Base size uses your portfolio size and market phase.",
+        "Setup coins get a bigger cap; Watch coins get about half.",
+        "Risk flags (low liquidity, unlocks, concentration) reduce size.",
+        "A volume cap keeps size below about 0.1% of daily volume.",
+        "Why it matters: sizing controls risk even when signals look good.",
+      ])}
     </div>
   `;
 }
@@ -842,6 +916,13 @@ function buildDataFreshnessHtml(layer1Report) {
         ${missingHtml}
         <div class="muted small" style="margin-top: 8px;">Per-coin news timestamps are shown in each coin's "Why" section.</div>
       </div>
+      ${buildHowThisWorks([
+        "Shows last updated times for scan, fear/greed, macro, and DeFi.",
+        "Missing sources mean some signals are weaker or incomplete.",
+        "Developer activity comes from GitHub and/or CoinGecko when available.",
+        "Cache window explains how often data refreshes.",
+        "Why it matters: stale data can lead to bad decisions.",
+      ])}
     </div>
   `;
 }
@@ -946,7 +1027,7 @@ function buildMacroPulseHtml(macroPulse) {
     const impact = item?.impact ? String(item.impact).toUpperCase() : "";
     const region = item?.region || "";
     const when = item?.window || (item?.datetime ? formatUtc(item.datetime) : "");
-    const meta = [impact, region, when].filter(Boolean).join(" · ");
+    const meta = [impact, region, when].filter(Boolean).join(" | ");
     return meta ? `${item?.title || "Event"} (${meta})` : `${item?.title || "Event"}`;
   });
   const upcomingHtml = upcomingLines.length
@@ -1015,6 +1096,13 @@ function buildMacroPulseHtml(macroPulse) {
           ${watchHtml}
         </div>
       </div>
+      ${buildHowThisWorks([
+        "BTC price and weekly momentum set the backdrop.",
+        "ETF flows and funding show big-money pressure.",
+        "BTC share and alt strength show where money is rotating.",
+        "Alt news and mood summarize headline tone.",
+        "Why it matters: it helps you size risk across all coins.",
+      ])}
     </div>
   `;
 }
@@ -1120,6 +1208,14 @@ function buildPlayRecommendationsHtml(playRecs) {
         <span style="color: var(--muted); margin-left: 12px;">${escapeHtml(phaseInfo.desc)}</span>
       </div>
       ${sectionsHtml}
+      ${buildHowThisWorks([
+        "Uses market phase plus watchlist labels (which include dev activity) and entry timing.",
+        "Take Profits come from your take-profit tracker.",
+        "Best Setups are KEEP coins with good timing and no major risks.",
+        "Momentum Plays favor coins beating BTC during runs.",
+        "Watch for Entry are good coins with timing not ready.",
+        "Avoid is for DROP, chasing, or high-risk coins.",
+      ])}
     </div>
   `;
 }
@@ -1190,6 +1286,14 @@ function buildBestEntriesHtml(bestEntriesData) {
         ${entriesHtml}
       </div>
       ${waitSection}
+      ${buildHowThisWorks([
+        "Only KEEP coins are eligible; KEEP uses project health and dev activity gates.",
+        "Dev activity uses GitHub commit recency/repo status or CoinGecko dev data.",
+        "Timing score uses RSI and distance from 30-day high/low.",
+        "Downtrend coins are excluded unless a strong catalyst and volume spike exist.",
+        "High-risk flags remove a coin from this list.",
+        "Why it matters: it avoids good coins at bad timing.",
+      ])}
     </div>
   `;
 }
@@ -1283,6 +1387,12 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
       ${buySection}
       ${waitSection}
       <p class="small muted" style="margin-top: 12px;">If something is still falling fast today, waiting can be safer than trying to catch the exact bottom.</p>
+      ${buildHowThisWorks([
+        "Scans top market-cap coins for dips and stabilization.",
+        "Signals use RSI oversold, dip from 7-day high, and weekly loss.",
+        "Moves to Wait list if still falling fast today.",
+        "Why it matters: larger coins are usually more liquid and safer.",
+      ])}
     </div>
   `;
 }
@@ -1348,6 +1458,12 @@ function buildDiffHtml(diffReport) {
           ? `<p class="muted">Nothing significant changed since last scan.</p>`
           : itemsHtml
       }
+      ${buildHowThisWorks([
+        "Compares the last scan to the latest scan.",
+        "Shows only Critical and Warning changes by default.",
+        "Why it matters: you can spot new risks or improvements quickly.",
+        "If empty, nothing changed enough to act.",
+      ])}
     </div>
   `;
 }
@@ -1436,6 +1552,12 @@ function buildSupervisorHtml(supervisorResult) {
       ${listVerdicts("Be Careful With", "", watchClosely, "These coins have warning signs - don't act without doing more research.")}
       ${listVerdicts("Don't Chase", "", avoidChasing, "These already pumped big without a clear reason - acting now is risky.")}
       ${manualHtml}
+      ${buildHowThisWorks([
+        "Uses on-chain holder concentration and AI summary text.",
+        "High concentration and warnings raise risk labels.",
+        "Labels reflect risk, not price direction.",
+        "Why it matters: ownership risk can cause sudden dumps.",
+      ])}
     </div>
   `;
 }
@@ -1536,10 +1658,16 @@ function buildAlertsHtml(alertsReport) {
       <p class="muted small">Click an alert to see why it triggered and what could go wrong.</p>
       ${contentHtml}
       ${moreHtml}
+      ${buildHowThisWorks([
+        "Triggered on large signal changes or risk flags.",
+        "Includes news pressure shifts, major dips, and take-profit hits.",
+        "Why it matters: it pulls urgent items to the top.",
+        "Open an alert to see the reasons and risks.",
+      ])}
     </div>
   `;
 }
-function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
+function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }) {
   if (!coins.length) {
     return `
       <div class="card">
@@ -1548,6 +1676,8 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       </div>
     `;
   }
+
+  const openCount = Number.isFinite(defaultOpen) ? defaultOpen : 0;
 
   const sorted = [...coins].sort((a, b) => {
     const ra = rankBySymbol.get(a.symbol) || 9999;
@@ -1655,6 +1785,14 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
         else if (entrySignal === "overbought") { entryText = "Wait for entry"; entryColor = "var(--drop)"; }
         else if (entrySignal === "wait") { entryText = "Wait for entry"; entryColor = "var(--watch)"; }
 
+        const entryBlocked =
+          coin.hygiene_label !== "KEEP" ||
+          coin.holder_concentration_level === "HIGH" ||
+          coin.high_dilution_risk === true ||
+          coin.unlock_risk_flag === true ||
+          coin.low_liquidity === true ||
+          (Number.isFinite(num(coin.health_score)) && coin.health_score < 40);
+
         let rsiNote = "";
         if (rsi !== null) {
           if (rsi < 30) rsiNote = "oversold";
@@ -1662,7 +1800,14 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
         }
         let dipNote = "";
         if (distFromHigh !== null && distFromHigh > 15) { dipNote = `${Math.round(distFromHigh)}% off high`; }
-        const subNote = [rsiNote, dipNote].filter(Boolean).join(", ");
+        const flagNote = entryBlocked ? "quality flags" : "";
+
+        if (entryBlocked && (entrySignal === "strong_buy" || entrySignal === "buy")) {
+          entryText = "Wait (risk)";
+          entryColor = "var(--warning)";
+        }
+
+        const subNote = [rsiNote, dipNote, flagNote].filter(Boolean).join(", ");
 
         entryHtml = `<span style="color: ${entryColor}; font-weight: 600;">${entryText}</span>` +
           (subNote ? `<div class="muted small">${escapeHtml(subNote)}</div>` : "");
@@ -1809,7 +1954,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       const mainRow = `
         <tr class="watch-row" data-row-id="${escapeHtml(rowId)}" data-symbol="${escapeHtml(coin.symbol)}" data-name="${escapeHtml(coin.name || "")}">
           <td data-label="Details">
-            <button class="row-toggle" type="button" aria-expanded="false"><span class="chev">▸</span> Details</button>
+            <button class="row-toggle" type="button" aria-expanded="false"><span class="chev">&gt;</span> Click to see our reasons</button>
             <button class="paper-trade-btn paper-trade-mini" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}">Paper trade</button>
           </td>
           <td class="col-symbol" data-label="Coin">${symbolHtml}<div class="muted small">${escapeHtml(coin.name || "")}</div></td>
@@ -1832,7 +1977,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
       <strong>Entry guide:</strong>
       <span style="color: var(--keep); margin-left: 8px;">Great</span> = pulled back, better risk/reward
       <span style="color: var(--keep); margin-left: 8px;">Good</span> = reasonable entry point
-      <span style="color: var(--watch); margin-left: 8px;">Wait for entry</span> = good coin, but wait for a better dip
+      <span style="color: var(--watch); margin-left: 8px;">Wait for entry</span> = timing not favorable or quality flags
     </div>
   `;
 
@@ -1840,7 +1985,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
     <div class="card">
       <h2>${escapeHtml(title)}</h2>
       <div class="table-wrap">
-        <table class="table filterable table-condensed">
+        <table class="table filterable table-condensed watchlist-table" data-default-open="${escapeHtml(String(openCount))}">
           <thead>
             <tr>
               <th></th>
@@ -1860,7 +2005,14 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol }) {
         </table>
       </div>
       ${entryLegend}
-      <div class="muted small" style="margin-top: 6px;">Verdict = coin quality. Entry = timing signal. Paper trading is inside Details.</div>
+      <div class="muted small" style="margin-top: 6px;">Verdict = coin quality. Entry = timing signal. Paper trade is in the first column.</div>
+      ${buildHowThisWorks([
+        "Verdict uses gates: liquidity, unlock transparency, traction (TVL + dev activity), ownership, trend, health.",
+        "Developer activity uses GitHub commit recency/repo status or CoinGecko dev data.",
+        "Entry uses timing score from RSI and distance from 30-day high/low.",
+        "Details show reasons, risks, sizing, news pressure, and paper trade.",
+        "Why it matters: it separates coin quality from entry timing.",
+      ])}
     </div>
   `;
 }
@@ -1873,6 +2025,13 @@ function buildOnchainHtml(coins) {
       <div class="card">
         <h2>On-chain Holder Snapshot</h2>
         <p class="muted">No on-chain holder data available for this run.</p>
+        ${buildHowThisWorks([
+          "Shows top holders and how concentrated supply is.",
+          "Uses on-chain holder data (Ethplorer/Etherscan).",
+          "Why it matters: heavy concentration increases dump risk.",
+          "Smart contracts can be staking or treasury wallets, not always bad.",
+          "Use this to judge risk before taking a setup.",
+        ])}
       </div>
     `;
   }
@@ -1985,6 +2144,13 @@ function buildOnchainHtml(coins) {
       <h2>On-chain Holder Snapshot</h2>
       <p class="muted">Click a coin to expand top holders.</p>
       ${panels}
+      ${buildHowThisWorks([
+        "Shows top holders and how concentrated supply is.",
+        "Uses on-chain holder data (Ethplorer/Etherscan).",
+        "Why it matters: heavy concentration increases dump risk.",
+        "Smart contracts can be staking or treasury wallets, not always bad.",
+        "Use this to judge risk before taking a setup.",
+      ])}
     </div>
   `;
 }
@@ -1995,6 +2161,13 @@ function buildDefiHtml(defiLatest) {
       <div class="card">
         <h2>DeFi Projects</h2>
         <p class="muted">No DeFi data yet. This scans crypto lending/trading platforms to find solid projects.</p>
+        ${buildHowThisWorks([
+          "Lists top DeFi protocols by money locked (TVL).",
+          "Ranks by TVL and recent change.",
+          "Why it matters: higher TVL often means more trust and usage.",
+          "Token column shows which coin is linked to the protocol.",
+          "TVL is a quality hint, not a buy signal.",
+        ])}
       </div>
     `;
   }
@@ -2053,6 +2226,13 @@ function buildDefiHtml(defiLatest) {
         </table>
       </div>
       <p class="muted small" style="margin-top:10px;"><strong>What this means:</strong> Projects with more money locked and growing TVL are generally more trusted. The token column shows which coin you'd use to gain exposure.</p>
+      ${buildHowThisWorks([
+        "Lists top DeFi protocols by money locked (TVL).",
+        "Ranks by TVL and recent change.",
+        "Why it matters: higher TVL often means more trust and usage.",
+        "Token column shows which coin is linked to the protocol.",
+        "TVL is a quality hint, not a buy signal.",
+      ])}
     </div>
   `;
 }
@@ -2063,6 +2243,13 @@ function buildBacktestHtml(backtestStats) {
       <div class="card">
         <h2>Backtesting</h2>
         <p class="muted">No backtest stats yet.</p>
+        ${buildHowThisWorks([
+          "Tracks how past signals performed over time.",
+          "Uses historical watchlist signals and outcomes.",
+          "Why it matters: it shows which labels work best.",
+          "Results are averages, not guarantees.",
+          "Use this to improve rules and sizing.",
+        ])}
       </div>
     `;
   }
@@ -2110,6 +2297,13 @@ function buildBacktestHtml(backtestStats) {
           </tbody>
         </table>
       </div>
+      ${buildHowThisWorks([
+        "Tracks how past signals performed over time.",
+        "Uses historical watchlist signals and outcomes.",
+        "Why it matters: it shows which labels work best.",
+        "Results are averages, not guarantees.",
+        "Use this to improve rules and sizing.",
+      ])}
     </div>
   `;
 }
@@ -2120,6 +2314,13 @@ function buildPaperTradingHtml(paperReport) {
       <div class="card">
         <h2>Paper Trading</h2>
         <p class="muted">No paper trading stats yet.</p>
+        ${buildHowThisWorks([
+          "Each scan opens a pretend trade from Best Entries or Blue Chip Dips (only one per coin).",
+          "Every run refreshes price and profit/loss, and checks if a trade should close.",
+          "Trades close if they hit a time limit, a trailing stop, a profit target, or the signal weakens.",
+          "All trades and signals are saved in reports/paper/PaperTrades.json and reports/paper/SignalEvents.json.",
+          "The dashboard shows open/closed trades and your basic results. It does not auto-change the rules yet.",
+        ])}
       </div>
     `;
   }
@@ -2231,7 +2432,7 @@ function buildPaperTradingHtml(paperReport) {
         Win rate: ${escapeHtml(winRate)} | Avg return: ${escapeHtml(avgReturn)} | Expectancy: ${escapeHtml(expectancy)} | Avg hold: ${escapeHtml(avgDays)}
       </div>
       <div class="muted small" style="margin-top: 6px;">
-        Tip: use the Paper trade button on a coin card to copy an intent, then paste it into <code>reports/paper/PaperTradeIntents.json</code> before the next run.
+        Tip: auto-trades come from Best Entries and Blue Chip Dips. Use the Paper trade button to add extra manual ideas (paste into <code>reports/paper/PaperTradeIntents.json</code> before the next run).
       </div>
       <div class="table-wrap" style="margin-top: 10px;">
         <table class="table">
@@ -2242,7 +2443,7 @@ function buildPaperTradingHtml(paperReport) {
               <th class="num">Days</th>
               <th class="num">Entry</th>
               <th class="num">Current</th>
-              <th class="num">PnL</th>
+          <th class="num">Profit/Loss</th>
               <th>Signal</th>
               <th class="num">Score</th>
               <th>Tags</th>
@@ -2263,7 +2464,7 @@ function buildPaperTradingHtml(paperReport) {
               <th>Symbol</th>
               <th>Source</th>
               <th class="num">Days</th>
-              <th class="num">PnL</th>
+              <th class="num">Profit/Loss</th>
               <th class="num">Exit</th>
               <th>Reason</th>
               <th>Signal</th>
@@ -2295,6 +2496,13 @@ function buildPaperTradingHtml(paperReport) {
             .join("")}
         </ul>
       </div>
+      ${buildHowThisWorks([
+        "Each scan opens a pretend trade from Best Entries or Blue Chip Dips (only one per coin).",
+        "Every run refreshes price and profit/loss, and checks if a trade should close.",
+        "Trades close if they hit a time limit, a trailing stop, a profit target, or the signal weakens.",
+        "All trades and signals are saved in reports/paper/PaperTrades.json and reports/paper/SignalEvents.json.",
+        "The dashboard shows open/closed trades and your basic results. It does not auto-change the rules yet.",
+      ])}
     </div>
   `;
 }
@@ -2315,6 +2523,12 @@ function buildFunnelHtml(funnelStats, backtestStats) {
             <li>Promote winners to the main watchlist; ignore the rest.</li>
           </ul>
         </div>
+        ${buildHowThisWorks([
+          "Tracks how discovery ideas move into staging and the main list.",
+          "Uses Discovery report plus watchlist history.",
+          "Why it matters: it shows if your discovery process works.",
+          "Use it to measure how many new coins earn promotion.",
+        ])}
       </div>
     `;
   }
@@ -2476,6 +2690,13 @@ function buildFunnelHtml(funnelStats, backtestStats) {
       <div class="muted small" style="margin-top: 12px;">
         <a href="backtest/BacktestReport.md">View full backtest report</a>
       </div>
+      ${buildHowThisWorks([
+        "Tracks how discovery ideas move into staging and the main list.",
+        "Uses Discovery report plus watchlist history.",
+        "Why it matters: it shows if your discovery process works.",
+        "Promoted vs ignored tells you how strict your filter is.",
+        "Use the rule stats to adjust what you keep.",
+      ])}
     </div>
   `;
 }
@@ -2650,12 +2871,18 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       tr.explain-row.is-open { display: table-row; }
       .watch-row { cursor: pointer; }
       .row-toggle {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
         border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 4px 8px;
+        border-radius: 10px;
+        padding: 8px 12px;
         background: rgba(255,255,255,0.03);
         color: var(--muted);
-        font-size: 12px;
+        font-size: 13px;
+        font-weight: 600;
+        text-align: left;
       }
       .watch-row.is-open .row-toggle { color: var(--text); }
       .watch-row.is-open .row-toggle .chev { transform: rotate(90deg); }
@@ -2680,7 +2907,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         cursor: pointer;
       }
       .paper-trade-btn:hover { background: rgba(31,223,122,0.2); }
-      .paper-trade-mini { margin-left: 6px; padding: 4px 8px; font-size: 11px; }
+      .paper-trade-mini { margin-left: 0; margin-top: 6px; padding: 6px 10px; font-size: 12px; }
       .max-buy { font-family: var(--mono); font-weight: 700; }
       ul.compact { margin: 8px 0 0; padding-left: 18px; }
       ul.compact li { margin: 4px 0; }
@@ -2852,10 +3079,10 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
 
       <!-- YOUR WATCHLIST -->
       <div style="margin-top:14px;">
-        ${buildWatchlistTableHtml({ title: "Your Watchlist", coins: mainCoins, rankBySymbol })}
+        ${buildWatchlistTableHtml({ title: "Your Watchlist", coins: mainCoins, rankBySymbol, defaultOpen: 3 })}
       </div>
       <div style="margin-top:14px;">
-        ${buildWatchlistTableHtml({ title: "Testing (Staging)", coins: stagingCoins, rankBySymbol })}
+        ${buildWatchlistTableHtml({ title: "Testing (Staging)", coins: stagingCoins, rankBySymbol, defaultOpen: 0 })}
       </div>
 
       <!-- MARKET PULSE -->
@@ -2939,12 +3166,22 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
             <p class="small muted">New coins the scanner found. They're being tested before adding to your main list. Promote winners, ignore the rest.</p>
           </div>
         </div>
+        ${buildHowThisWorks([
+          "This is a quick glossary for the labels used on the page.",
+          "Why it matters: it helps friends read the dashboard correctly.",
+          "Use it as a reference when labels feel confusing.",
+        ])}
       </div>
 
       <!-- QUICK LINKS AT BOTTOM -->
       <div class="card" style="margin-top:14px;">
         <h2>All Reports</h2>
         <div>${fileLinksHtml}</div>
+        ${buildHowThisWorks([
+          "Links to the raw reports behind the dashboard.",
+          "Why it matters: the full detail and history live there.",
+          "Use these if you want to share or download data.",
+        ])}
       </div>
     </div>
 
@@ -2989,6 +3226,15 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
           event.stopPropagation();
           toggleExplain(row);
         });
+      }
+    }
+
+    for (const table of document.querySelectorAll("table.watchlist-table")) {
+      const openCount = Number(table.dataset.defaultOpen || 0);
+      if (!Number.isFinite(openCount) || openCount <= 0) continue;
+      const rows = Array.from(table.querySelectorAll("tr.watch-row")).slice(0, openCount);
+      for (const row of rows) {
+        toggleExplain(row);
       }
     }
 

@@ -10,8 +10,14 @@ Set-Location $PSScriptRoot
 Write-Host "Starting scan..." -ForegroundColor Yellow
 Write-Host ""
 
-# Run the scanner
+# Run discovery + scanner
+Write-Host "Running discovery..." -ForegroundColor Yellow
+node src/discover.js
+if ($LASTEXITCODE -ne 0) { throw "Discovery failed." }
+
+Write-Host "Running watchlist scan..." -ForegroundColor Yellow
 node src/index.js
+if ($LASTEXITCODE -ne 0) { throw "Watchlist scan failed." }
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green

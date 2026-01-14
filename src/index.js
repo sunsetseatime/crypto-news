@@ -126,18 +126,18 @@ const COIN_CONTEXT_PATH = path.join(
   "coin_context.json"
 );
 
-// Discovery auto-stage (queue -> staging)
-const AUTO_STAGE_DISCOVERY = process.env.AUTO_STAGE_DISCOVERY === "1";
-const AUTO_STAGE_LIMIT = clamp(envNumber("AUTO_STAGE_LIMIT", 2), 0, 10);
+// Discovery auto-stage (queue -> staging) is always on.
+const AUTO_STAGE_DISCOVERY = true;
+const AUTO_STAGE_LIMIT = clamp(envNumber("AUTO_STAGE_LIMIT", 4), 0, 10);
 const AUTO_STAGE_DISCOVERY_SCORE_MIN = envNumber(
   "AUTO_STAGE_DISCOVERY_SCORE_MIN",
-  85
+  75
 );
 const AUTO_STAGE_VOLUME_24H_MIN = envNumber("AUTO_STAGE_VOLUME_24H_MIN", 10_000_000);
 const AUTO_STAGE_VOL_TO_MCAP_MIN = envNumber("AUTO_STAGE_VOL_TO_MCAP_MIN", 0.05);
 const AUTO_STAGE_PRICE_CHANGE_7D_MAX = envNumber(
   "AUTO_STAGE_PRICE_CHANGE_7D_MAX",
-  60
+  100
 );
 const AUTO_STAGE_MAX_TOTAL = clamp(envNumber("AUTO_STAGE_MAX_TOTAL", 25), 0, 500);
 const ADDRESS_BOOK_PATH =
@@ -1979,21 +1979,28 @@ function generateBestEntries(coins, marketCondition) {
     const label = coin.hygiene_label;
     const entryScore = coin.entry_score;
     const entrySignal = coin.entry_signal;
+    const blockingRisk =
+      coin.holder_concentration_level === "HIGH" ||
+      coin.high_dilution_risk === true ||
+      coin.unlock_risk_flag === true ||
+      coin.low_liquidity === true ||
+      (Number.isFinite(num(coin.health_score)) && coin.health_score < 40) ||
+      coin.context_short_term_only === true;
     const downtrendConfirmation =
       coin?.has_clean_catalyst &&
       coin?.volume_trend === "spike" &&
       entrySignal === "strong_buy";
     
     // Skip junk - only consider KEEP or solid WATCH-ONLY
-    if (label === "DROP") continue;
+    if (label !== "KEEP") continue;
     if (!entryScore || entryScore < 40) continue; // Overbought
     if (coin?.trend_regime === "Downtrend" && !downtrendConfirmation) continue;
+    if (blockingRisk) continue;
     
     // Skip coins with severe risks
-    const highRisk = coin.holder_concentration_level === "HIGH" || 
-                     coin.high_dilution_risk === true ||
-                     coin.github_archived === true;
-    if (highRisk && label !== "KEEP") continue;
+    const highRisk =
+      blockingRisk ||
+      coin.github_archived === true;
     
     // Build entry reasons
     const reasons = [];
@@ -9305,9 +9312,9 @@ async function main() {
   if (autoStageResult.updated) {
     writeJsonFile(DISCOVERY_QUEUE_PATH, discoveryQueue);
   }
-  if (!AUTO_STAGE_DISCOVERY && autoStageResult.pending_high_score > 0) {
+  if (autoStageResult.pending_high_score > 0 && autoStageResult.staged.length === 0) {
     preScanWarnings.push(
-      `Discovery queue has ${autoStageResult.pending_high_score} high-score coin(s) waiting to be staged. Turn on AUTO_STAGE_DISCOVERY=1 or run node src/promote_discovery.js.`
+      `Discovery queue has ${autoStageResult.pending_high_score} high-score coin(s), but none met auto-stage rules this run. Check thresholds, capacity, or ignore list.`
     );
   }
   if (autoStageResult.staged.length > 0) {

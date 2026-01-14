@@ -3,16 +3,8 @@ name: Daily Scan (Pages)
 on:
   workflow_dispatch:
     inputs:
-      skip_discovery:
-        description: "Skip discovery (src/discover.js)"
-        type: boolean
-        default: false
       skip_defi:
         description: "Skip DeFi scan (src/defi_scan.js)"
-        type: boolean
-        default: false
-      skip_watchlist:
-        description: "Skip watchlist scan (src/index.js)"
         type: boolean
         default: false
   schedule:
@@ -65,9 +57,7 @@ jobs:
             crypto-news-state-${{ runner.os }}-${{ github.ref_name }}-
 
       - name: Run discovery
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.skip_discovery == 'true') }}
         env:
-          AUTO_STAGE_DISCOVERY: "1"
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           COINGECKO_API_KEY_HEADER: ${{ secrets.COINGECKO_API_KEY_HEADER }}
           COINGECKO_BASE_URL: ${{ secrets.COINGECKO_BASE_URL }}
@@ -82,7 +72,6 @@ jobs:
         run: node src/defi_scan.js
 
       - name: Run watchlist scan
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.skip_watchlist == 'true') }}
         env:
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           COINGECKO_API_KEY_HEADER: ${{ secrets.COINGECKO_API_KEY_HEADER }}
