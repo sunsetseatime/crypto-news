@@ -3341,9 +3341,15 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       </details>
 
       <details class="collapsible-section" open>
-        <summary><h2>Backtest & History</h2><span class="muted small">How accurate is this scanner?</span></summary>
+        <summary><h2>Paper Trading</h2><span class="muted small">How are the signals performing?</span></summary>
         <div class="section-content">
           ${buildPaperTradingHtml(paperReport)}
+        </div>
+      </details>
+
+      <details class="collapsible-section" open>
+        <summary><h2>Backtest & History</h2><span class="muted small">How accurate is this scanner?</span></summary>
+        <div class="section-content">
           ${buildFunnelHtml(funnelStats, backtestStats)}
           ${buildBacktestHtml(backtestStats)}
         </div>
