@@ -125,6 +125,7 @@ const COIN_CONTEXT_PATH = path.join(
   "config",
   "coin_context.json"
 );
+const CATEGORIES_PATH = path.join(__dirname, "..", "config", "categories.json");
 
 // Discovery auto-stage (queue -> staging) is always on.
 const AUTO_STAGE_DISCOVERY = true;
@@ -184,6 +185,13 @@ const EXCHANGE_NEWS_SOURCES = [
   { name: "Kraken", url: "https://blog.kraken.com/feed" },
   { name: "OKX", url: "https://www.okx.com/support/hc/en-us/rss/200104636" },
 ];
+const GENERAL_NEWS_SOURCES = [
+  { name: "CoinDesk", url: "https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml" },
+  { name: "The Block", url: "https://www.theblock.co/rss.xml" },
+  { name: "Decrypt", url: "https://decrypt.co/feed" },
+  { name: "Bitcoin Magazine", url: "https://bitcoinmagazine.com/feed" },
+];
+const COIN_NEWS_RSS_SOURCES = [...EXCHANGE_NEWS_SOURCES, ...GENERAL_NEWS_SOURCES];
 
 // Take-profit configuration (default targets in %)
 const TAKE_PROFIT_TARGET_1 = Number(process.env.TAKE_PROFIT_TARGET_1 || 15); // First target: 15%
@@ -376,6 +384,15 @@ function average(values) {
   return sum / values.length;
 }
 
+function median(values) {
+  const nums = (Array.isArray(values) ? values : []).filter((v) => Number.isFinite(v));
+  if (nums.length === 0) return null;
+  nums.sort((a, b) => a - b);
+  const mid = Math.floor(nums.length / 2);
+  if (nums.length % 2 === 1) return nums[mid];
+  return (nums[mid - 1] + nums[mid]) / 2;
+}
+
 function num(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -500,6 +517,39 @@ function loadCoinContext() {
     if (symbol) bySymbol.set(symbol, item);
   }
   return { byId, bySymbol, source: raw };
+}
+
+function loadCategoriesConfig() {
+  const raw = readJsonFile(CATEGORIES_PATH, null);
+  if (!raw || typeof raw !== "object") {
+    return { version: 1, notes: null, categories: [] };
+  }
+
+  const out = [];
+  const seen = new Set();
+  const items = Array.isArray(raw.categories) ? raw.categories : [];
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const id = String(item.id || "").trim();
+    if (!id || seen.has(id)) continue;
+    const name = String(item.name || id).trim();
+    const description = String(item.description || "").trim();
+    const idsRaw = Array.isArray(item.coin_gecko_ids) ? item.coin_gecko_ids : [];
+    const coinIds = Array.from(
+      new Set(idsRaw.map((value) => normalizeCoinGeckoId(value)).filter(Boolean))
+    );
+    if (coinIds.length === 0) continue;
+    out.push({ id, name, description, coin_gecko_ids: coinIds });
+    seen.add(id);
+  }
+
+  const versionParsed = Number(raw.version);
+  return {
+    version: Number.isFinite(versionParsed) ? versionParsed : 1,
+    notes: raw.notes || null,
+    categories: out,
+  };
 }
 
 function escapeRegExp(value) {
@@ -1399,11 +1449,15 @@ function sparklinePctChange(sparkline, pointsBack) {
 /**
  * Analyze blue chips for dip opportunities
  */
-function analyzeBlueChipsForDips(blueChips, fearGreed) {
+function analyzeBlueChipsForDips(blueChips, fearGreed, coinContext) {
   const opportunities = [];
   const wait_list = [];
   const coins = blueChips?.coins || [];
   const marketInFear = fearGreed && fearGreed.value <= FEAR_GREED_FEAR;
+  const contextMaps =
+    coinContext && coinContext.byId && coinContext.bySymbol
+      ? coinContext
+      : loadCoinContext();
   
   for (const coin of coins) {
     const symbol = coin.symbol?.toUpperCase() || "???";
@@ -1435,6 +1489,16 @@ function analyzeBlueChipsForDips(blueChips, fearGreed) {
     const recentChange6h = sparklinePctChange(coin.sparkline_in_7d, 6);
     const stabilizing =
       recentChange3h !== null ? recentChange3h >= -0.5 : recentChange6h !== null ? recentChange6h >= -1 : false;
+
+    const contextEntry =
+      contextMaps.byId.get(normalizeCoinGeckoId(coin.id || "")) ||
+      contextMaps.bySymbol.get(symbol) ||
+      null;
+    const contextSummary = contextEntry?.summary ? String(contextEntry.summary) : "";
+    const contextShortTermOnly = contextEntry?.short_term_only === true;
+    const contextHeadwinds = Array.isArray(contextEntry?.structural_headwinds)
+      ? contextEntry.structural_headwinds.filter(Boolean)
+      : [];
     
     // Determine buy signals
     const signals = [];
@@ -1474,6 +1538,10 @@ function analyzeBlueChipsForDips(blueChips, fearGreed) {
     }
     if (recentChange3h !== null && recentChange3h <= -1) {
       riskWarnings.push(`still falling in the last few hours (${formatSignedPct(recentChange3h, 1)})`);
+    }
+    if (contextShortTermOnly) {
+      riskWarnings.push("history suggests short-term only");
+      signalStrength -= 10;
     }
     
     // Market fear bonus
@@ -1517,6 +1585,10 @@ function analyzeBlueChipsForDips(blueChips, fearGreed) {
         entry_signal: entrySignal,
         market_in_fear: marketInFear,
         risk_warnings: riskWarnings,
+        context_summary: contextSummary,
+        context_short_term_only: contextShortTermOnly,
+        context_headwinds: contextHeadwinds,
+        context_source: contextEntry?.source || null,
       };
 
       if (fallingHardToday && !stabilizing) {
@@ -3867,6 +3939,222 @@ function evaluateNewsMomentum(newsSentiment, context = {}) {
   };
 }
 
+function pickCategorySampleCoins(members, maxCoins = 4) {
+  const list = Array.isArray(members) ? members : [];
+  const max = Math.max(0, Math.min(10, Math.round(maxCoins)));
+  if (max === 0) return [];
+
+  const picked = [];
+  const seenIds = new Set();
+  const pushUnique = (coin) => {
+    if (!coin || !coin.id) return;
+    if (seenIds.has(coin.id)) return;
+    seenIds.add(coin.id);
+    picked.push(coin);
+  };
+
+  const movers = [...list]
+    .filter((c) => Number.isFinite(c.price_change_7d))
+    .sort((a, b) => b.price_change_7d - a.price_change_7d);
+  for (const coin of movers.slice(0, 2)) pushUnique(coin);
+
+  const leaders = [...list]
+    .filter((c) => Number.isFinite(c.market_cap))
+    .sort((a, b) => b.market_cap - a.market_cap);
+  for (const coin of leaders.slice(0, 2)) pushUnique(coin);
+
+  for (const coin of list) {
+    if (picked.length >= max) break;
+    pushUnique(coin);
+  }
+
+  return picked.slice(0, max);
+}
+
+function buildCategoryStats({ category, marketById, btc }) {
+  const coinIds = Array.isArray(category?.coin_gecko_ids) ? category.coin_gecko_ids : [];
+  const members = [];
+  const missing = [];
+
+  for (const id of coinIds) {
+    const idLower = normalizeCoinGeckoId(id);
+    if (!idLower) continue;
+    const market = marketById?.get?.(idLower);
+    if (!market) {
+      missing.push(idLower);
+      continue;
+    }
+
+    members.push({
+      id: idLower,
+      symbol: String(market.symbol || "").toUpperCase(),
+      name: String(market.name || ""),
+      market_cap_rank: Number.isFinite(market.market_cap_rank) ? market.market_cap_rank : null,
+      market_cap: num(market.market_cap),
+      volume_24h: num(market.total_volume),
+      price_change_24h: num(market.price_change_percentage_24h_in_currency),
+      price_change_7d: num(market.price_change_percentage_7d_in_currency),
+      price_change_30d: num(market.price_change_percentage_30d_in_currency),
+    });
+  }
+
+  const ch24 = members.map((m) => m.price_change_24h).filter((v) => v !== null);
+  const ch7 = members.map((m) => m.price_change_7d).filter((v) => v !== null);
+  const ch30 = members.map((m) => m.price_change_30d).filter((v) => v !== null);
+
+  const avg24 = average(ch24);
+  const avg7 = average(ch7);
+  const avg30 = average(ch30);
+  const med24 = median(ch24);
+  const med7 = median(ch7);
+  const med30 = median(ch30);
+
+  const btc24 = num(btc?.price_change_24h);
+  const btc7 = num(btc?.price_change_7d);
+  const btc30 = num(btc?.price_change_30d);
+
+  const topMovers = [...members]
+    .filter((m) => Number.isFinite(m.price_change_7d))
+    .sort((a, b) => b.price_change_7d - a.price_change_7d)
+    .slice(0, 3)
+    .map((m) => ({ symbol: m.symbol, name: m.name, change_7d: m.price_change_7d }));
+
+  const leaders = [...members]
+    .filter((m) => Number.isFinite(m.market_cap))
+    .sort((a, b) => b.market_cap - a.market_cap)
+    .slice(0, 3)
+    .map((m) => ({ symbol: m.symbol, name: m.name }));
+
+  return {
+    id: String(category?.id || ""),
+    name: String(category?.name || ""),
+    description: String(category?.description || ""),
+    member_count: members.length,
+    missing_count: missing.length,
+    missing_ids: missing.slice(0, 10),
+    avg_change_24h: avg24,
+    avg_change_7d: avg7,
+    avg_change_30d: avg30,
+    median_change_24h: med24,
+    median_change_7d: med7,
+    median_change_30d: med30,
+    vs_btc_24h: med24 !== null && btc24 !== null ? med24 - btc24 : null,
+    vs_btc_7d: med7 !== null && btc7 !== null ? med7 - btc7 : null,
+    vs_btc_30d: med30 !== null && btc30 !== null ? med30 - btc30 : null,
+    top_movers_7d: topMovers,
+    leaders,
+    members,
+  };
+}
+
+function buildCategoryStoryFromHeadlines({ headlines, marketPhase }) {
+  const merged = mergeHeadlines([], Array.isArray(headlines) ? headlines : []);
+  const counts = computeNewsCounts(merged);
+  const pressure = buildNewsPressureSummary({
+    headlines: merged,
+    symbol: null,
+    name: null,
+    marketPhase,
+  });
+
+  let gate = "unknown";
+  if (merged.length > 0) gate = "ok";
+  if (pressure?.pressure_label === "negative") gate = "caution";
+  if (pressure?.pressure_label === "mixed") gate = "mixed";
+
+  return {
+    gate,
+    news_count_24h: counts.count24h,
+    news_count_7d: counts.count7d,
+    ...pressure,
+    sample_headlines: merged.slice(0, 6).map((h) => ({
+      title: h?.title || "",
+      url: h?.url || "",
+      source: h?.source || "",
+      published: h?.published || null,
+    })),
+  };
+}
+
+async function buildCategoryPulse({ categoriesConfig, marketById, btc, exchangeNewsIndex, marketPhase }) {
+  const categories = Array.isArray(categoriesConfig?.categories)
+    ? categoriesConfig.categories
+    : [];
+  if (categories.length === 0) return null;
+
+  const baseline = categories.map((cat) =>
+    buildCategoryStats({ category: cat, marketById, btc })
+  );
+
+  const eligible = baseline
+    .filter((c) => c.member_count >= 2 && Number.isFinite(c.vs_btc_7d))
+    .sort((a, b) => (b.vs_btc_7d ?? -Infinity) - (a.vs_btc_7d ?? -Infinity));
+  const focusTop = eligible.slice(0, 3).map((c) => c.id);
+  const focusBottom = eligible.slice(-2).map((c) => c.id);
+  const focusIds = new Set([...focusTop, ...focusBottom].filter(Boolean));
+
+  for (const cat of baseline) {
+    const sampleCoins = pickCategorySampleCoins(cat.members, 4);
+    const sampleSymbols = sampleCoins.map((c) => c.symbol).filter(Boolean);
+
+    const exchangeHeadlines = [];
+    for (const coin of sampleCoins) {
+      const extra = exchangeNewsIndex?.bySymbol?.get?.(coin.symbol) || [];
+      exchangeHeadlines.push(...extra);
+    }
+
+    let mergedHeadlines = mergeHeadlines([], exchangeHeadlines);
+    let sources = exchangeHeadlines.length > 0 ? ["Exchange RSS"] : [];
+
+    if (focusIds.has(cat.id) && sampleCoins.length > 0) {
+      const fetched = await Promise.all(
+        sampleCoins.map(async (coin) => {
+          try {
+            const news = await fetchNewsSentiment(coin.symbol, coin.id);
+            return Array.isArray(news?.headlines) ? news.headlines : [];
+          } catch {
+            return [];
+          }
+        })
+      );
+      const extraHeadlines = fetched.flat();
+      mergedHeadlines = mergeHeadlines(mergedHeadlines, extraHeadlines);
+      if (extraHeadlines.length > 0) sources = ["Exchange RSS", "Coin news"];
+    }
+
+    const story = buildCategoryStoryFromHeadlines({
+      headlines: mergedHeadlines,
+      marketPhase,
+    });
+
+    cat.story = {
+      focus: focusIds.has(cat.id),
+      sample_symbols: sampleSymbols,
+      sources,
+      ...story,
+    };
+  }
+
+  const sorted = [...baseline].sort((a, b) => {
+    const av = Number.isFinite(a.vs_btc_7d) ? a.vs_btc_7d : -Infinity;
+    const bv = Number.isFinite(b.vs_btc_7d) ? b.vs_btc_7d : -Infinity;
+    return bv - av;
+  });
+
+  return {
+    generated_at: new Date().toISOString(),
+    config_version: categoriesConfig?.version || 1,
+    focus: {
+      top: focusTop,
+      bottom: focusBottom,
+    },
+    categories: sorted.map((c) => {
+      const { members, ...rest } = c;
+      return rest;
+    }),
+  };
+}
+
 function addUniqueWarning(list, warning) {
   if (!warning) return;
   if (!Array.isArray(list)) return;
@@ -4425,9 +4713,9 @@ async function buildExchangeNewsIndex(watchlist) {
   const now = Date.now();
   const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
 
-  const exchangeEntries = await Promise.all(
-    EXCHANGE_NEWS_SOURCES.map(async (source) => {
-      const items = await fetchRSSFeed(source.url);
+  const rssEntries = await Promise.all(
+    COIN_NEWS_RSS_SOURCES.map(async (source) => {
+      const items = await fetchRSSFeed(source.url, { maxItems: 25 });
       return items.map((item) => ({
         ...item,
         source: source.name,
@@ -4435,7 +4723,7 @@ async function buildExchangeNewsIndex(watchlist) {
     })
   );
 
-  const flatItems = exchangeEntries.flat();
+  const flatItems = rssEntries.flat();
   const bySymbol = new Map();
 
   for (const item of flatItems) {
@@ -6095,96 +6383,6 @@ async function analyzeHolderConcentration({
   };
 }
 
-// Discovery: Find trending coins
-async function fetchTrendingCoins() {
-  const cachePath = path.join(CACHE_DIR, "trending_coins.json");
-  const cached = readCache(cachePath);
-  if (cached) {
-    return cached;
-  }
-  try {
-    const data = await fetchJson(`${BASE_URL}/search/trending`, {}, 1);
-    const trending = data?.coins?.map((item) => ({
-      id: item.item?.id,
-      name: item.item?.name,
-      symbol: item.item?.symbol,
-      market_cap_rank: item.item?.market_cap_rank,
-      score: item.item?.score || 0,
-    })) || [];
-    writeCache(cachePath, trending);
-    return trending;
-  } catch (err) {
-    console.warn(`Trending coins fetch failed: ${err.message}`);
-    return [];
-  }
-}
-
-// Discovery: Find coins by market criteria (volume, market cap, price change)
-async function discoverCoinsByCriteria(options = {}) {
-  const {
-    minVolume24h = 5_000_000, // $5M minimum
-    maxMarketCap = 5_000_000_000, // $5B maximum (avoid mega caps)
-    minMarketCap = 10_000_000, // $10M minimum
-    minPriceChange7d = 5, // +5% minimum
-    maxPriceChange7d = 100, // +100% maximum (avoid pumps)
-    limit = 50,
-  } = options;
-
-  const cachePath = path.join(CACHE_DIR, `discovery_${minVolume24h}_${minMarketCap}.json`);
-  const cached = readCache(cachePath);
-  if (cached) {
-    return cached;
-  }
-
-  try {
-    // Fetch top coins by market cap
-    const url = `${BASE_URL}/coins/markets?vs_currency=${VS_CURRENCY}` +
-      `&order=market_cap_desc` +
-      `&per_page=250` +
-      `&page=1` +
-      `&price_change_percentage=24h,7d,30d` +
-      `&sparkline=false`;
-    
-    const data = await fetchJson(url);
-    
-    // Filter by criteria
-    const discovered = data
-      .filter((coin) => {
-        const volume24h = num(coin.total_volume);
-        const marketCap = num(coin.market_cap);
-        const priceChange7d = num(coin.price_change_percentage_7d_in_currency);
-        
-        return (
-          volume24h >= minVolume24h &&
-          marketCap >= minMarketCap &&
-          marketCap <= maxMarketCap &&
-          priceChange7d !== null &&
-          priceChange7d >= minPriceChange7d &&
-          priceChange7d <= maxPriceChange7d
-        );
-      })
-      .slice(0, limit)
-      .map((coin) => ({
-        id: coin.id,
-        symbol: coin.symbol,
-        name: coin.name,
-        current_price: num(coin.current_price),
-        market_cap: num(coin.market_cap),
-        total_volume: num(coin.total_volume),
-        price_change_percentage_24h: num(coin.price_change_percentage_24h_in_currency),
-        price_change_percentage_7d: num(coin.price_change_percentage_7d_in_currency),
-        price_change_percentage_30d: num(coin.price_change_percentage_30d_in_currency),
-        market_cap_rank: coin.market_cap_rank,
-      }));
-    
-    writeCache(cachePath, discovered);
-    return discovered;
-  } catch (err) {
-    console.warn(`Coin discovery failed: ${err.message}`);
-    return [];
-  }
-}
-
 // Helper to find DefiLlama protocol slug from coin name/symbol
 function findDefiLlamaSlug(coinName, symbol, coinGeckoId, protocols) {
   if (!protocols || !Array.isArray(protocols)) return null;
@@ -6226,9 +6424,13 @@ function findDefiLlamaSlug(coinName, symbol, coinGeckoId, protocols) {
 }
 
 // Parse RSS feed (simple parser for common formats)
-async function fetchRSSFeed(url) {
+async function fetchRSSFeed(url, options = {}) {
   if (!url) return [];
-  const cachePath = path.join(CACHE_DIR, `rss_${Buffer.from(url).toString('base64').slice(0, 20)}.json`);
+  const maxItems = clamp(Number(options?.maxItems ?? options?.limit ?? 10), 1, 50);
+  const cachePath = path.join(
+    CACHE_DIR,
+    `rss_${Buffer.from(url).toString("base64").slice(0, 20)}_${maxItems}.json`
+  );
   const cached = readCache(cachePath);
   if (cached) {
     return cached;
@@ -6274,8 +6476,9 @@ async function fetchRSSFeed(url) {
       }
     }
     
-    writeCache(cachePath, items.slice(0, 10)); // Cache first 10 items
-    return items.slice(0, 10);
+    const sliced = items.slice(0, maxItems);
+    writeCache(cachePath, sliced);
+    return sliced;
   } catch (err) {
     return [];
   }
@@ -7745,6 +7948,35 @@ function buildSignalTags({ coin, entry, marketPhase }) {
   if (catalystType) tags.push(`catalyst:${String(catalystType).toLowerCase()}`);
   const sentiment = coin?.news_sentiment || entry?.news_sentiment;
   if (sentiment && sentiment !== "unknown") tags.push(`sentiment:${String(sentiment).toLowerCase()}`);
+  const pressure = coin?.news_pressure_label || entry?.news_pressure_label;
+  if (pressure && pressure !== "unknown") tags.push(`pressure:${String(pressure).toLowerCase()}`);
+  const hygiene = coin?.hygiene_label || entry?.hygiene_label;
+  if (hygiene && hygiene !== "unknown") tags.push(`hygiene:${String(hygiene).toLowerCase()}`);
+  const watchlistSource = coin?.watchlist_source || entry?.watchlist_source || entry?.list;
+  if (watchlistSource && watchlistSource !== "unknown") {
+    tags.push(`watchlist:${String(watchlistSource).toLowerCase()}`);
+  }
+
+  const unlockRisk = coin?.unlock_risk_flag ?? entry?.unlock_risk_flag;
+  if (unlockRisk === true) tags.push("unlock:yes");
+  else if (unlockRisk === false) tags.push("unlock:no");
+
+  const dilutionRisk = coin?.high_dilution_risk ?? entry?.high_dilution_risk;
+  if (dilutionRisk === true) tags.push("dilution:yes");
+  else if (dilutionRisk === false) tags.push("dilution:no");
+
+  const holderConcentration = coin?.holder_concentration_level || entry?.holder_concentration_level;
+  if (holderConcentration && holderConcentration !== "UNKNOWN") {
+    tags.push(`holders:${String(holderConcentration).toLowerCase()}`);
+  }
+
+  const volume24h =
+    num(entry?.volume_24h) ??
+    num(coin?.volume_24h) ??
+    num(entry?.total_volume) ??
+    num(coin?.total_volume);
+  const liquidity = classifyLiquidity(volume24h);
+  if (liquidity && liquidity !== "unknown") tags.push(`liq:${liquidity}`);
   const entrySignal = entry?.entry_signal || coin?.entry_signal;
   if (entrySignal) tags.push(`signal:${String(entrySignal).toLowerCase()}`);
   const source = entry?.signal_source || entry?.source;
@@ -8453,21 +8685,56 @@ function computePaperBreakdown(trades, keyFn, labelKey) {
   return rows;
 }
 
-function computePaperRecommendations({ byScoreRange, bySource }) {
-  const recommendations = [];
-  const scoreMap = new Map();
-  for (const item of byScoreRange || []) {
-    if (item?.range) scoreMap.set(item.range, item);
+function readTagValue(tags, prefix) {
+  const list = Array.isArray(tags) ? tags : [];
+  for (const tag of list) {
+    if (typeof tag !== "string") continue;
+    if (!tag.startsWith(prefix)) continue;
+    return tag.slice(prefix.length) || "unknown";
   }
+  return "unknown";
+}
 
+function computePaperTagBreakdown(trades, prefix, labelKey) {
+  return computePaperBreakdown(
+    trades,
+    (trade) => readTagValue(trade?.signal_tags, prefix),
+    labelKey
+  );
+}
+
+function computePaperRecommendations({
+  byScoreRange,
+  bySource,
+  byTrend,
+  byLiquidity,
+  byUnlock,
+  byNewsPressure,
+  byHygiene,
+  byCatalyst,
+  bySentiment,
+}) {
+  const recommendations = [];
+  const minSample = PAPER_TRADE_MIN_SAMPLE;
+
+  const buildMap = (rows, keyField) => {
+    const map = new Map();
+    for (const row of rows || []) {
+      const key = row?.[keyField];
+      if (!key) continue;
+      map.set(String(key), row);
+    }
+    return map;
+  };
+
+  const avg = (row) => (typeof row?.avg_return_pct === "number" ? row.avg_return_pct : 0);
+
+  const scoreMap = buildMap(byScoreRange, "range");
   const high = scoreMap.get("80+");
   const low = scoreMap.get("60-69");
-  if (
-    high?.sample_size >= PAPER_TRADE_MIN_SAMPLE &&
-    low?.sample_size >= PAPER_TRADE_MIN_SAMPLE
-  ) {
-    const highReturn = high.avg_return_pct || 0;
-    const lowReturn = low.avg_return_pct || 0;
+  if (high?.sample_size >= minSample && low?.sample_size >= minSample) {
+    const highReturn = avg(high);
+    const lowReturn = avg(low);
     if (highReturn > lowReturn + 3) {
       recommendations.push(
         "Scores 80+ outperform 60-69. Consider raising the trade threshold to focus on higher-score signals."
@@ -8476,15 +8743,107 @@ function computePaperRecommendations({ byScoreRange, bySource }) {
   }
 
   const discovery = Array.isArray(bySource)
-    ? bySource.find((item) => item.source === "discovery")
+    ? bySource.find((item) => item?.source === "discovery")
     : null;
-  if (
-    discovery?.sample_size >= PAPER_TRADE_MIN_SAMPLE &&
-    (discovery.avg_return_pct || 0) < 0
-  ) {
+  if (discovery?.sample_size >= minSample && avg(discovery) < 0) {
     recommendations.push(
       "Discovery trades are negative on average. Consider raising the discovery score threshold or tagging them as watch-only."
     );
+  }
+
+  const trendMap = buildMap(byTrend, "trend");
+  const uptrend = trendMap.get("uptrend");
+  const downtrend = trendMap.get("downtrend");
+  if (uptrend?.sample_size >= minSample && downtrend?.sample_size >= minSample) {
+    const upReturn = avg(uptrend);
+    const downReturn = avg(downtrend);
+    if (upReturn > downReturn + 2) {
+      recommendations.push(
+        "Uptrend trades outperform downtrend trades. Consider avoiding buys in downtrends unless the signal is very strong."
+      );
+    }
+  }
+
+  const unlockMap = buildMap(byUnlock, "unlock");
+  const unlockYes = unlockMap.get("yes");
+  const unlockNo = unlockMap.get("no");
+  if (unlockYes?.sample_size >= minSample && unlockNo?.sample_size >= minSample) {
+    const yesReturn = avg(unlockYes);
+    const noReturn = avg(unlockNo);
+    if (noReturn > yesReturn + 2) {
+      recommendations.push(
+        "Trades with upcoming unlock risk underperform. Consider avoiding trades when unlock risk is flagged."
+      );
+    }
+  }
+
+  const pressureMap = buildMap(byNewsPressure, "news_pressure");
+  const pressureNeg = pressureMap.get("negative");
+  const pressurePos = pressureMap.get("positive");
+  if (pressureNeg?.sample_size >= minSample && pressurePos?.sample_size >= minSample) {
+    const negReturn = avg(pressureNeg);
+    const posReturn = avg(pressurePos);
+    if (posReturn > negReturn + 2) {
+      recommendations.push(
+        "Coins with negative news pressure underperform coins with positive news pressure. Consider treating negative news pressure as a stronger warning."
+      );
+    }
+  }
+
+  const hygieneMap = buildMap(byHygiene, "hygiene");
+  const keep = hygieneMap.get("keep");
+  const watch = hygieneMap.get("watch");
+  if (keep?.sample_size >= minSample && watch?.sample_size >= minSample) {
+    const keepReturn = avg(keep);
+    const watchReturn = avg(watch);
+    if (keepReturn > watchReturn + 2) {
+      recommendations.push(
+        "KEEP-label trades outperform WATCH-label trades. Consider prioritizing safer coins when opening new trades."
+      );
+    }
+  }
+
+  const liquidityMap = buildMap(byLiquidity, "liquidity");
+  const micro = liquidityMap.get("micro");
+  const mid = liquidityMap.get("mid");
+  if (micro?.sample_size >= minSample && mid?.sample_size >= minSample) {
+    const microReturn = avg(micro);
+    const midReturn = avg(mid);
+    if (midReturn > microReturn + 2) {
+      recommendations.push(
+        "Higher-liquidity trades outperform micro-liquidity trades. Consider avoiding thinly-traded coins for paper entries."
+      );
+    }
+  }
+
+  const sentimentMap = buildMap(bySentiment, "sentiment");
+  const bullish = sentimentMap.get("bullish");
+  const bearish = sentimentMap.get("bearish");
+  if (bullish?.sample_size >= minSample && bearish?.sample_size >= minSample) {
+    const bullReturn = avg(bullish);
+    const bearReturn = avg(bearish);
+    if (bullReturn > bearReturn + 2) {
+      recommendations.push(
+        "Bullish-news trades outperform bearish-news trades. Consider requiring cleaner news for new entries."
+      );
+    }
+  }
+
+  const catalystRows = Array.isArray(byCatalyst) ? byCatalyst : [];
+  const catalystCandidates = catalystRows.filter((row) => row?.sample_size >= minSample);
+  if (catalystCandidates.length > 0) {
+    const best = [...catalystCandidates].sort((a, b) => avg(b) - avg(a))[0];
+    const worst = [...catalystCandidates].sort((a, b) => avg(a) - avg(b))[0];
+    if (best?.catalyst && avg(best) > 0) {
+      recommendations.push(
+        `Best-performing catalyst type so far: ${best.catalyst} (avg return ${formatSignedPct(avg(best), 1)}).`
+      );
+    }
+    if (worst?.catalyst && avg(worst) < 0) {
+      recommendations.push(
+        `Worst-performing catalyst type so far: ${worst.catalyst} (avg return ${formatSignedPct(avg(worst), 1)}).`
+      );
+    }
   }
 
   return recommendations;
@@ -8528,6 +8887,17 @@ function computePaperReport({
     (t) => t.market_phase,
     "market_phase"
   );
+  const byTrend = computePaperTagBreakdown(closedTrades, "trend:", "trend");
+  const byLiquidity = computePaperBreakdown(closedTrades, (t) => t.liquidity_bucket, "liquidity");
+  const byUnlock = computePaperTagBreakdown(closedTrades, "unlock:", "unlock");
+  const byNewsPressure = computePaperTagBreakdown(
+    closedTrades,
+    "pressure:",
+    "news_pressure"
+  );
+  const byHygiene = computePaperTagBreakdown(closedTrades, "hygiene:", "hygiene");
+  const byCatalyst = computePaperTagBreakdown(closedTrades, "catalyst:", "catalyst");
+  const bySentiment = computePaperTagBreakdown(closedTrades, "sentiment:", "sentiment");
 
   const exitReasons = {};
   for (const trade of closedTrades) {
@@ -8538,6 +8908,13 @@ function computePaperReport({
   const recommendations = computePaperRecommendations({
     byScoreRange,
     bySource,
+    byTrend,
+    byLiquidity,
+    byUnlock,
+    byNewsPressure,
+    byHygiene,
+    byCatalyst,
+    bySentiment,
   });
 
   const openPositions = [...openTrades]
@@ -8615,6 +8992,13 @@ function computePaperReport({
       by_entry_signal: bySignal,
       by_score_range: byScoreRange,
       by_market_phase: byMarketPhase,
+      by_trend: byTrend,
+      by_liquidity: byLiquidity,
+      by_unlock: byUnlock,
+      by_news_pressure: byNewsPressure,
+      by_hygiene: byHygiene,
+      by_catalyst: byCatalyst,
+      by_sentiment: bySentiment,
       exit_reasons: exitReasons,
     },
     recommendations,
@@ -8749,38 +9133,18 @@ function renderPaperReportMarkdown(report) {
   }
 
   const breakdowns = report?.breakdowns || {};
-  const bySource = Array.isArray(breakdowns.by_source) ? breakdowns.by_source : [];
-  if (bySource.length > 0) {
-    lines.push("## Performance by Source");
-    lines.push("| Source | Sample | Win Rate | Avg Return | Expectancy (R) |");
-    lines.push("| --- | --- | --- | --- | --- |");
-    for (const row of bySource) {
-      const win =
-        typeof row.win_rate_pct === "number" ? `${row.win_rate_pct.toFixed(1)}%` : "n/a";
-      lines.push(
-        `| ${row.source || "n/a"} | ${row.sample_size ?? 0} | ${win} | ${formatSignedPct(
-          num(row.avg_return_pct),
-          1
-        )} | ${
-          Number.isFinite(row.expectancy_r) ? row.expectancy_r.toFixed(2) : "n/a"
-        } |`
-      );
-    }
-    lines.push("");
-  }
 
-  const byScore = Array.isArray(breakdowns.by_score_range)
-    ? breakdowns.by_score_range
-    : [];
-  if (byScore.length > 0) {
-    lines.push("## Performance by Score Range");
-    lines.push("| Score | Sample | Win Rate | Avg Return | Expectancy (R) |");
+  const renderPerfTable = (title, rows, keyField, headerLabel) => {
+    const list = Array.isArray(rows) ? rows : [];
+    if (list.length === 0) return;
+    lines.push(`## ${title}`);
+    lines.push(`| ${headerLabel} | Sample | Win Rate | Avg Return | Expectancy (R) |`);
     lines.push("| --- | --- | --- | --- | --- |");
-    for (const row of byScore) {
+    for (const row of list) {
       const win =
         typeof row.win_rate_pct === "number" ? `${row.win_rate_pct.toFixed(1)}%` : "n/a";
       lines.push(
-        `| ${row.range || "n/a"} | ${row.sample_size ?? 0} | ${win} | ${formatSignedPct(
+        `| ${row[keyField] || "n/a"} | ${row.sample_size ?? 0} | ${win} | ${formatSignedPct(
           num(row.avg_return_pct),
           1
         )} | ${
@@ -8789,7 +9153,19 @@ function renderPaperReportMarkdown(report) {
       );
     }
     lines.push("");
-  }
+  };
+
+  renderPerfTable("Performance by Source", breakdowns.by_source, "source", "Source");
+  renderPerfTable("Performance by Score Range", breakdowns.by_score_range, "range", "Score");
+  renderPerfTable("Performance by Entry Signal", breakdowns.by_entry_signal, "signal", "Signal");
+  renderPerfTable("Performance by Market Phase", breakdowns.by_market_phase, "market_phase", "Market phase");
+  renderPerfTable("Performance by Trend", breakdowns.by_trend, "trend", "Trend");
+  renderPerfTable("Performance by Liquidity", breakdowns.by_liquidity, "liquidity", "Liquidity");
+  renderPerfTable("Performance by News Pressure", breakdowns.by_news_pressure, "news_pressure", "News pressure");
+  renderPerfTable("Performance by Unlock Risk", breakdowns.by_unlock, "unlock", "Unlock risk");
+  renderPerfTable("Performance by Hygiene Label", breakdowns.by_hygiene, "hygiene", "Hygiene");
+  renderPerfTable("Performance by Catalyst Type", breakdowns.by_catalyst, "catalyst", "Catalyst");
+  renderPerfTable("Performance by News Sentiment", breakdowns.by_sentiment, "sentiment", "Sentiment");
 
   lines.push("## Recommendations");
   if (Array.isArray(report?.recommendations) && report.recommendations.length > 0) {
@@ -9292,6 +9668,7 @@ async function main() {
   );
   const defiKnowledge = loadDefiKnowledge(); // Load DeFi scan data for audit/hack context
   const coinContext = loadCoinContext();
+  const categoriesConfig = loadCategoriesConfig();
 
   const autoStageIgnoreRaw = readJsonFile(AUTO_STAGE_IGNORE_PATH, []);
   const autoStageIgnoreIds = new Set(
@@ -9369,21 +9746,56 @@ async function main() {
   }
 
   const ids = watchlist.map((coin) => coin.coinGeckoId).filter((id) => id);
+  const categoryIds = Array.from(
+    new Set(
+      (Array.isArray(categoriesConfig?.categories) ? categoriesConfig.categories : [])
+        .flatMap((cat) => (Array.isArray(cat?.coin_gecko_ids) ? cat.coin_gecko_ids : []))
+        .map((id) => normalizeCoinGeckoId(id))
+        .filter(Boolean)
+    )
+  );
+  const marketIds = Array.from(new Set([...ids, ...categoryIds]));
 
   console.log("Fetching market data and DefiLlama protocols...");
   console.log(
     `Processing ${watchlistMain.length} watchlist coins + ${watchlistStaging.length + autoStagedAdded} staging coins (auto-staged: ${autoStagedAdded})...`
   );
   const [marketData, btcData, defiLlamaProtocols, fearGreedData, btcMarketChart, blueChipsData] = await Promise.all([
-    fetchMarketData(ids),
+    fetchMarketData(marketIds),
     fetchBtcData(),
     fetchDefiLlamaProtocols(),
     fetchFearGreedIndex(),
     fetchMarketChart("bitcoin"),
     fetchBlueChips(),
   ]);
+  const marketById = new Map(
+    marketData.map((entry) => [entry.id, entry])
+  );
   const macroPulse = await buildMacroPulse({ btcData });
-  const exchangeNewsIndex = await buildExchangeNewsIndex(watchlist);
+  const categoryCoinRefs = categoryIds
+    .map((id) => {
+      const market = marketById.get(id);
+      if (!market) return null;
+      const symbol = String(market.symbol || "").trim().toUpperCase();
+      if (!symbol) return null;
+      return {
+        symbol,
+        name: market.name || id,
+        coinGeckoId: id,
+      };
+    })
+    .filter(Boolean);
+  const exchangeNewsCoinsBySymbol = new Map();
+  for (const coin of [...watchlist, ...categoryCoinRefs]) {
+    const symbol = String(coin?.symbol || "").trim().toUpperCase();
+    if (!symbol) continue;
+    if (!exchangeNewsCoinsBySymbol.has(symbol)) {
+      exchangeNewsCoinsBySymbol.set(symbol, coin);
+    }
+  }
+  const exchangeNewsIndex = await buildExchangeNewsIndex(
+    Array.from(exchangeNewsCoinsBySymbol.values())
+  );
   
   const btc = {
     price_change_24h: num(btcData?.price_change_percentage_24h_in_currency),
@@ -9397,9 +9809,23 @@ async function main() {
   const portfolioGuidance = buildPortfolioGuidance(
     marketCondition?.market_phase || "neutral"
   );
+
+  let categoryPulse = null;
+  try {
+    categoryPulse = await buildCategoryPulse({
+      categoriesConfig,
+      marketById,
+      btc,
+      exchangeNewsIndex,
+      marketPhase: marketCondition?.market_phase || "neutral",
+    });
+  } catch (err) {
+    console.warn(`Category pulse failed: ${err.message}`);
+    categoryPulse = null;
+  }
   
   // Analyze blue chips for dip opportunities
-  const blueChipOpportunities = analyzeBlueChipsForDips(blueChipsData, fearGreedData);
+  const blueChipOpportunities = analyzeBlueChipsForDips(blueChipsData, fearGreedData, coinContext);
   await enrichBlueChipOpportunitiesWithNews(
     blueChipOpportunities,
     5,
@@ -9411,9 +9837,7 @@ async function main() {
   // Will be populated after coins are processed
   let playRecommendations = null;
   
-  const marketById = new Map(
-    marketData.map((entry) => [entry.id, entry])
-  );
+  // marketById defined earlier (includes category universe too).
 
   const coins = [];
   let dataSources = {
@@ -9869,6 +10293,8 @@ async function main() {
     best_entries: bestEntries,
     // Blue chip dip opportunities (top cryptos by market cap)
     blue_chip_opportunities: blueChipOpportunities,
+    // Category pulse (what sectors are moving and why)
+    category_pulse: categoryPulse,
     warnings: warnings.length > 0 ? warnings : [],
     actionable_today: actionableToday,
     coins,

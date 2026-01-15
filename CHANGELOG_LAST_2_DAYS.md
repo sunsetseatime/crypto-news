@@ -191,7 +191,7 @@
 ## 📝 Documentation
 
 ### New Files
-- `IMPROVEMENTS.md`: Comprehensive improvement tracking document
+- `to_do_readme/IMPROVEMENTS.md`: Comprehensive improvement tracking document
 - `CHANGELOG_LAST_2_DAYS.md`: This file
 
 ### Updated Documentation
@@ -240,7 +240,7 @@
 
 ---
 
-## 🚀 Next Steps (From IMPROVEMENTS.md)
+## 🚀 Next Steps (From to_do_readme/IMPROVEMENTS.md)
 
 ### Current Focus
 - [x] Gate hygiene with RSI/entry signal ✅

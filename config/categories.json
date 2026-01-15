@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "notes": "Custom categories for the dashboard. A coin can appear in more than one category. Use CoinGecko IDs.",
+  "categories": [
+    {
+      "id": "privacy",
+      "name": "Privacy Coins",
+      "description": "Coins focused on private transactions.",
+      "coin_gecko_ids": ["monero", "zcash", "dash"]
+    },
+    {
+      "id": "l2",
+      "name": "Layer 2 (Scaling)",
+      "description": "Scaling networks and L2 tokens.",
+      "coin_gecko_ids": ["arbitrum", "optimism", "zksync", "starknet", "taiko", "loopring", "immutable-x", "polygon-ecosystem-token"]
+    },
+    {
+      "id": "l1",
+      "name": "Layer 1 (Base Chains)",
+      "description": "Major base chains (L1s).",
+      "coin_gecko_ids": ["bitcoin", "ethereum", "solana", "avalanche-2", "cardano", "polkadot", "near", "cosmos", "internet-computer", "sui", "aptos", "algorand"]
+    },
+    {
+      "id": "defi",
+      "name": "DeFi",
+      "description": "Lending, DEXs, and core DeFi protocols.",
+      "coin_gecko_ids": ["uniswap", "aave", "maker", "compound-governance-token", "curve-dao-token", "lido-dao", "pancakeswap-token", "1inch", "morpho"]
+    },
+    {
+      "id": "staking_restaking",
+      "name": "Staking / Restaking",
+      "description": "Liquid staking and restaking ecosystems.",
+      "coin_gecko_ids": ["lido-dao", "rocket-pool", "eigenlayer", "swell-network", "ether-fi", "pendle"]
+    },
+    {
+      "id": "ai_compute",
+      "name": "AI / Compute",
+      "description": "AI-related tokens and compute networks.",
+      "coin_gecko_ids": ["render-token", "fetch-ai", "bittensor", "akash-network", "livepeer", "golem", "aethir", "io"]
+    },
+    {
+      "id": "gaming",
+      "name": "Gaming",
+      "description": "Gaming and consumer crypto tokens.",
+      "coin_gecko_ids": ["gala", "axie-infinity", "the-sandbox", "decentraland", "immutable-x", "notcoin", "undeads-games"]
+    },
+    {
+      "id": "memes",
+      "name": "Memes",
+      "description": "Meme coins (high volatility).",
+      "coin_gecko_ids": ["dogecoin", "shiba-inu", "pepe", "bonk", "floki"]
+    },
+    {
+      "id": "oracles_data",
+      "name": "Oracles / Data",
+      "description": "Oracles, indexing, and data middleware.",
+      "coin_gecko_ids": ["chainlink", "the-graph", "api3", "band-protocol", "arweave"]
+    },
+    {
+      "id": "exchanges",
+      "name": "Exchange Tokens",
+      "description": "Centralized exchange tokens.",
+      "coin_gecko_ids": ["binancecoin", "okb", "crypto-com-chain", "kucoin-shares", "bitget-token", "gatechain-token"]
+    },
+    {
+      "id": "payments",
+      "name": "Payments",
+      "description": "Payments and money movement coins.",
+      "coin_gecko_ids": ["bitcoin-cash", "litecoin", "stellar", "ripple"]
+    },
+    {
+      "id": "rwa",
+      "name": "RWA / Tokenization",
+      "description": "Real-world asset tokenization and related infra.",
+      "coin_gecko_ids": ["ondo-finance", "centrifuge", "polymesh"]
+    },
+    {
+      "id": "perps",
+      "name": "Perps / Derivatives",
+      "description": "Perpetual futures and derivatives protocols.",
+      "coin_gecko_ids": ["dydx", "gmx", "perpetual-protocol", "gains-network"]
+    },
+    {
+      "id": "infra_middleware",
+      "name": "Infra / Middleware",
+      "description": "Cross-chain, middleware, and infrastructure.",
+      "coin_gecko_ids": ["layerzero", "wormhole", "celestia", "filecoin", "arweave", "the-graph"]
+    }
+  ]
+}

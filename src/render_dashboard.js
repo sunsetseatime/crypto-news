@@ -1,5 +1,7 @@
 const path = require("path");
 
+const NO_HEADLINES_MESSAGE = "No headlines available at the time of scan.";
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -646,7 +648,7 @@ function buildStoryCardsHtml(coins) {
     return `
       <div class="card">
         <h2>Story Cards</h2>
-        <p class="muted">No recent headlines to show. The news feed is quiet or delayed.</p>
+        <p class="muted">${escapeHtml(NO_HEADLINES_MESSAGE)}</p>
         ${buildHowThisWorks([
           "Shows stories only when a coin has recent headlines.",
           "Headlines come from news sources and exchange announcements.",
@@ -1010,7 +1012,7 @@ function buildMacroPulseHtml(macroPulse) {
   });
   const newsHtml = newsLines.length
     ? newsLines.map((line) => `<div class=\"muted small\">${escapeHtml(line)}</div>`).join("")
-    : `<div class=\"muted small\">No major altcoin headlines today.</div>`;
+    : `<div class=\"muted small\">${escapeHtml(NO_HEADLINES_MESSAGE)}</div>`;
 
   const moodLabel = mood.label || "Mixed";
   const moodReason = mood.reason || "No clear edge right now.";
@@ -1106,6 +1108,166 @@ function buildMacroPulseHtml(macroPulse) {
     </div>
   `;
 }
+
+function buildCategoryPulseHtml(categoryPulse) {
+  if (!categoryPulse || !Array.isArray(categoryPulse.categories)) return "";
+
+  const categories = categoryPulse.categories
+    .filter((c) => c && typeof c === "object" && c.member_count > 0)
+    .filter((c) => Number.isFinite(num(c.vs_btc_7d)));
+
+  if (categories.length === 0) {
+    return "";
+  }
+
+  const gateBadge = (story) => {
+    const gate = story?.gate || "unknown";
+    if (gate === "caution") return badge("News warning", "badge-warning");
+    if (gate === "mixed") return badge("News mixed", "badge-info");
+    if (gate === "ok") return badge("No red flags", "badge-keep");
+    return badge("No headlines", "badge-muted");
+  };
+
+  const driversText = (story) => {
+    const events = Array.isArray(story?.events) ? story.events : [];
+    const labels = events.map((e) => e?.label).filter(Boolean);
+    if (labels.length > 0) return labels.slice(0, 3).join(" • ");
+    const count = num(story?.news_count_7d);
+    if (count !== null && count > 0) return "News is active, but no clear theme yet.";
+    return NO_HEADLINES_MESSAGE;
+  };
+
+  const renderRows = (list) =>
+    list
+      .map((cat) => {
+        const perf7 = Number.isFinite(num(cat.median_change_7d))
+          ? formatSignedPct(num(cat.median_change_7d), 1)
+          : "n/a";
+        const vsBtc = Number.isFinite(num(cat.vs_btc_7d))
+          ? formatSignedPct(num(cat.vs_btc_7d), 1)
+          : "n/a";
+
+        const movers = Array.isArray(cat.top_movers_7d) ? cat.top_movers_7d : [];
+        const moversHtml = movers.length
+          ? movers
+              .slice(0, 3)
+              .map((m) => {
+                const pct = Number.isFinite(num(m?.change_7d))
+                  ? formatSignedPct(num(m.change_7d), 1)
+                  : "n/a";
+                return `<span class="badge badge-muted">${escapeHtml(m?.symbol || "")} ${escapeHtml(pct)}</span>`;
+              })
+              .join(" ")
+          : `<span class="muted small">n/a</span>`;
+
+        const story = cat.story || {};
+        const headlineItems = Array.isArray(story.sample_headlines) ? story.sample_headlines : [];
+        const headlinesHtml = headlineItems.length
+          ? `
+              <details class="details" style="margin-top: 8px;">
+                <summary><span class="summary-title">Headlines</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
+                <div class="details-body">
+                  <ul class="compact">
+                    ${headlineItems
+                      .slice(0, 5)
+                      .map((h) => {
+                        const title = h?.title || "";
+                        const url = h?.url || "";
+                        const source = h?.source || "";
+                        const when = h?.published ? formatUtc(h.published) : "n/a";
+                        const link = url
+                          ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(title)}</a>`
+                          : escapeHtml(title);
+                        const meta = [source, when].filter(Boolean).join(" • ");
+                        return `<li>${link}${meta ? ` <span class="muted small">${escapeHtml(meta)}</span>` : ""}</li>`;
+                      })
+                      .join("")}
+                  </ul>
+                </div>
+              </details>
+            `
+          : "";
+
+        const missingNote =
+          Number.isFinite(num(cat.missing_count)) && num(cat.missing_count) > 0
+            ? ` <span class="muted small">(missing ${escapeHtml(String(cat.missing_count))})</span>`
+            : "";
+
+        return `
+          <tr>
+            <td data-label="Category">
+              <div style="font-weight: 700;">${escapeHtml(cat.name || cat.id || "")}</div>
+              <div class="muted small">${escapeHtml(cat.description || "")}</div>
+              <div class="muted small">${escapeHtml(String(cat.member_count))} coins${missingNote}</div>
+            </td>
+            <td data-label="7d" class="num">${escapeHtml(perf7)}</td>
+            <td data-label="Vs BTC (7d)" class="num">${escapeHtml(vsBtc)}</td>
+            <td data-label="Top Movers">${moversHtml}</td>
+            <td data-label="Why">
+              ${gateBadge(story)}
+              <div class="muted small" style="margin-top: 6px;">${escapeHtml(driversText(story))}</div>
+              ${headlinesHtml}
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+
+  const renderTable = (list) => `
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th class="num">7d</th>
+            <th class="num">Vs BTC</th>
+            <th>Top movers</th>
+            <th>Why (headlines)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${renderRows(list)}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  const top = categories.slice(0, 8);
+  const remaining = categories.slice(8);
+
+  return `
+    <div class="card">
+      <div class="row space-between">
+        <div>
+          <h2>Category Pulse</h2>
+          <div class="muted small">What's moving vs BTC (7d) - and why (based on headlines we found).</div>
+        </div>
+        <div class="muted small">Updated: ${escapeHtml(formatUtc(categoryPulse.generated_at))}</div>
+      </div>
+      ${renderTable(top)}
+      ${
+        remaining.length > 0
+          ? `
+            <details class="details" style="margin-top: 10px;">
+              <summary><span class="summary-title">All categories</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
+              <div class="details-body">
+                ${renderTable(categories)}
+              </div>
+            </details>
+          `
+          : ""
+      }
+      ${buildHowThisWorks([
+        "Categories are defined by you in config/categories.json.",
+        "We rank categories by the median 7-day move versus BTC.",
+        "\"Why\" comes from recent headlines (exchange announcements + coin updates).",
+        "Story gate: if headlines look bad (hack/delist/team issues), we show a warning even if price is up.",
+        "If we can't find headlines, it may just be money rotating around the market.",
+      ])}
+    </div>
+  `;
+}
+
 function buildPlayRecommendationsHtml(playRecs) {
   if (!playRecs) {
     return "";
@@ -1334,13 +1496,21 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
     const action = opp.entry_signal === "strong_buy" ? "Entry signal" : "Entry signal";
     const signalsText = Array.isArray(opp.signals) ? opp.signals.slice(0, 2).join(", ") : "";
     const riskWarnings = Array.isArray(opp.risk_warnings) ? opp.risk_warnings : [];
+    const contextSummary = opp.context_summary ? String(opp.context_summary) : "";
+    const contextShortTermOnly = opp.context_short_term_only === true;
+    const contextNote = contextShortTermOnly
+      ? "Context: history suggests short-term only"
+      : contextSummary
+        ? `Context: ${contextSummary}`
+        : "";
     const cautionText = riskWarnings.length > 0 ? ` | Caution: ${riskWarnings[0]}` : "";
     const mcapText = fmtMcap(opp.market_cap);
+    const contextText = contextNote ? ` | ${contextNote}` : "";
     return `
       <div class="play-item ${entryClass}">
         <span class="play-symbol">${escapeHtml(opp.symbol || "")}</span>
         <span class="play-action">${escapeHtml(action)}</span>
-        <span class="play-reason">${escapeHtml(`${signalsText} | MCap: ${mcapText}${cautionText}`)}</span>
+        <span class="play-reason">${escapeHtml(`${signalsText} | MCap: ${mcapText}${cautionText}${contextText}`)}</span>
       </div>
     `;
   }).join("");
@@ -1349,13 +1519,21 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
     const signalsText = Array.isArray(opp.signals) ? opp.signals.slice(0, 2).join(", ") : "";
     const riskWarnings = Array.isArray(opp.risk_warnings) ? opp.risk_warnings : [];
     const waitReason = opp.wait_reason ? String(opp.wait_reason) : "Still falling; waiting for stabilization.";
+    const contextSummary = opp.context_summary ? String(opp.context_summary) : "";
+    const contextShortTermOnly = opp.context_short_term_only === true;
+    const contextNote = contextShortTermOnly
+      ? "Context: history suggests short-term only"
+      : contextSummary
+        ? `Context: ${contextSummary}`
+        : "";
     const extra = riskWarnings.length > 0 ? ` | Caution: ${riskWarnings[0]}` : "";
+    const contextText = contextNote ? ` | ${contextNote}` : "";
     const mcapText = fmtMcap(opp.market_cap);
     return `
       <div class="play-item play-wait">
         <span class="play-symbol">${escapeHtml(opp.symbol || "")}</span>
         <span class="play-action">Wait</span>
-        <span class="play-reason">${escapeHtml(`${waitReason} | ${signalsText} | MCap: ${mcapText}${extra}`)}</span>
+        <span class="play-reason">${escapeHtml(`${waitReason} | ${signalsText} | MCap: ${mcapText}${extra}${contextText}`)}</span>
       </div>
     `;
   }).join("");
@@ -1391,6 +1569,8 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
         "Scans top market-cap coins for dips and stabilization.",
         "Signals use RSI oversold, dip from 7-day high, and weekly loss.",
         "Moves to Wait list if still falling fast today.",
+        "Adds a BCH-style history note when a coin has known structural headwinds.",
+        "Coins tagged short-term only are bounce ideas, not long-term holds.",
         "Why it matters: larger coins are usually more liquid and safer.",
       ])}
     </div>
@@ -1897,9 +2077,11 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
       const eventText = Number.isFinite(num(coin?.news_event_count)) && coin.news_event_count > 0
         ? ` | Events: ${escapeHtml(coin.news_event_count)}`
         : "";
+      const headlines = Array.isArray(coin?.news_headlines) ? coin.news_headlines : [];
+      const noHeadlinesNote = headlines.length === 0 ? ` | ${escapeHtml(NO_HEADLINES_MESSAGE)}` : "";
       const newsMeta = (newsFetchedAt || newsSource)
-        ? `News checked: ${escapeHtml(newsFetchedAt || "n/a")}${newsSource ? ` (source: ${escapeHtml(newsSource)})` : ""}${pressureText}${eventText}`
-        : `News checked: n/a${pressureText}${eventText}`;
+        ? `News checked: ${escapeHtml(newsFetchedAt || "n/a")}${newsSource ? ` (source: ${escapeHtml(newsSource)})` : ""}${pressureText}${eventText}${noHeadlinesNote}`
+        : `News checked: n/a${pressureText}${eventText}${noHeadlinesNote}`;
 
       const checklist = explain?.checklist || [];
 
@@ -2339,6 +2521,12 @@ function buildPaperTradingHtml(paperReport) {
   const byScore = Array.isArray(breakdowns.by_score_range) ? breakdowns.by_score_range : [];
   const bySource = Array.isArray(breakdowns.by_source) ? breakdowns.by_source : [];
   const bySignal = Array.isArray(breakdowns.by_entry_signal) ? breakdowns.by_entry_signal : [];
+  const byMarketPhase = Array.isArray(breakdowns.by_market_phase) ? breakdowns.by_market_phase : [];
+  const byTrend = Array.isArray(breakdowns.by_trend) ? breakdowns.by_trend : [];
+  const byLiquidity = Array.isArray(breakdowns.by_liquidity) ? breakdowns.by_liquidity : [];
+  const byNewsPressure = Array.isArray(breakdowns.by_news_pressure) ? breakdowns.by_news_pressure : [];
+  const byUnlock = Array.isArray(breakdowns.by_unlock) ? breakdowns.by_unlock : [];
+  const byHygiene = Array.isArray(breakdowns.by_hygiene) ? breakdowns.by_hygiene : [];
 
   function renderPerfTable(title, rows, labelKey) {
     if (!rows.length) return "";
@@ -2487,6 +2675,17 @@ function buildPaperTradingHtml(paperReport) {
         ${renderPerfTable("Score range", byScore, "range")}
         ${renderPerfTable("Signal source", bySource, "source")}
         ${renderPerfTable("Entry signal", bySignal, "signal")}
+        <details class="details" style="margin-top: 10px;">
+          <summary><span class="summary-title">More learning breakdowns</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
+          <div class="details-body">
+            ${renderPerfTable("Market phase", byMarketPhase, "market_phase")}
+            ${renderPerfTable("Trend", byTrend, "trend")}
+            ${renderPerfTable("Liquidity", byLiquidity, "liquidity")}
+            ${renderPerfTable("News pressure", byNewsPressure, "news_pressure")}
+            ${renderPerfTable("Unlock risk", byUnlock, "unlock")}
+            ${renderPerfTable("Hygiene label", byHygiene, "hygiene")}
+          </div>
+        </details>
       </div>
       <div style="margin-top: 12px;">
         <h3>Post-mortem prompts</h3>
@@ -3088,6 +3287,11 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       <!-- MARKET PULSE -->
       <div style="margin-top:14px;">
         ${buildMacroPulseHtml(macroPulse)}
+      </div>
+
+      <!-- CATEGORY PULSE -->
+      <div style="margin-top:14px;">
+        ${buildCategoryPulseHtml(layer1Report?.category_pulse)}
       </div>
 
       <!-- DATA FRESHNESS -->
