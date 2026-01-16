@@ -278,7 +278,7 @@ function computeAlerts({
   const friendlyHygiene = (label) => {
     switch (label) {
       case "KEEP":
-        return "Setup";
+        return "Ready";
       case "WATCH-ONLY":
         return "Watch";
       case "DROP":

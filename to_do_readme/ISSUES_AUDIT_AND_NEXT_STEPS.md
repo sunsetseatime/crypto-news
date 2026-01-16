@@ -125,3 +125,170 @@ Step-by-step (recommended):
 1) Improve headlines (add the 4 working RSS sources + “no headlines available” message everywhere).
 2) Upgrade paper trading into a learning system (tags → scoreboard → suggestions → optional auto-tune flag).
 3) Clean up “unused tools” by moving valuable ones into the real pipelines, and only then remove redundant duplicates.
+
+**Status update (2026-01-15):** Items 1–3 above are now implemented in the codebase. The next major gap is the dashboard layout and top-of-page summary clarity (below).
+
+---
+
+## 5) Dashboard: “Quick Start” at the top + clearer words + AI summary up front
+
+### The problem (plain English)
+- The dashboard has a lot of great information, but the “what do I look at first?” answers are spread out.
+- “Ready Setup” is confusing because it’s just a count, and it’s not obvious where to find those coins.
+- The AI summary is not at the top, so the “fast read” experience isn’t strong.
+
+### The goal
+- Make the top of the dashboard work like a “30-second briefing”.
+- Keep deep-dive sections below for when you want details.
+- Make the wording consistent and easy for non-coders (and friends) to understand.
+
+---
+
+### A) Rename confusing words (so labels match what we mean)
+
+**What we change**
+- Rename “Ready Setup” (top counter) to **“Ready (KEEP)”** or **“Passed Checks (KEEP)”**.
+- Define “setup” clearly wherever it’s used:
+  - **KEEP** = passed safety/quality checks (good enough to consider).
+  - **Entry setup** = KEEP + timing looks good today.
+  - **Strong setup** = the strongest “entry setup” signal.
+
+**Why**
+- Right now “setup” sounds like “buy now”, but the counter is really just “passed checks”.
+
+**How to verify**
+1) Run a scan: `node src/index.js`
+2) Open: `reports/Dashboard.html`
+3) Confirm the top counter says “Ready (KEEP)” (or “Passed Checks”), and the glossary explains each term in one sentence.
+
+Implementation notes (for dev)
+- Update wording in `buildDailySummaryHtml()` in `src/render_dashboard.js`.
+- Update wording in the “How to Read This Dashboard” glossary in `src/render_dashboard.js`.
+
+---
+
+### B) Add a “Quick Start” section at the very top (the real “what to do today”)
+
+**What we change**
+- Add a new top section (above “Today’s Summary”) called **“Quick Start (30 seconds)”** with:
+  1) **Market mood** (phase + fear/greed + BTC trend)
+  2) **Today’s plays (2–3 ideas)** with clear action words (Buy / Wait / Avoid)
+  3) **Top risks to watch today** (2–3 bullets)
+  4) **What changed since last run** (1–3 bullets)
+  5) **Paper trading snapshot** (open trades count + quick note)
+  6) **Jump links** (buttons/links that scroll to: What to Play, Best Entries, Blue Chip Dips, Watchlist, Paper Trading)
+
+**Why**
+- When you’re busy, you should be able to read just the top and get the “state of play”.
+
+**How to verify**
+1) Run: `node src/index.js`
+2) Open: `reports/Dashboard.html`
+3) Confirm you can understand market mood + 2–3 plays + top risks without scrolling.
+
+Implementation notes (for dev)
+- New renderer in `src/render_dashboard.js` (example name: `buildQuickStartHtml()`).
+- Feed it from existing report data:
+  - `layer1Report.market_condition`
+  - `layer1Report.play_recommendations`
+  - `layer1Report.best_entries`
+  - `layer1Report.blue_chip_opportunities`
+  - `diffReport`
+  - `alertsReport`
+  - `paperReport`
+
+---
+
+### C) Make the “Today’s plays” list consistent (one source of truth)
+
+**What we change**
+- Define exactly how we pick the 2–3 plays shown at the top:
+  - Picks can come from BOTH:
+    - **Best Entries (watchlist)**, and
+    - **Blue Chip Dip Opportunities** (even if not in watchlist).
+- Add a simple rule so we don’t contradict ourselves:
+  - If a coin is flagged “Avoid/Trap” (unlock risk, downtrend, very low liquidity, etc.), it cannot appear as a “Buy” in the top list.
+- Show each play as:
+  - **Coin + action** (Buy / Wait / Avoid)
+  - **Why** (2 bullets, plain English)
+  - **Main risk** (1 bullet)
+  - Optional: “time horizon” (e.g. days, weeks)
+
+**Why**
+- Users should not have to cross-check multiple sections to understand “what to do today”.
+
+**How to verify**
+1) Run: `node src/index.js`
+2) Open: `reports/Dashboard.html`
+3) Confirm each top play also appears in the relevant detail section (Best Entries or Blue Chips).
+4) Confirm no coin appears as both “Buy” and “Avoid”.
+
+Implementation notes (for dev)
+- Prefer rule-based selection for the shortlist, then let AI rewrite the explanation (optional).
+- Candidate pools:
+  - Best Entries: `layer1Report.best_entries.best_entries`
+  - Blue Chips: `layer1Report.blue_chip_opportunities.opportunities`
+
+---
+
+### D) Move the AI summary to the top and make it “smarter” (use more of our features)
+
+**What we change**
+- Move the AI supervisor summary section so it appears near the top (right under Quick Start).
+- Expand what the AI is allowed to summarize using ONLY our reports:
+  - market mood
+  - best entries + wait list
+  - blue chip dips + wait list
+  - alerts (including take-profit alerts)
+  - paper trading snapshot
+  - top risks (unlock, dilution, holder concentration, low liquidity)
+- Ask the AI to output:
+  - 2–3 sentence “Today in plain English”
+  - “Top 2 plays” (based on our pre-selected candidates)
+  - “Top 2 risks”
+  - “If you only do one thing: ____”
+
+**Why**
+- The AI becomes the fast briefing you can trust, without guessing or inventing facts.
+
+**How to verify**
+1) Run a scan with `OPENAI_API_KEY` set.
+2) Open: `reports/Dashboard.html`
+3) Confirm AI summary appears near the top and matches the real sections below.
+4) Confirm it never invents coins or news that aren’t shown elsewhere on the page.
+
+Implementation notes (for dev)
+- Update `buildSupervisorInput()` and `buildSupervisorSchema()` in `src/index.js`.
+- Add “play candidates” to the AI input (so the AI can only choose from what we already picked).
+- Add a “conflict check” rule: if a coin is both risky and suggested as buy, AI must downgrade it to Wait/Avoid and explain.
+
+---
+
+### E) Chat: “Recommend plays today” (visible + consistent)
+
+**What we change**
+- Add a visible hint/button in the chat panel like:
+  - “Try: ‘What are today’s top plays?’”
+- Chat should answer using the same shortlist as Quick Start (so the answer is consistent).
+- Optional: allow direct action words (Buy/Wait/Avoid), but keep it clear it’s based on this dashboard’s rules and data.
+
+**Why**
+- People expect to ask the chat “what should I do today?” and get a clear, consistent answer.
+
+**How to verify**
+1) Open the Vercel dashboard (chat is only on Vercel).
+2) Ask: “What are today’s top plays and why?”
+3) Confirm it matches the top Quick Start list and the detailed sections.
+
+Implementation notes (for dev)
+- Chat API: `app/api/chat/route.js`
+- Chat UI injection: `app/route.js`
+- GitHub Pages dashboard will not have chat (static hosting). Vercel wraps the GitHub dashboard and adds chat.
+
+---
+
+## Updated suggested order (next)
+1) Dashboard Quick Start section (top-of-page briefing + jump links).
+2) Rename/clarify “setup” wording so the counters and sections match.
+3) Move AI summary near the top and expand it to summarize more features (without making up facts).
+4) Make chat visibly support “today’s plays” and match the same shortlist.

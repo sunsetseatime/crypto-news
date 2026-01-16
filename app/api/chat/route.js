@@ -622,6 +622,16 @@ function summarizeGlobal(reports) {
       }
     : null;
 
+  const todayPlays = Array.isArray(reports?.layer1?.today_plays?.items)
+    ? reports.layer1.today_plays.items.slice(0, 5).map((play) => ({
+        symbol: play?.symbol || null,
+        action: play?.action || null,
+        why: Array.isArray(play?.why) ? play.why.slice(0, 2) : [],
+        main_risk: play?.main_risk || null,
+        source: play?.source_section || play?.source || null,
+      }))
+    : [];
+
   return {
     data_freshness: reports?.layer1?.data_freshness || null,
     portfolio_guidance: reports?.layer1?.portfolio_guidance || null,
@@ -648,6 +658,7 @@ function summarizeGlobal(reports) {
     supervisor,
     backtest,
     paper_trading: paper,
+    today_plays: todayPlays,
   };
 }
 
@@ -720,11 +731,12 @@ function buildSystemPrompt() {
     'Rules:',
     '- Use ONLY the report context provided. If something is not in the context, say you do not know.',
     '- Use plain English. Avoid jargon and acronyms. If you must use an acronym (like FDV), define it first.',
-    '- Do not give financial advice. Do not tell the user to buy/sell. Focus on education and explaining risk signals.',
+    '- Do not give financial advice. You may use action labels (Buy/Wait/Avoid) only as dashboard signal labels, not advice.',
     '- Discovery results are NOT recommendations. Discovery is just a shortlist that passed the discovery filters (volume, size, and recent move). Meme coins can appear if they match the numbers.',
     '- If the user asks "why was this chosen?", explain whether it was:',
     '  - on the Watchlist/Staging list (manually added or staged), and why it got its decision label, OR',
     '  - on the Discovery list (passed the discovery filters), and show the key numbers that triggered it.',
+    '- If the user asks for "today\'s plays", use global.today_plays and say it comes from the dashboard shortlist.',
     '- When discussing big holders:',
     '  - Exchange wallets can look huge but often represent many customers, so they are usually lower "single whale" risk.',
     '  - Never guess whether an address is an exchange. Only call it an exchange if the report explicitly labels it as an exchange.',

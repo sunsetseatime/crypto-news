@@ -772,7 +772,26 @@ function buildSupervisorSchema() {
       additionalProperties: false,
       properties: {
         actionable_today: { type: "boolean" },
+        today_brief: { type: "string" },
         executive_summary: { type: "string" },
+        top_plays: {
+          type: "array",
+          maxItems: 3,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              symbol: { type: "string" },
+              action: { type: "string", enum: ["Buy", "Wait", "Avoid"] },
+              why: { type: "array", maxItems: 2, items: { type: "string" } },
+              main_risk: { type: "string" },
+              source: { type: "string" },
+            },
+            required: ["symbol", "action", "why", "main_risk", "source"],
+          },
+        },
+        top_risks: { type: "array", maxItems: 3, items: { type: "string" } },
+        one_thing: { type: "string" },
         onchain_highlights: {
           type: "array",
           maxItems: 5,
@@ -823,7 +842,11 @@ function buildSupervisorSchema() {
       },
       required: [
         "actionable_today",
+        "today_brief",
         "executive_summary",
+        "top_plays",
+        "top_risks",
+        "one_thing",
         "onchain_highlights",
         "watch_closely",
         "avoid_chasing",
@@ -834,9 +857,10 @@ function buildSupervisorSchema() {
   };
 }
 
-function buildSupervisorInput(layer1Report) {
+function buildSupervisorInput({ layer1Report, alertsReport, diffReport, paperReport }) {
   const report = layer1Report && typeof layer1Report === "object" ? layer1Report : {};
   const coins = Array.isArray(report.coins) ? report.coins : [];
+  const todayPlays = report?.today_plays || null;
 
   const trimmedCoins = coins.map((coin) => {
     const onchain = coin?.onchain || null;
@@ -929,17 +953,88 @@ function buildSupervisorInput(layer1Report) {
     };
   });
 
+  const playCandidates = Array.isArray(todayPlays?.items)
+    ? todayPlays.items.slice(0, 5).map((play) => ({
+        symbol: play?.symbol || null,
+        action: play?.action || null,
+        why: Array.isArray(play?.why) ? play.why.slice(0, 2) : [],
+        main_risk: play?.main_risk || "n/a",
+        source: play?.source_section || play?.source || "n/a",
+      }))
+    : [];
+
+  const bestEntries = Array.isArray(report?.best_entries?.best_entries)
+    ? report.best_entries.best_entries.slice(0, 5).map((entry) => ({
+        symbol: entry?.symbol || null,
+        action: entry?.action || null,
+        reasons: Array.isArray(entry?.reasons) ? entry.reasons.slice(0, 3) : [],
+        entry_signal: entry?.entry_signal || null,
+      }))
+    : [];
+
+  const blueChips = Array.isArray(report?.blue_chip_opportunities?.opportunities)
+    ? report.blue_chip_opportunities.opportunities.slice(0, 5).map((entry) => ({
+        symbol: entry?.symbol || null,
+        entry_signal: entry?.entry_signal || null,
+        signals: Array.isArray(entry?.signals) ? entry.signals.slice(0, 3) : [],
+        risk_warnings: Array.isArray(entry?.risk_warnings) ? entry.risk_warnings.slice(0, 2) : [],
+      }))
+    : [];
+
+  const alerts = Array.isArray(alertsReport?.alerts)
+    ? alertsReport.alerts.slice(0, 8).map((alert) => ({
+        source: alert?.source || null,
+        symbol: alert?.symbol || null,
+        title: alert?.title || null,
+        why: Array.isArray(alert?.explain?.why) ? alert.explain.why.slice(0, 2) : [],
+        risks: Array.isArray(alert?.explain?.risks) ? alert.explain.risks.slice(0, 2) : [],
+      }))
+    : [];
+
+  const diffSummary = Array.isArray(diffReport?.changes)
+    ? diffReport.changes.slice(0, 8).map((change) => ({
+        severity: change?.severity || null,
+        symbol: change?.symbol || null,
+        description: change?.description || null,
+      }))
+    : [];
+
+  const paperSnapshot = paperReport
+    ? {
+        generated_at: paperReport.generated_at || null,
+        open_count:
+          typeof paperReport.open_count === "number" ? paperReport.open_count : null,
+        closed_count:
+          typeof paperReport.closed_count === "number" ? paperReport.closed_count : null,
+        win_rate_pct:
+          typeof paperReport.overview?.win_rate_pct === "number"
+            ? Number(paperReport.overview.win_rate_pct.toFixed(1))
+            : null,
+        avg_return_pct:
+          typeof paperReport.overview?.avg_return_pct === "number"
+            ? Number(paperReport.overview.avg_return_pct.toFixed(2))
+            : null,
+      }
+    : null;
+
   return {
     generated_at: report.generated_at || null,
     actionable_today: Boolean(report.actionable_today),
     warnings: Array.isArray(report.warnings) ? report.warnings.slice(0, 20) : [],
     market_condition: report?.market_condition?.signals || null,
     btc_reference: report?.btc_reference || null,
+    today_plays: todayPlays || null,
+    play_candidates: playCandidates,
+    best_entries: bestEntries,
+    blue_chip_opportunities: blueChips,
+    alerts,
+    diff_summary: diffSummary,
+    paper_snapshot: paperSnapshot,
     coins: trimmedCoins,
   };
 }
 
-async function runSupervisor(layer1Report) {
+async function runSupervisor({ layer1Report, alertsReport, diffReport, paperReport }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     return { status: "skipped", reason: "OPENAI_API_KEY not set" };
@@ -949,8 +1044,12 @@ async function runSupervisor(layer1Report) {
   const systemMsg =
     "You are a strict crypto research supervisor. " +
     "Do not hype. Do not invent facts. " +
-    "Use plain English and avoid jargon. " +
+    "Use plain English and avoid jargon. If you must use a technical term, define it briefly. " +
+    "Do not give financial advice. " +
+    "You may use action labels Buy/Wait/Avoid only as dashboard signal labels (not advice). " +
     "Only use the provided JSON. " +
+    "Only pick top plays from play_candidates. If none, say no clear plays today. " +
+    "If a candidate has a major risk, downgrade to Wait or Avoid and explain. " +
     "Do not claim a clean catalyst unless it is dated within 14 days and linked. " +
     "If unlock data is UNKNOWN/LOW, mark not actionable and say it needs verification. " +
     "For on-chain: do not guess address identity (exchange/person/team). Only summarize chain, holder concentration %, and wallet vs smart-contract counts when available.";
@@ -959,8 +1058,17 @@ async function runSupervisor(layer1Report) {
     "Summarize today's scan strictly using the provided JSON only. " +
     "Return JSON matching the schema. " +
     "Include up to 5 on-chain highlights focusing on coins where ownership concentration is HIGH (`holder_concentration_level=HIGH`); otherwise include any with on-chain data. " +
+    "Top plays must come from play_candidates and should be 2-3 items max. " +
+    "Top risks should be 2-3 short bullets, based on warnings/alerts/diff. " +
     "Do not include raw addresses in the highlight facts.\n\n" +
-    JSON.stringify(buildSupervisorInput(layer1Report));
+    JSON.stringify(
+      buildSupervisorInput({
+        layer1Report,
+        alertsReport,
+        diffReport,
+        paperReport,
+      })
+    );
 
   const schema = buildSupervisorSchema();
 
@@ -1346,7 +1454,7 @@ function evaluateCorrelationGuardrail({ coin, portfolio }) {
 
   return {
     blocked: true,
-    reason: "Portfolio already holds BTC/ETH; avoid adding another similar beta unless the setup is clearly different.",
+    reason: "Portfolio already holds BTC/ETH; avoid adding another similar beta unless the idea is clearly different.",
   };
 }
 
@@ -1858,7 +1966,7 @@ function generatePlayRecommendations(coins, marketCondition) {
   
   const recommendations = {
     market_phase: phase,
-    best_buys: [],       // Actionable setups
+    best_buys: [],       // Actionable entries
     momentum_plays: [],  // Quick trades for runs
     take_profits: [],    // Time to de-risk
     avoid: [],           // Stay away
@@ -1930,7 +2038,7 @@ function generatePlayRecommendations(coins, marketCondition) {
             symbol,
             reason: buildReason(reasons),
             entry_signal: entry,
-            action: shortTermOnly ? "Short-term setup only" : "Strong setup - accumulation zone",
+            action: shortTermOnly ? "Short-term trade only" : "Strong entry - accumulation zone",
             priority: hasCatalyst ? 100 : 80,
           });
         } else if (entryWait) {
@@ -1944,7 +2052,7 @@ function generatePlayRecommendations(coins, marketCondition) {
         } else if (highRisk) {
           recommendations.watch_for_dip.push({
             symbol,
-            reason: "Good setup but ownership concentrated",
+            reason: "Good coin but ownership concentrated",
             entry_signal: entry,
             action: "Small position only",
             priority: 30,
@@ -1976,7 +2084,7 @@ function generatePlayRecommendations(coins, marketCondition) {
             symbol,
             reason: "Solid fundamentals, market moving",
             entry_signal: entry,
-            action: "Setup with trailing stop",
+            action: "Entry with trailing stop",
             priority: 60,
           });
         } else if (!outperforming || vs_btc < 5) {
@@ -2039,7 +2147,7 @@ function generatePlayRecommendations(coins, marketCondition) {
 
 /**
  * Generate "Best Entries Today" - ranks coins by entry quality
- * Filters out junk, focuses on actionable setups
+ * Filters out junk, focuses on actionable entries
  */
 function generateBestEntries(coins, marketCondition) {
   const phase = marketCondition?.market_phase || "neutral";
@@ -2181,9 +2289,9 @@ function generateBestEntries(coins, marketCondition) {
       reasons,
       action:
         entrySignal === "strong_buy"
-          ? "Strong setup"
+          ? "Strong entry"
           : entrySignal === "buy"
-            ? "Good setup"
+            ? "Good entry"
             : "Wait for dip",
       risks: highRisk ? ["ownership/dilution risk"] : [],
     });
@@ -2203,6 +2311,149 @@ function generateBestEntries(coins, marketCondition) {
     wait_list: waitList.slice(0, 5),
     all_entries: entries,
     generated_at: new Date().toISOString(),
+  };
+}
+
+function simplifyPlayReason(reason) {
+  const raw = String(reason || "").trim();
+  if (!raw) return null;
+  const text = raw.toLowerCase();
+  if (text.includes("rsi")) return "Price looks oversold";
+  if (text.includes("from 30d high")) return "Pulled back from a recent high";
+  if (text.includes("near 30d low")) return "Near a recent low";
+  if (text.includes("beating btc")) return "Beating Bitcoin this week";
+  if (text.includes("catalyst")) return "Recent project update or catalyst";
+  if (text.includes("trend: uptrend")) return "Trend is up";
+  if (text.includes("trend: downtrend")) return "Trend is down";
+  if (text.includes("news")) return "Recent news activity";
+  if (text.includes("oversold")) return "Price looks oversold";
+  return raw;
+}
+
+function buildTodayPlays({ bestEntries, blueChipOpportunities, playRecommendations, maxPlays = 3 }) {
+  const avoidSymbols = new Set(
+    (playRecommendations?.avoid || [])
+      .map((item) => String(item?.symbol || "").toUpperCase())
+      .filter(Boolean)
+  );
+  const bySymbol = new Map();
+
+  const consider = (candidate) => {
+    const symbol = String(candidate?.symbol || "").toUpperCase();
+    if (!symbol) return;
+    if (avoidSymbols.has(symbol)) return;
+    const existing = bySymbol.get(symbol);
+    if (!existing || (candidate.priority || 0) > (existing.priority || 0)) {
+      bySymbol.set(symbol, { ...candidate, symbol });
+    }
+  };
+
+  const pickReasons = (reasons, limit = 2) => {
+    const list = Array.isArray(reasons) ? reasons : [];
+    const simplified = list.map(simplifyPlayReason).filter(Boolean);
+    return simplified.slice(0, limit);
+  };
+
+  const bestList = Array.isArray(bestEntries?.best_entries)
+    ? bestEntries.best_entries
+    : [];
+  for (const entry of bestList) {
+    const priority = Number.isFinite(num(entry?.adjusted_score))
+      ? entry.adjusted_score
+      : Number.isFinite(num(entry?.entry_score))
+        ? entry.entry_score
+        : 0;
+    consider({
+      symbol: entry?.symbol || null,
+      name: entry?.name || null,
+      action: "Buy",
+      source: "watchlist",
+      source_section: "Best Entries",
+      why: pickReasons(entry?.reasons),
+      main_risk: Array.isArray(entry?.risks) && entry.risks.length > 0 ? entry.risks[0] : null,
+      priority,
+    });
+  }
+
+  const blueList = Array.isArray(blueChipOpportunities?.opportunities)
+    ? blueChipOpportunities.opportunities
+    : [];
+  for (const entry of blueList) {
+    const warnings = Array.isArray(entry?.risk_warnings) ? entry.risk_warnings : [];
+    const warningText = warnings.join(" ").toLowerCase();
+    const stillFalling =
+      warningText.includes("still dropping") ||
+      warningText.includes("still falling") ||
+      warningText.includes("down a lot");
+    const action =
+      entry?.entry_signal === "strong_buy" || entry?.entry_signal === "buy"
+        ? stillFalling
+          ? "Wait"
+          : "Buy"
+        : "Wait";
+    const priority = Number.isFinite(num(entry?.signal_strength)) ? entry.signal_strength : 0;
+    consider({
+      symbol: entry?.symbol || null,
+      name: entry?.name || null,
+      action,
+      source: "blue_chip",
+      source_section: "Blue Chip Dips",
+      why: pickReasons(entry?.signals),
+      main_risk: warnings.length > 0 ? warnings[0] : null,
+      priority: action === "Wait" ? priority - 20 : priority,
+    });
+  }
+
+  const waitCandidates = [];
+  const bestWait = Array.isArray(bestEntries?.wait_list) ? bestEntries.wait_list : [];
+  for (const entry of bestWait) {
+    const priority = Number.isFinite(num(entry?.adjusted_score))
+      ? entry.adjusted_score - 30
+      : Number.isFinite(num(entry?.entry_score))
+        ? entry.entry_score - 30
+        : 0;
+    waitCandidates.push({
+      symbol: entry?.symbol || null,
+      name: entry?.name || null,
+      action: "Wait",
+      source: "watchlist",
+      source_section: "Best Entries",
+      why: pickReasons(entry?.reasons),
+      main_risk: Array.isArray(entry?.risks) && entry.risks.length > 0 ? entry.risks[0] : null,
+      priority,
+    });
+  }
+
+  const blueWait = Array.isArray(blueChipOpportunities?.wait_list)
+    ? blueChipOpportunities.wait_list
+    : [];
+  for (const entry of blueWait) {
+    const warnings = Array.isArray(entry?.risk_warnings) ? entry.risk_warnings : [];
+    const priority = Number.isFinite(num(entry?.signal_strength)) ? entry.signal_strength - 30 : 0;
+    waitCandidates.push({
+      symbol: entry?.symbol || null,
+      name: entry?.name || null,
+      action: "Wait",
+      source: "blue_chip",
+      source_section: "Blue Chip Dips",
+      why: pickReasons(entry?.signals),
+      main_risk: warnings.length > 0 ? warnings[0] : entry?.wait_reason || null,
+      priority,
+    });
+  }
+
+  for (const candidate of waitCandidates) {
+    consider(candidate);
+  }
+
+  const items = Array.from(bySymbol.values())
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0))
+    .slice(0, Math.max(0, Number(maxPlays) || 3));
+
+  return {
+    generated_at: new Date().toISOString(),
+    max_items: Math.max(0, Number(maxPlays) || 3),
+    items,
   };
 }
 
@@ -2968,7 +3219,7 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
     risks.push("Portfolio already has similar BTC/ETH exposure; avoid doubling up without a unique catalyst.");
   }
   if (coin?.context_short_term_only) {
-    risks.push("Historical context suggests this is a short-term setup only.");
+    risks.push("Historical context suggests this is a short-term trade only.");
   }
   if (Array.isArray(coin?.context_structural_headwinds) && coin.context_structural_headwinds.length > 0) {
     risks.push(`Context headwind: ${coin.context_structural_headwinds[0]}`);
@@ -2976,7 +3227,7 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
 
   const why = [];
   if (label === "KEEP") {
-    why.push("Verdict is Setup because it passes most of the safety checks.");
+    why.push("Verdict is Ready because it passes most of the safety checks.");
     for (const line of positives.slice(0, 3)) why.push(line);
     if (why.length < 3) {
       const missing = failures.map((f) => explainGateFailure(f, coin)).slice(0, 1);
@@ -7610,7 +7861,7 @@ function writeBacktestReport(stats) {
         ? `${(row.win_rate_14d * 100).toFixed(0)}%`
         : "n/a";
     const decision =
-      label === "KEEP" ? "Setup" : label === "WATCH-ONLY" ? "Watch" : "Avoid";
+      label === "KEEP" ? "Ready" : label === "WATCH-ONLY" ? "Watch" : "Avoid";
     md.push(
       `| ${decision} | ${sample14d} coins | ${formatSignedPct(row.avg_return_7d, 1)} | ${formatSignedPct(row.avg_return_14d, 1)} | ${formatSignedPct(row.avg_return_30d, 1)} | ${winRate} |`
     );
@@ -9332,8 +9583,40 @@ function buildSummary(
 
   if (supervisorResult && supervisorResult.status === "ok") {
     lines.push("## AI Supervisor Summary");
-    lines.push(supervisorResult.executive_summary || "No summary provided.");
+    lines.push(supervisorResult.today_brief || supervisorResult.executive_summary || "No summary provided.");
     lines.push("");
+
+    const topPlays = Array.isArray(supervisorResult.top_plays)
+      ? supervisorResult.top_plays
+      : [];
+    if (topPlays.length > 0) {
+      lines.push("### Top Plays (Dashboard Signals)");
+      for (const play of topPlays) {
+        const why = Array.isArray(play?.why) ? play.why.filter(Boolean) : [];
+        const whyText = why.length > 0 ? ` - ${why.join("; ")}` : "";
+        const risk = play?.main_risk ? ` (Risk: ${play.main_risk})` : "";
+        const source = play?.source ? ` [${play.source}]` : "";
+        lines.push(`- ${play.symbol}: ${play.action}${whyText}${risk}${source}`);
+      }
+      lines.push("");
+    }
+
+    const topRisks = Array.isArray(supervisorResult.top_risks)
+      ? supervisorResult.top_risks
+      : [];
+    if (topRisks.length > 0) {
+      lines.push("### Top Risks");
+      for (const risk of topRisks) {
+        lines.push(`- ${risk}`);
+      }
+      lines.push("");
+    }
+
+    if (supervisorResult.one_thing) {
+      lines.push(`### If You Only Do One Thing`);
+      lines.push(supervisorResult.one_thing);
+      lines.push("");
+    }
 
     const highlights = Array.isArray(supervisorResult.onchain_highlights)
       ? supervisorResult.onchain_highlights
@@ -10257,6 +10540,13 @@ async function main() {
   // Generate best entries ranking
   const bestEntries = generateBestEntries(coins, marketCondition);
   console.log(`Best Entries: ${bestEntries.best_entries.length} top opportunities found`);
+  
+  const todayPlays = buildTodayPlays({
+    bestEntries,
+    blueChipOpportunities,
+    playRecommendations,
+    maxPlays: 3,
+  });
 
   const dataFreshness = {
     scan_generated_at: new Date().toISOString(),
@@ -10293,6 +10583,8 @@ async function main() {
     best_entries: bestEntries,
     // Blue chip dip opportunities (top cryptos by market cap)
     blue_chip_opportunities: blueChipOpportunities,
+    // Shortlist for "today's plays" across watchlist + blue chips
+    today_plays: todayPlays,
     // Category pulse (what sectors are moving and why)
     category_pulse: categoryPulse,
     warnings: warnings.length > 0 ? warnings : [],
@@ -10375,29 +10667,6 @@ async function main() {
     console.warn(`Paper trading failed: ${err.message}`);
   }
 
-  let supervisorResult = null;
-  let supervisorOutput = null;
-  try {
-    const result = await runSupervisor(layer1Report);
-    if (result && result.status === "skipped") {
-      supervisorResult = result;
-    } else {
-      supervisorResult = { status: "ok", ...result };
-      supervisorOutput = result;
-      const supervisorPath = path.join(
-        REPORTS_DIR,
-        "SupervisorSummary.json"
-      );
-      fs.writeFileSync(
-        supervisorPath,
-        JSON.stringify(result, null, 2),
-        "utf8"
-      );
-    }
-  } catch (err) {
-    supervisorResult = { status: "error", reason: err.message };
-  }
-
   let defiLatest = defiLatestInfo?.data || null;
   if (!defiLatest) {
     try {
@@ -10456,6 +10725,34 @@ async function main() {
   } catch (err) {
     console.warn(`Alerts generation failed: ${err.message}`);
     alertsReport = null;
+  }
+
+  let supervisorResult = null;
+  let supervisorOutput = null;
+  try {
+    const result = await runSupervisor({
+      layer1Report,
+      alertsReport,
+      diffReport,
+      paperReport,
+    });
+    if (result && result.status === "skipped") {
+      supervisorResult = result;
+    } else {
+      supervisorResult = { status: "ok", ...result };
+      supervisorOutput = result;
+      const supervisorPath = path.join(
+        REPORTS_DIR,
+        "SupervisorSummary.json"
+      );
+      fs.writeFileSync(
+        supervisorPath,
+        JSON.stringify(result, null, 2),
+        "utf8"
+      );
+    }
+  } catch (err) {
+    supervisorResult = { status: "error", reason: err.message };
   }
 
   let dashboardHtml = null;

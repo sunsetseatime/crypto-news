@@ -140,17 +140,16 @@ function labelClass(label) {
   }
 }
 
-function friendlyLabel(label, entrySignal = null) {
+function friendlyLabel(label) {
   switch (label) {
-    case "KEEP": 
-      // If entry signal says "wait", make it clear this is a "buy later" situation
-      if (entrySignal === "wait" || entrySignal === "overbought") {
-        return "Setup Later";
-      }
-      return "Setup";
-    case "WATCH-ONLY": return "Watch";
-    case "DROP": return "Avoid";
-    default: return "Unknown";
+    case "KEEP":
+      return "Ready";
+    case "WATCH-ONLY":
+      return "Watch";
+    case "DROP":
+      return "Avoid";
+    default:
+      return "Unknown";
   }
 }
 
@@ -346,7 +345,7 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
     verdict = "Nothing actionable - check the warnings";
     verdictClass = "badge-warning";
   } else {
-    verdict = "No strong setups today - keep watching";
+      verdict = "No strong entries today - keep watching";
     verdictClass = "badge-muted";
   }
   
@@ -356,7 +355,7 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
   // Market condition highlights (priority)
   if (marketSignals?.accumulation?.length > 0) {
     for (const sig of marketSignals.accumulation.slice(0, 2)) {
-      highlights.push(`<strong>Setup signal:</strong> ${sig.message}`);
+      highlights.push(`<strong>Market signal:</strong> ${sig.message}`);
     }
   }
   
@@ -458,7 +457,7 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       <div class="summary-stats">
         <div class="stat">
           <div class="stat-value" style="color: var(--keep);">${keepCount}</div>
-          <div class="stat-label">Ready Setup</div>
+          <div class="stat-label">Ready (KEEP)</div>
         </div>
         <div class="stat">
           <div class="stat-value" style="color: var(--watch);">${watchCount}</div>
@@ -477,9 +476,177 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       ${highlightsHtml}
       ${buildHowThisWorks([
         "Uses Fear and Greed plus BTC weekly momentum for market mood.",
-        "Counts come from your watchlist labels (Setup/Watch/Avoid) and staging list.",
+        "Counts come from your watchlist labels (Ready/Watch/Avoid) and staging list.",
         "Key Findings are pulled from outperformance vs BTC, catalysts, risks, discovery, and DeFi.",
         "Why it matters: it tells you if the market is friendly before you act.",
+      ])}
+    </div>
+  `;
+}
+
+function buildQuickStartHtml({ layer1Report, diffReport, alertsReport, paperReport }) {
+  if (!layer1Report) return "";
+
+  const marketSignals = layer1Report?.market_condition?.signals || {};
+  const fearGreed = layer1Report?.market_condition?.fear_greed || null;
+  const btcMAs = layer1Report?.market_condition?.btc_moving_averages || null;
+
+  const phaseLabel = (() => {
+    switch (marketSignals.market_phase) {
+      case "accumulation":
+        return "Accumulation (buyers have an edge)";
+      case "run":
+        return "Run (momentum is strong)";
+      case "caution":
+        return "Caution (market looks hot)";
+      default:
+        return "Neutral (no strong signal)";
+    }
+  })();
+
+  const moodItems = [];
+  moodItems.push(`Market phase: ${phaseLabel}`);
+  if (fearGreed && Number.isFinite(num(fearGreed.value))) {
+    moodItems.push(`Fear & Greed: ${fearGreed.value} (${fearGreed.classification || "n/a"})`);
+  }
+  if (btcMAs && Number.isFinite(num(btcMAs.momentum_7d))) {
+    moodItems.push(`BTC this week: ${formatSignedPct(btcMAs.momentum_7d, 1)}`);
+  }
+
+  const plays = Array.isArray(layer1Report?.today_plays?.items)
+    ? layer1Report.today_plays.items
+    : [];
+  const playsHtml =
+    plays.length === 0
+      ? `<p class="muted small">No clear plays today. Check "What to Play" for context.</p>`
+      : plays
+          .map((play) => {
+            const action = play?.action || "Wait";
+            const actionClass =
+              action === "Buy"
+                ? "quick-play-buy"
+                : action === "Avoid"
+                  ? "quick-play-avoid"
+                  : "quick-play-wait";
+            const why = Array.isArray(play?.why) ? play.why.filter(Boolean) : [];
+            const whyText = why.length > 0 ? why.join("; ") : "No reason listed.";
+            const riskText = play?.main_risk ? String(play.main_risk) : "n/a";
+            const sourceText = play?.source_section || play?.source || "n/a";
+            return `
+              <div class="quick-play ${actionClass}">
+                <div class="quick-play-header">
+                  <strong>${escapeHtml(play?.symbol || "n/a")}</strong>
+                  ${badge(action, action === "Buy" ? "badge-positive" : action === "Avoid" ? "badge-critical" : "badge-warning")}
+                  <span class="quick-meta">From: ${escapeHtml(sourceText)}</span>
+                </div>
+                <div class="quick-meta">Why: ${escapeHtml(whyText)}</div>
+                <div class="quick-meta">Main risk: ${escapeHtml(riskText)}</div>
+              </div>
+            `;
+          })
+          .join("");
+
+  const riskItems = [];
+  const riskSeen = new Set();
+  const addRisk = (text) => {
+    const clean = String(text || "").trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (riskSeen.has(key)) return;
+    riskSeen.add(key);
+    riskItems.push(clean);
+  };
+
+  const warningSignals = Array.isArray(marketSignals.warnings) ? marketSignals.warnings : [];
+  for (const warning of warningSignals) {
+    addRisk(warning?.message || "");
+  }
+  const reportWarnings = Array.isArray(layer1Report?.warnings) ? layer1Report.warnings : [];
+  for (const warning of reportWarnings) {
+    addRisk(warning);
+  }
+  const alertRisks = Array.isArray(alertsReport?.alerts) ? alertsReport.alerts : [];
+  for (const alert of alertRisks.slice(0, 6)) {
+    const risks = Array.isArray(alert?.explain?.risks) ? alert.explain.risks : [];
+    if (risks.length > 0) addRisk(risks[0]);
+    else if (alert?.title) addRisk(alert.title);
+  }
+
+  const topRisks = riskItems.slice(0, 3);
+  const risksHtml =
+    topRisks.length > 0
+      ? `<ul class="compact">${topRisks.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>`
+      : `<p class="muted small">No major risks flagged.</p>`;
+
+  const changes = Array.isArray(diffReport?.changes) ? diffReport.changes : [];
+  const importantChanges = changes.filter(
+    (c) => c?.severity === "CRITICAL" || c?.severity === "WARNING"
+  );
+  const changeList = (importantChanges.length > 0 ? importantChanges : changes).slice(0, 3);
+  const changesHtml =
+    changeList.length > 0
+      ? `<ul class="compact">${changeList
+          .map((c) => {
+            const symbol = c?.symbol ? `${c.symbol}: ` : "";
+            return `<li><strong>${escapeHtml(symbol)}</strong>${escapeHtml(c?.description || "")}</li>`;
+          })
+          .join("")}</ul>`
+      : `<p class="muted small">No meaningful changes since last run.</p>`;
+
+  const paperOpen = Number.isFinite(num(paperReport?.open_count)) ? paperReport.open_count : null;
+  const paperWin =
+    Number.isFinite(num(paperReport?.overview?.win_rate_pct))
+      ? `${paperReport.overview.win_rate_pct.toFixed(1)}%`
+      : "n/a";
+  const paperAvg = formatSignedPct(num(paperReport?.overview?.avg_return_pct), 1);
+  const paperHtml =
+    paperReport
+      ? `<div class="muted small">Open trades: ${escapeHtml(paperOpen ?? 0)} | Win rate: ${escapeHtml(paperWin)} | Avg return: ${escapeHtml(paperAvg)}</div>`
+      : `<p class="muted small">No paper trading data yet.</p>`;
+
+  const jumpLinks = [
+    { href: "#ai-summary", label: "AI Summary" },
+    { href: "#today-summary", label: "Today's Summary" },
+    { href: "#what-to-play", label: "What to Play" },
+    { href: "#best-entries", label: "Best Entries" },
+    { href: "#blue-chip-dips", label: "Blue Chip Dips" },
+    { href: "#watchlist", label: "Watchlist" },
+    { href: "#paper-trading", label: "Paper Trading" },
+  ];
+
+  const linksHtml = jumpLinks
+    .map((link) => `<a class="chip" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`)
+    .join("");
+
+  return `
+    <div class="card" id="quick-start">
+      <div class="row space-between">
+        <h2>Quick Start (30 seconds)</h2>
+        <div class="muted small">Read this first</div>
+      </div>
+      <div class="quick-start-grid">
+        <div>
+          <h3>Market mood</h3>
+          <ul class="compact">${moodItems.map((m) => `<li>${escapeHtml(m)}</li>`).join("")}</ul>
+          <h3 style="margin-top: 14px;">Today's plays (up to 3)</h3>
+          ${playsHtml}
+        </div>
+        <div>
+          <h3>Top risks to watch</h3>
+          ${risksHtml}
+          <h3 style="margin-top: 14px;">What changed since last run</h3>
+          ${changesHtml}
+          <h3 style="margin-top: 14px;">Paper trading snapshot</h3>
+          ${paperHtml}
+          <h3 style="margin-top: 14px;">Jump to section</h3>
+          <div class="quick-links">${linksHtml}</div>
+        </div>
+      </div>
+      ${buildHowThisWorks([
+        "This is a 30-second briefing using the same rules as the full dashboard.",
+        "Today's plays come from Best Entries (watchlist) and Blue Chip Dips.",
+        "Risks pull from warnings, alerts, and major changes.",
+        "Jump links take you to the detailed sections below.",
       ])}
     </div>
   `;
@@ -498,12 +665,12 @@ function buildTodayFocusHtml({ bestEntriesData, alertsReport, diffReport }) {
 
   const entryHtml =
     entries.length === 0
-      ? `<p class="muted small">No watchlist setups right now.</p>`
+      ? `<p class="muted small">No watchlist entries right now.</p>`
       : `<ul class="compact">${entries
           .map((e) => {
             const action =
               e.entry_signal === "strong_buy"
-                ? "Strong setup"
+                ? "Strong entry"
                 : e.entry_signal === "buy"
                   ? "Entry setup"
                   : "Watch";
@@ -537,7 +704,7 @@ function buildTodayFocusHtml({ bestEntriesData, alertsReport, diffReport }) {
       <h2>Today's Focus</h2>
       <div class="focus-grid">
         <div>
-          <h3>Top Setups</h3>
+          <h3>Top Entries</h3>
           ${entryHtml}
         </div>
         <div>
@@ -550,7 +717,7 @@ function buildTodayFocusHtml({ bestEntriesData, alertsReport, diffReport }) {
         </div>
       </div>
       ${buildHowThisWorks([
-        "Top Setups come from Best Entries (KEEP coins with good timing).",
+        "Top Entries come from Best Entries (KEEP coins with good timing).",
         "Alerts are driven by alert rules for big changes or risks.",
         "Changes show only critical or warning items since the last run.",
         "Why it matters: this is the fastest place to start each day.",
@@ -851,7 +1018,7 @@ function buildPortfolioGuidanceHtml(guidance) {
 
       <div style="display:flex; gap:18px; flex-wrap: wrap; margin-top: 12px;">
         <div>
-          <div class="muted small">Typical max size (Setup)</div>
+          <div class="muted small">Typical max size (Ready)</div>
           <div id="keepCapValue" style="font-weight: 700; font-size: 18px;">${escapeHtml(keepCap)}</div>
         </div>
         <div>
@@ -866,7 +1033,7 @@ function buildPortfolioGuidanceHtml(guidance) {
       ${notesHtml}
       ${buildHowThisWorks([
         "Base size uses your portfolio size and market phase.",
-        "Setup coins get a bigger cap; Watch coins get about half.",
+        "Ready coins get a bigger cap; Watch coins get about half.",
         "Risk flags (low liquidity, unlocks, concentration) reduce size.",
         "A volume cap keeps size below about 0.1% of daily volume.",
         "Why it matters: sizing controls risk even when signals look good.",
@@ -1315,7 +1482,7 @@ function buildPlayRecommendationsHtml(playRecs) {
     const items = renderItems(playRecs.best_buys, "play-buy", null, 5);
     sectionsHtml += `
       <div class="play-section">
-        <h4>Best Setups</h4>
+        <h4>Best Entries</h4>
         <p class="play-desc">Strong fundamentals and a decent entry price</p>
         ${items}
       </div>
@@ -1373,7 +1540,7 @@ function buildPlayRecommendationsHtml(playRecs) {
       ${buildHowThisWorks([
         "Uses market phase plus watchlist labels (which include dev activity) and entry timing.",
         "Take Profits come from your take-profit tracker.",
-        "Best Setups are KEEP coins with good timing and no major risks.",
+        "Best Entries are KEEP coins with good timing and no major risks.",
         "Momentum Plays favor coins beating BTC during runs.",
         "Watch for Entry are good coins with timing not ready.",
         "Avoid is for DROP, chasing, or high-risk coins.",
@@ -1402,22 +1569,22 @@ function buildBestEntriesHtml(bestEntriesData) {
     return `
       <div class="card best-entries">
         <h2>Best Entries Today ${phaseBadge}</h2>
-        <p class="muted">No entry setups in your watchlist right now.</p>
-        <p class="small muted">Tip: check "What to Play" for setups and wait-for-entry ideas.</p>
+        <p class="muted">No entry signals in your watchlist right now.</p>
+        <p class="small muted">Tip: check "What to Play" for entries and wait-for-entry ideas.</p>
       </div>
     `;
   }
   
   const buildItem = (entry, kind) => {
     const entryClass = kind === "wait" ? "play-wait" : (entry.entry_signal === "strong_buy" ? "play-buy" : "play-momentum");
-    const action = kind === "wait" ? "Wait for dip" : (entry.entry_signal === "strong_buy" ? "Strong setup" : "Entry setup");
+    const action = kind === "wait" ? "Wait for dip" : (entry.entry_signal === "strong_buy" ? "Strong entry" : "Entry setup");
     const rsiText = Number.isFinite(entry.rsi) ? `RSI ${Math.round(entry.rsi)}` : "";
     const dipText = Number.isFinite(entry.distance_from_high) ? `${entry.distance_from_high.toFixed(0)}% off 30d high` : "";
     const statsText = [rsiText, dipText].filter(Boolean).join(" | ");
     const reasonsText = Array.isArray(entry.reasons) && entry.reasons.length > 0 ? entry.reasons.slice(0, 2).join(", ") : (kind === "wait" ? "Good coin, but not an entry yet" : "Technical entry");
     const label = entry.hygiene_label || null;
     const entrySignal = entry.entry_signal || null;
-    const labelBadge = label ? `<span style="margin-left: 6px;">${badge(friendlyLabel(label, entrySignal), labelClass(label))}</span>` : "";
+    const labelBadge = label ? `<span style="margin-left: 6px;">${badge(friendlyLabel(label), labelClass(label))}</span>` : "";
     return `
       <div class="play-item ${entryClass}">
         <span class="play-symbol">${escapeHtml(entry.symbol || "")} ${labelBadge}</span>
@@ -1443,7 +1610,7 @@ function buildBestEntriesHtml(bestEntriesData) {
   return `
     <div class="card best-entries">
       <h2>Best Entries Today ${phaseBadge}</h2>
-      <p class="small muted" style="margin-bottom: 12px;">Entry setups (Good/Great) from your watchlist, based on price pullbacks + safety checks.</p>
+      <p class="small muted" style="margin-bottom: 12px;">Entry signals (Good/Great) from your watchlist, based on price pullbacks + safety checks.</p>
       <div class="play-section">
         ${entriesHtml}
       </div>
@@ -1652,11 +1819,41 @@ function buildSupervisorHtml(supervisorResult) {
   if (!supervisorResult || supervisorResult.status !== "ok") {
     return `
       <div class="card">
-        <h2>AI Analysis</h2>
+        <h2>AI Summary</h2>
         <p class="muted">AI analysis not available. Set OPENAI_API_KEY to enable this feature.</p>
       </div>
     `;
   }
+
+  const todayBrief = supervisorResult.today_brief || supervisorResult.executive_summary || "No summary provided.";
+  const topPlays = Array.isArray(supervisorResult.top_plays) ? supervisorResult.top_plays : [];
+  const topRisks = Array.isArray(supervisorResult.top_risks) ? supervisorResult.top_risks : [];
+  const oneThing = supervisorResult.one_thing || "";
+
+  const playsHtml =
+    topPlays.length === 0
+      ? `<p class="muted small">No clear plays today.</p>`
+      : `<ul class="compact">${topPlays
+          .map((play) => {
+            const action = play?.action || "Wait";
+            const actionBadge =
+              action === "Buy"
+                ? badge("Buy", "badge-positive")
+                : action === "Avoid"
+                  ? badge("Avoid", "badge-critical")
+                  : badge("Wait", "badge-warning");
+            const why = Array.isArray(play?.why) ? play.why.filter(Boolean) : [];
+            const whyText = why.length > 0 ? ` - ${why.join("; ")}` : "";
+            const riskText = play?.main_risk ? ` (Risk: ${play.main_risk})` : "";
+            const sourceText = play?.source ? ` [${play.source}]` : "";
+            return `<li><strong>${escapeHtml(play?.symbol || "n/a")}</strong> ${actionBadge}${escapeHtml(whyText)}${escapeHtml(riskText)}${escapeHtml(sourceText)}</li>`;
+          })
+          .join("")}</ul>`;
+
+  const risksHtml =
+    topRisks.length === 0
+      ? `<p class="muted small">No major risks flagged.</p>`
+      : `<ul class="compact">${topRisks.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>`;
 
   const highlights = Array.isArray(supervisorResult.onchain_highlights)
     ? supervisorResult.onchain_highlights
@@ -1675,8 +1872,8 @@ function buildSupervisorHtml(supervisorResult) {
     highlights.length === 0
       ? ""
       : `
-        <h3>Who Owns These Coins?</h3>
-        <p class="muted small">Coins where a few wallets hold most of the supply can be risky - big holders can dump and crash the price.</p>
+        <h4>Ownership notes</h4>
+        <p class="muted small">Coins where a few wallets hold most of the supply can be risky.</p>
         <ul class="compact">
           ${highlights
             .map((h) => {
@@ -1685,7 +1882,7 @@ function buildSupervisorHtml(supervisorResult) {
               const risk = h?.risk || "UNKNOWN";
               const riskBadge =
                 risk === "HIGH"
-                  ? badge("RISKY", "badge-warning")
+                  ? badge("Risky", "badge-warning")
                   : risk === "OK"
                     ? badge("OK", "badge-positive")
                     : badge("?", "badge-muted");
@@ -1697,10 +1894,10 @@ function buildSupervisorHtml(supervisorResult) {
         </ul>
       `;
 
-  function listVerdicts(title, emoji, items, explanation) {
+  function listVerdicts(title, items, explanation) {
     if (!items.length) return "";
     return `
-      <h3>${escapeHtml(title)}</h3>
+      <h4>${escapeHtml(title)}</h4>
       ${explanation ? `<p class="muted small">${explanation}</p>` : ""}
       <ul class="compact">
         ${items
@@ -1717,26 +1914,46 @@ function buildSupervisorHtml(supervisorResult) {
     manual.length === 0
       ? ""
       : `
-        <h3>Need More Research</h3>
-        <p class="muted small">These coins need you to manually check recent news or announcements.</p>
+        <h4>Need more research</h4>
+        <p class="muted small">These coins need a manual news check.</p>
         <ul class="compact">
           ${manual.map((m) => `<li>${escapeHtml(m)}</li>`).join("")}
         </ul>
       `;
 
+  const detailSections =
+    highlightsHtml ||
+    watchClosely.length ||
+    avoidChasing.length ||
+    manual.length
+      ? `
+        <details class="details">
+          <summary><span class="summary-title">More detail</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
+          <div class="details-body">
+            ${highlightsHtml}
+            ${listVerdicts("Be careful with", watchClosely, "Warning flags are showing up.")}
+            ${listVerdicts("Do not chase", avoidChasing, "These already pumped without clear support.")}
+            ${manualHtml}
+          </div>
+        </details>
+      `
+      : "";
+
   return `
-    <div class="card">
-      <h2>AI Analysis</h2>
-      <p>${escapeHtml(supervisorResult.executive_summary || "No summary provided.")}</p>
-      ${highlightsHtml}
-      ${listVerdicts("Be Careful With", "", watchClosely, "These coins have warning signs - don't act without doing more research.")}
-      ${listVerdicts("Don't Chase", "", avoidChasing, "These already pumped big without a clear reason - acting now is risky.")}
-      ${manualHtml}
+    <div class="card" id="ai-summary">
+      <h2>AI Summary</h2>
+      <p>${escapeHtml(todayBrief)}</p>
+      <h3>Top plays</h3>
+      ${playsHtml}
+      <h3 style="margin-top: 12px;">Top risks</h3>
+      ${risksHtml}
+      ${oneThing ? `<div class="muted small" style="margin-top: 10px;"><strong>If you only do one thing:</strong> ${escapeHtml(oneThing)}</div>` : ""}
+      ${detailSections}
       ${buildHowThisWorks([
-        "Uses on-chain holder concentration and AI summary text.",
-        "High concentration and warnings raise risk labels.",
-        "Labels reflect risk, not price direction.",
-        "Why it matters: ownership risk can cause sudden dumps.",
+        "AI summarizes only the reports from this scan.",
+        "Top plays are picked from the pre-built shortlist, not invented.",
+        "Action words are labels, not financial advice.",
+        "Use it as a fast briefing before you scroll deeper.",
       ])}
     </div>
   `;
@@ -2212,7 +2429,7 @@ function buildOnchainHtml(coins) {
           "Uses on-chain holder data (Ethplorer/Etherscan).",
           "Why it matters: heavy concentration increases dump risk.",
           "Smart contracts can be staking or treasury wallets, not always bad.",
-          "Use this to judge risk before taking a setup.",
+          "Use this to judge risk before taking an entry.",
         ])}
       </div>
     `;
@@ -2331,7 +2548,7 @@ function buildOnchainHtml(coins) {
         "Uses on-chain holder data (Ethplorer/Etherscan).",
         "Why it matters: heavy concentration increases dump risk.",
         "Smart contracts can be staking or treasury wallets, not always bad.",
-        "Use this to judge risk before taking a setup.",
+        "Use this to judge risk before taking an entry.",
       ])}
     </div>
   `;
@@ -3211,6 +3428,17 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       .play-momentum { border-left: 3px solid #60a5fa; }
       .play-wait { border-left: 3px solid var(--muted); }
       .play-avoid { border-left: 3px solid var(--drop); background: rgba(255,90,107,0.05); }
+      .quick-start-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }
+      .quick-play { border-radius: 10px; padding: 10px 12px; margin: 8px 0; border: 1px solid var(--border); background: rgba(0,0,0,0.18); }
+      .quick-play-buy { border-left: 3px solid var(--keep); }
+      .quick-play-wait { border-left: 3px solid var(--warning); }
+      .quick-play-avoid { border-left: 3px solid var(--drop); }
+      .quick-play-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .quick-meta { font-size: 12px; color: var(--muted); }
+      .quick-links { display: flex; flex-wrap: wrap; gap: 8px; }
+      @media (max-width: 900px) {
+        .quick-start-grid { grid-template-columns: 1fr; }
+      }
       @media (max-width: 700px) {
         .play-item { flex-direction: column; align-items: flex-start; gap: 4px; }
         .play-action { min-width: auto; }
@@ -3244,31 +3472,43 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         </div>
       </div>
 
-      <!-- DAILY SUMMARY - THE MAIN THING TO READ -->
+      <!-- QUICK START -->
       <div style="margin-top:14px;">
+        ${buildQuickStartHtml({ layer1Report, diffReport, alertsReport, paperReport })}
+      </div>
+
+      <!-- AI SUMMARY -->
+      <div style="margin-top:14px;">
+        ${buildSupervisorHtml(supervisorResult)}
+      </div>
+
+      <!-- DAILY SUMMARY -->
+      <div style="margin-top:14px;" id="today-summary">
         ${buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLatest, discoveryReport, supervisorResult })}
-      </div>
-      <!-- TODAY'S FOCUS -->
-      <div style="margin-top:14px;">
-        ${buildTodayFocusHtml({ bestEntriesData: layer1Report?.best_entries, alertsReport, diffReport })}
-      </div>
-      <div style="margin-top:14px;">
-        ${buildDiscoverySectionHtml(discoveryReport)}
       </div>
 
       <!-- WHAT TO PLAY - ACTIONABLE RECOMMENDATIONS -->
-      <div style="margin-top:14px;">
+      <div style="margin-top:14px;" id="what-to-play">
         ${buildPlayRecommendationsHtml(layer1Report?.play_recommendations)}
       </div>
 
       <!-- BEST ENTRIES TODAY -->
-      <div style="margin-top:14px;">
+      <div style="margin-top:14px;" id="best-entries">
         ${buildBestEntriesHtml(layer1Report?.best_entries)}
       </div>
 
       <!-- BLUE CHIP DIP OPPORTUNITIES -->
-      <div style="margin-top:14px;">
+      <div style="margin-top:14px;" id="blue-chip-dips">
         ${buildBlueChipOpportunitiesHtml(layer1Report?.blue_chip_opportunities)}
+      </div>
+
+      <!-- TODAY'S FOCUS -->
+      <div style="margin-top:14px;">
+        ${buildTodayFocusHtml({ bestEntriesData: layer1Report?.best_entries, alertsReport, diffReport })}
+      </div>
+
+      <div style="margin-top:14px;">
+        ${buildDiscoverySectionHtml(discoveryReport)}
       </div>
 
       <!-- OPPORTUNITY BUCKETS -->
@@ -3277,7 +3517,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
       </div>
 
       <!-- YOUR WATCHLIST -->
-      <div style="margin-top:14px;">
+      <div style="margin-top:14px;" id="watchlist">
         ${buildWatchlistTableHtml({ title: "Your Watchlist", coins: mainCoins, rankBySymbol, defaultOpen: 3 })}
       </div>
       <div style="margin-top:14px;">
@@ -3319,17 +3559,10 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         </div>
       </div>
 <!-- EXPANDABLE SECTIONS FOR MORE DETAIL -->
-      <details class="collapsible-section" open>
-        <summary><h2>AI Analysis & DeFi</h2><span class="muted small">Click to expand/collapse</span></summary>
+      <details class="collapsible-section" open id="defi-scan">
+        <summary><h2>DeFi Scan</h2><span class="muted small">Click to expand/collapse</span></summary>
         <div class="section-content">
-          <div class="grid" style="margin-top:14px;">
-            <div>
-              ${buildSupervisorHtml(supervisorResult)}
-            </div>
-            <div>
-              ${buildDefiHtml(defiLatest)}
-            </div>
-          </div>
+          ${buildDefiHtml(defiLatest)}
         </div>
       </details>
 
@@ -3340,14 +3573,14 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         </div>
       </details>
 
-      <details class="collapsible-section" open>
+      <details class="collapsible-section" open id="paper-trading">
         <summary><h2>Paper Trading</h2><span class="muted small">How are the signals performing?</span></summary>
         <div class="section-content">
           ${buildPaperTradingHtml(paperReport)}
         </div>
       </details>
 
-      <details class="collapsible-section" open>
+      <details class="collapsible-section" open id="backtest-history">
         <summary><h2>Backtest & History</h2><span class="muted small">How accurate is this scanner?</span></summary>
         <div class="section-content">
           ${buildFunnelHtml(funnelStats, backtestStats)}
@@ -3360,8 +3593,8 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         <h2>How to Read This Dashboard</h2>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 12px;">
           <div>
-            <h3 style="color: var(--keep);">Ready Setup (KEEP)</h3>
-            <p class="small muted">These coins passed all safety checks. They have good trading volume, aren't overly controlled by a few wallets, and show signs of real project activity.</p>
+            <h3 style="color: var(--keep);">Ready (KEEP)</h3>
+            <p class="small muted">These coins passed safety and quality checks. They have decent trading volume, aren't overly controlled by a few wallets, and show signs of real project activity.</p>
           </div>
           <div>
             <h3 style="color: var(--watch);">Keep Watching (WATCH)</h3>
@@ -3375,6 +3608,9 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
             <h3>Testing (Staging)</h3>
             <p class="small muted">New coins the scanner found. They're being tested before adding to your main list. Promote winners, ignore the rest.</p>
           </div>
+        </div>
+        <div class="muted small" style="margin-top: 10px;">
+          Entry setup = timing signal (see the "Entry" column). Strong entry = best timing today. Ready (KEEP) is quality, Entry is timing.
         </div>
         ${buildHowThisWorks([
           "This is a quick glossary for the labels used on the page.",

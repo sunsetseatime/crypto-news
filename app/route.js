@@ -106,6 +106,20 @@ function injectChat(html, { reportsBaseUrl }) {
     line-height: 1.35;
   }
   .cn-chat-hint a { color: #a7d1ff; }
+  .cn-chat-suggest {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border, rgba(255,255,255,0.08));
+    background: rgba(0,0,0,0.22);
+    color: var(--text, #e6edf3);
+    cursor: pointer;
+    font: 600 12px/1 var(--sans, ui-sans-serif, system-ui);
+  }
+  .cn-chat-suggest:hover { background: rgba(0,0,0,0.35); }
 
   .cn-chat-messages {
     flex: 1;
@@ -199,13 +213,16 @@ function injectChat(html, { reportsBaseUrl }) {
     <div class="cn-chat-hint">
       Uses Watchlist, Discovery, DeFi, Alerts, and Diff reports. If something is not in the reports, it will say so.<br />
       Reports source: <a id="cn-chat-reports-link" href="#" target="_blank" rel="noreferrer">open</a>
+      <div>
+        <button class="cn-chat-suggest" type="button" data-prompt="What are today's top plays and why?">Try: What are today's top plays?</button>
+      </div>
     </div>
   </div>
 
   <div id="cn-chat-messages" class="cn-chat-messages"></div>
 
   <form id="cn-chat-form" class="cn-chat-form">
-    <input id="cn-chat-input" class="cn-chat-input" type="text" placeholder="Ask a question about a coin or today’s scan…" />
+    <input id="cn-chat-input" class="cn-chat-input" type="text" placeholder="Ask about a coin or today's scan" />
     <button id="cn-chat-send" class="cn-chat-send" type="submit">Send</button>
   </form>
 
@@ -353,6 +370,7 @@ function injectChat(html, { reportsBaseUrl }) {
       var input = qs('#cn-chat-input');
       var sendBtn = qs('#cn-chat-send');
       var reportsLink = qs('#cn-chat-reports-link');
+      var suggestButtons = qsa('.cn-chat-suggest');
 
       if (!openBtn || !panel || !closeBtn || !keyInput || !coinSelect || !messagesEl || !form || !input || !sendBtn) return;
 
@@ -366,6 +384,18 @@ function injectChat(html, { reportsBaseUrl }) {
       var groups = buildCoinIndex();
       populateCoinSelect(coinSelect, groups);
       if (state.coinId) setCoinById(coinSelect, state.coinId);
+
+      if (suggestButtons.length) {
+        for (var s = 0; s < suggestButtons.length; s++) {
+          suggestButtons[s].addEventListener('click', function (e) {
+            var prompt = e.currentTarget.getAttribute('data-prompt') || '';
+            if (!prompt) return;
+            input.value = prompt;
+            input.focus();
+            openPanel();
+          });
+        }
+      }
 
       function openPanel() { panel.dataset.open = '1'; input.focus(); }
       function closePanel() { panel.dataset.open = '0'; }
@@ -421,7 +451,7 @@ function injectChat(html, { reportsBaseUrl }) {
         input.value = '';
         input.disabled = true;
         sendBtn.disabled = true;
-        var placeholder = appendMessage(messagesEl, 'assistant', 'Thinking…');
+        var placeholder = appendMessage(messagesEl, 'assistant', 'Thinking...');
 
         try {
           var res = await fetch('/api/chat', {
