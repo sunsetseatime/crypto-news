@@ -2730,10 +2730,35 @@ function buildPaperTradingHtml(paperReport) {
   const winRate =
     typeof overview.win_rate_pct === "number" ? `${overview.win_rate_pct.toFixed(1)}%` : "n/a";
   const avgReturn = formatSignedPct(num(overview.avg_return_pct), 1);
-  const expectancy =
-    typeof overview.expectancy_r === "number" ? `${overview.expectancy_r.toFixed(2)}R` : "n/a";
+  const riskAdjusted =
+    typeof overview.expectancy_r === "number" ? `${overview.expectancy_r.toFixed(2)}` : "n/a";
   const avgDays =
     typeof overview.avg_days_held === "number" ? `${overview.avg_days_held.toFixed(1)}d` : "n/a";
+  const strategy = paperReport.strategy && typeof paperReport.strategy === "object" ? paperReport.strategy : {};
+  const styles = strategy.styles && typeof strategy.styles === "object" ? strategy.styles : {};
+
+  const paperStyleLabel = (styleId) => {
+    const key = typeof styleId === "string" ? styleId : "";
+    const labelRaw = key && styles[key] && typeof styles[key] === "object" ? styles[key].label : null;
+    const label = typeof labelRaw === "string" ? labelRaw.trim() : "";
+    return label || (key ? key.replace(/_/g, " ") : "n/a");
+  };
+
+  const paperCostModelLabel = (value) => {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw) return "n/a";
+    const match = raw.match(/^([a-z0-9]+)_fee_([0-9]+(?:p[0-9]+)?)$/i);
+    if (!match) return raw.replace(/_/g, " ");
+    const exchange = match[1].toUpperCase();
+    const feeText = match[2].replace("p", ".");
+    const feePct = Number(feeText);
+    const feeLabel = Number.isFinite(feePct) ? `${feePct}% fee` : `${feeText}% fee`;
+    const suffix =
+      Number.isFinite(strategy.fee_pct) && Number.isFinite(feePct) && strategy.fee_pct !== feePct
+        ? " (old runs)"
+        : "";
+    return `${exchange} spot (${feeLabel})${suffix}`;
+  };
   const breakdowns = paperReport.breakdowns || {};
   const byScore = Array.isArray(breakdowns.by_score_range) ? breakdowns.by_score_range : [];
   const bySource = Array.isArray(breakdowns.by_source) ? breakdowns.by_source : [];
@@ -2756,6 +2781,14 @@ function buildPaperTradingHtml(paperReport) {
   const closedThisRunCount = Number.isFinite(num(thisRun.closed_count)) ? thisRun.closed_count : 0;
   const openedThisRun = Array.isArray(thisRun.opened) ? thisRun.opened : [];
   const closedThisRun = Array.isArray(thisRun.closed) ? thisRun.closed : [];
+  const byStyleFriendly = byStyle.map((row) => ({
+    ...row,
+    style: paperStyleLabel(row?.style),
+  }));
+  const byCostModelFriendly = byCostModel.map((row) => ({
+    ...row,
+    cost_model: paperCostModelLabel(row?.cost_model),
+  }));
 
   const exitReasonLabel = (reason) => {
     switch (String(reason || "")) {
@@ -2779,7 +2812,7 @@ function buildPaperTradingHtml(paperReport) {
           .slice(0, 8)
           .map((t) => {
             const symbol = t?.symbol || "n/a";
-            const style = t?.style ? ` (${t.style})` : "";
+            const style = t?.style ? ` (${paperStyleLabel(t.style)})` : "";
             return escapeHtml(`${symbol}${style}`);
           })
           .join(", ")}</div>`;
@@ -2791,10 +2824,10 @@ function buildPaperTradingHtml(paperReport) {
           <div class="muted small" style="font-weight:700;">Closed this run</div>
           <ul class="compact">
             ${closedThisRun
-              .slice(0, 8)
+               .slice(0, 8)
                .map((t) => {
                  const symbol = t?.symbol || "n/a";
-                 const style = t?.style ? String(t.style) : "";
+                 const style = t?.style ? paperStyleLabel(t.style) : "";
                  const pnl = formatSignedPct(num(t?.pnl_pct), 1);
                  const reason = exitReasonLabel(t?.exit_reason);
                  const styleHtml = style ? ` <span class="muted small">(${escapeHtml(style)})</span>` : "";
@@ -2830,7 +2863,7 @@ function buildPaperTradingHtml(paperReport) {
               <th class="num">Sample</th>
               <th class="num">Win rate</th>
               <th class="num">Avg return</th>
-              <th class="num">Expectancy</th>
+              <th class="num">Risk-adjusted</th>
             </tr>
           </thead>
           <tbody>
@@ -2850,7 +2883,7 @@ function buildPaperTradingHtml(paperReport) {
       <tr>
         <td>${escapeHtml(trade.symbol || "n/a")}</td>
         <td>${escapeHtml(trade.source || "n/a")}</td>
-        <td>${escapeHtml(trade.style || "n/a")}</td>
+        <td>${escapeHtml(paperStyleLabel(trade.style))}</td>
         <td class="num">${escapeHtml(trade.days_held ?? "n/a")}</td>
         <td class="num">${escapeHtml(formatUsd(num(trade.entry_price)))}</td>
         <td class="num">${escapeHtml(formatUsd(num(trade.current_price)))}</td>
@@ -2872,7 +2905,7 @@ function buildPaperTradingHtml(paperReport) {
       <tr>
         <td>${escapeHtml(trade.symbol || "n/a")}</td>
         <td>${escapeHtml(trade.source || "n/a")}</td>
-        <td>${escapeHtml(trade.style || "n/a")}</td>
+        <td>${escapeHtml(paperStyleLabel(trade.style))}</td>
         <td class="num">${escapeHtml(trade.days_held ?? "n/a")}</td>
         <td class="num">${escapeHtml(formatSignedPct(num(trade.pnl_pct), 1))}</td>
         <td class="num">${escapeHtml(formatUsd(num(trade.exit_price)))}</td>
@@ -2898,7 +2931,7 @@ function buildPaperTradingHtml(paperReport) {
           <li>It opens pretend trades from Best Entries, Blue Chip Dips, Discovery (and any manual ideas) and tracks profit/loss over time.</li>
           <li>Trades close on simple rules: profit targets, trailing stop, time limit, or the signal weakens.</li>
           <li>We track two trade styles separately (short 2% vs swing) so the learning doesn't get mixed up.</li>
-          <li>Fees are set to 0% (MEXC spot), but we still estimate slippage/spread.</li>
+          <li>New paper trades assume 0% exchange fee (MEXC spot), but we still estimate slippage/spread. (Older trades may show the previous fee setting.)</li>
           <li>The "Manual paper trade" button only adds an extra idea (optional).</li>
         </ul>
       </div>
@@ -2911,7 +2944,10 @@ function buildPaperTradingHtml(paperReport) {
       ${openedThisRunHtml}
       ${closedThisRunHtml}
       <div class="muted small" style="margin-top: 6px;">
-        Win rate: ${escapeHtml(winRate)} | Avg return: ${escapeHtml(avgReturn)} | Expectancy: ${escapeHtml(expectancy)} | Avg hold: ${escapeHtml(avgDays)}
+        Win rate: ${escapeHtml(winRate)} | Avg return: ${escapeHtml(avgReturn)} | Risk-adjusted score: ${escapeHtml(riskAdjusted)} | Avg hold: ${escapeHtml(avgDays)}
+      </div>
+      <div class="muted small">
+        Risk-adjusted score = average profit compared to the stop size (the % drop that would close a trade). Higher is better.
       </div>
       <div class="muted small" style="margin-top: 6px;">
         Tip: to add your own manual ideas, click "Manual paper trade" on a coin, then paste into <code>reports/paper/PaperTradeIntents.json</code> before the next run.
@@ -2968,8 +3004,8 @@ function buildPaperTradingHtml(paperReport) {
       <div style="margin-top: 14px;">
         <h3>Performance dashboard</h3>
         <div class="muted small">Win rate and returns by signal quality.</div>
-        ${renderPerfTable("Trade style", byStyle, "style")}
-        ${renderPerfTable("Cost model", byCostModel, "cost_model")}
+        ${renderPerfTable("Trade style", byStyleFriendly, "style")}
+        ${renderPerfTable("Fees assumption", byCostModelFriendly, "cost_model")}
         ${renderPerfTable("Score range", byScore, "range")}
         ${renderPerfTable("Signal source", bySource, "source")}
         ${renderPerfTable("Entry signal", bySignal, "signal")}

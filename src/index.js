@@ -9460,7 +9460,16 @@ function computePaperReport({
       pnl_pct: tradeReturnPct(trade),
       entry_signal: trade.entry_signal || null,
       entry_score: trade.entry_score ?? null,
-      tags: Array.isArray(trade.signal_tags) ? trade.signal_tags : [],
+      tags: Array.isArray(trade.signal_tags)
+        ? trade.signal_tags.filter(
+            (tag) =>
+              typeof tag === "string" &&
+              !tag.startsWith("style:") &&
+              !tag.startsWith("cost:") &&
+              !tag.startsWith("source:") &&
+              !tag.startsWith("signal:")
+          )
+        : [],
     }));
 
   const closedPositions = [...closedTrades]
@@ -9479,7 +9488,16 @@ function computePaperReport({
       exit_reason: trade.exit_reason || null,
       entry_signal: trade.entry_signal || null,
       entry_score: trade.entry_score ?? null,
-      tags: Array.isArray(trade.signal_tags) ? trade.signal_tags : [],
+      tags: Array.isArray(trade.signal_tags)
+        ? trade.signal_tags.filter(
+            (tag) =>
+              typeof tag === "string" &&
+              !tag.startsWith("style:") &&
+              !tag.startsWith("cost:") &&
+              !tag.startsWith("source:") &&
+              !tag.startsWith("signal:")
+          )
+        : [],
       outcome_tag: trade?.post_mortem?.outcome_tag || null,
       primary_driver: trade?.post_mortem?.primary_driver || null,
     }));
@@ -9589,13 +9607,37 @@ function renderPaperReportMarkdown(report) {
   const tpTargets = Array.isArray(strategy.take_profit_targets)
     ? strategy.take_profit_targets.map((t) => `${t}%`).join(", ")
     : "n/a";
+  const styles =
+    strategy.styles && typeof strategy.styles === "object" ? strategy.styles : {};
+  const styleLabel = (styleId) => {
+    const key = typeof styleId === "string" ? styleId : "";
+    const labelRaw = key && styles[key] && typeof styles[key] === "object" ? styles[key].label : null;
+    const label = typeof labelRaw === "string" ? labelRaw.trim() : "";
+    return label || key || "n/a";
+  };
+  const formatCostModel = (value) => {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw) return "n/a";
+    const match = raw.match(/^([a-z0-9]+)_fee_([0-9]+(?:p[0-9]+)?)$/i);
+    if (!match) return raw.replace(/_/g, " ");
+    const exchange = match[1].toUpperCase();
+    const feeText = match[2].replace("p", ".");
+    const feePct = Number(feeText);
+    const feeLabel = Number.isFinite(feePct) ? `${feePct}% fee` : `${feeText}% fee`;
+    const suffix =
+      Number.isFinite(strategy.fee_pct) && Number.isFinite(feePct) && strategy.fee_pct !== feePct
+        ? " (old runs)"
+        : "";
+    return `${exchange} spot (${feeLabel})${suffix}`;
+  };
 
   lines.push("## Strategy");
   if (strategy.exchange) {
     lines.push(`Exchange: ${String(strategy.exchange)}`);
   }
   if (strategy.default_style) {
-    lines.push(`Default style: ${String(strategy.default_style)}`);
+    const key = String(strategy.default_style);
+    lines.push(`Default style: ${key} (${styleLabel(key)})`);
   }
   lines.push(`Position size: ${formatUsd(strategy.position_size_usd)}`);
   lines.push(
@@ -9611,22 +9653,19 @@ function renderPaperReportMarkdown(report) {
     }% | Time stop: ${strategy.time_stop_days || "n/a"} days`
   );
   lines.push(`Take profits: ${tpTargets}`);
-  const styles = strategy.styles && typeof strategy.styles === "object" ? strategy.styles : null;
-  if (styles) {
-    const styleIds = Object.keys(styles);
-    if (styleIds.length > 0) {
-      lines.push("");
-      lines.push("### Styles");
-      for (const styleId of styleIds) {
-        const style = styles[styleId];
-        if (!style || typeof style !== "object") continue;
-        const targets = Array.isArray(style?.exit_strategy?.take_profit_targets)
-          ? style.exit_strategy.take_profit_targets.map((t) => `${t}%`).join(", ")
-          : "n/a";
-        lines.push(
-          `- ${styleId}: ${style?.label || ""} size ${formatUsd(style?.position_size_usd)} | fee ${Number.isFinite(style?.fee_pct) ? style.fee_pct.toFixed(2) : "n/a"}% | targets ${targets} | trailing ${Number.isFinite(style?.exit_strategy?.trailing_stop_pct) ? style.exit_strategy.trailing_stop_pct : "n/a"}% | time stop ${style?.exit_strategy?.time_stop_days ?? "n/a"}d`
-        );
-      }
+  const styleIds = Object.keys(styles);
+  if (styleIds.length > 0) {
+    lines.push("");
+    lines.push("### Styles");
+    for (const styleId of styleIds) {
+      const style = styles[styleId];
+      if (!style || typeof style !== "object") continue;
+      const targets = Array.isArray(style?.exit_strategy?.take_profit_targets)
+        ? style.exit_strategy.take_profit_targets.map((t) => `${t}%`).join(", ")
+        : "n/a";
+      lines.push(
+        `- ${styleId}: ${style?.label || ""} size ${formatUsd(style?.position_size_usd)} | fee ${Number.isFinite(style?.fee_pct) ? style.fee_pct.toFixed(2) : "n/a"}% | targets ${targets} | trailing ${Number.isFinite(style?.exit_strategy?.trailing_stop_pct) ? style.exit_strategy.trailing_stop_pct : "n/a"}% | time stop ${style?.exit_strategy?.time_stop_days ?? "n/a"}d`
+      );
     }
   }
   lines.push("");
@@ -9656,11 +9695,14 @@ function renderPaperReportMarkdown(report) {
     `Win rate: ${winRate} | Avg return: ${formatSignedPct(
       num(overview.avg_return_pct),
       1
-    )} | Expectancy: ${
+    )} | Risk-adjusted score: ${
       Number.isFinite(overview.expectancy_r)
-        ? `${overview.expectancy_r.toFixed(2)}R`
+        ? `${overview.expectancy_r.toFixed(2)}`
         : "n/a"
     }`
+  );
+  lines.push(
+    "Risk-adjusted score: average profit compared to the stop size (the % drop that would close a trade). Higher is better."
   );
   lines.push(
     `Avg days held: ${
@@ -9687,7 +9729,7 @@ function renderPaperReportMarkdown(report) {
     for (const trade of openPositions) {
       const tags = Array.isArray(trade.tags) && trade.tags.length > 0 ? trade.tags.join(", ") : "n/a";
       lines.push(
-        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${trade.style || "n/a"} | ${
+        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${styleLabel(trade.style)} | ${
           trade.days_held ?? "n/a"
         } | ${formatUsd(trade.entry_price)} | ${formatUsd(
           trade.current_price
@@ -9713,7 +9755,7 @@ function renderPaperReportMarkdown(report) {
       const tags = Array.isArray(trade.tags) && trade.tags.length > 0 ? trade.tags.join(", ") : "n/a";
       const outcome = trade.outcome_tag || "n/a";
       lines.push(
-        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${trade.style || "n/a"} | ${
+        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${styleLabel(trade.style)} | ${
           trade.days_held ?? "n/a"
         } | ${formatSignedPct(num(trade.pnl_pct), 1)} | ${formatUsd(
           trade.exit_price
@@ -9731,7 +9773,7 @@ function renderPaperReportMarkdown(report) {
     const list = Array.isArray(rows) ? rows : [];
     if (list.length === 0) return;
     lines.push(`## ${title}`);
-    lines.push(`| ${headerLabel} | Sample | Win Rate | Avg Return | Expectancy (R) |`);
+    lines.push(`| ${headerLabel} | Sample | Win Rate | Avg Return | Risk-adjusted score |`);
     lines.push("| --- | --- | --- | --- | --- |");
     for (const row of list) {
       const win =
@@ -9748,8 +9790,15 @@ function renderPaperReportMarkdown(report) {
     lines.push("");
   };
 
-  renderPerfTable("Performance by Trade Style", breakdowns.by_style, "style", "Style");
-  renderPerfTable("Performance by Cost Model", breakdowns.by_cost_model, "cost_model", "Cost model");
+  const byStyleRows = Array.isArray(breakdowns.by_style)
+    ? breakdowns.by_style.map((row) => ({ ...row, style: styleLabel(row?.style) }))
+    : [];
+  const byCostRows = Array.isArray(breakdowns.by_cost_model)
+    ? breakdowns.by_cost_model.map((row) => ({ ...row, cost_model: formatCostModel(row?.cost_model) }))
+    : [];
+
+  renderPerfTable("Performance by Trade Style", byStyleRows, "style", "Style");
+  renderPerfTable("Performance by Fees Assumption", byCostRows, "cost_model", "Fees assumption");
   renderPerfTable("Performance by Source", breakdowns.by_source, "source", "Source");
   renderPerfTable("Performance by Score Range", breakdowns.by_score_range, "range", "Score");
   renderPerfTable("Performance by Entry Signal", breakdowns.by_entry_signal, "signal", "Signal");
