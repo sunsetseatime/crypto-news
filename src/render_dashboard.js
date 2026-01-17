@@ -2326,8 +2326,8 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
                   ${contextMeta}
                 </div>
                 <div style="margin-top: 10px;">
-                  <button class="paper-trade-btn" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}">Paper trade</button>
-                  <span class="muted small" style="margin-left: 8px;">Copies a trade intent to your clipboard.</span>
+                  <button class="paper-trade-btn" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}" title="Optional: adds a manual paper trade idea (copies text).">Manual paper trade</button>
+                  <span class="muted small" style="margin-left: 8px;">Optional: copies a manual paper-trade idea to your clipboard.</span>
                 </div>
                 <div class="muted small" style="margin-top: 8px;">
                   <strong>Max size (rough):</strong> ${maxBuyHtml} | ${newsMeta}
@@ -2354,7 +2354,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
         <tr class="watch-row" data-row-id="${escapeHtml(rowId)}" data-symbol="${escapeHtml(coin.symbol)}" data-name="${escapeHtml(coin.name || "")}">
           <td data-label="Details">
             <button class="row-toggle" type="button" aria-expanded="false"><span class="chev">&gt;</span> Click to see our reasons</button>
-            <button class="paper-trade-btn paper-trade-mini" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}">Paper trade</button>
+            <button class="paper-trade-btn paper-trade-mini" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}" title="Optional: adds a manual paper trade idea (copies text).">Manual paper trade</button>
           </td>
           <td class="col-symbol" data-label="Coin">${symbolHtml}<div class="muted small">${escapeHtml(coin.name || "")}</div></td>
           <td data-label="Verdict">${labelBadge}</td>
@@ -2404,12 +2404,12 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
         </table>
       </div>
       ${entryLegend}
-      <div class="muted small" style="margin-top: 6px;">Verdict = coin quality. Entry = timing signal. Paper trade is in the first column.</div>
+      <div class="muted small" style="margin-top: 6px;">Verdict = coin quality. Entry = timing signal. Manual paper trade (optional) is in the first column.</div>
       ${buildHowThisWorks([
         "Verdict uses gates: liquidity, unlock transparency, traction (TVL + dev activity), ownership, trend, health.",
         "Developer activity uses GitHub commit recency/repo status or CoinGecko dev data.",
         "Entry uses timing score from RSI and distance from 30-day high/low.",
-        "Details show reasons, risks, sizing, news pressure, and paper trade.",
+        "Details show reasons, risks, sizing, news pressure, and manual paper trading.",
         "Why it matters: it separates coin quality from entry timing.",
       ])}
     </div>
@@ -2714,11 +2714,11 @@ function buildPaperTradingHtml(paperReport) {
         <h2>Paper Trading</h2>
         <p class="muted">No paper trading stats yet.</p>
         ${buildHowThisWorks([
-          "Each scan opens a pretend trade from Best Entries or Blue Chip Dips (only one per coin).",
+          "Each scan can open a pretend trade from Best Entries, Blue Chip Dips, Discovery, or your manual ideas (still one per coin).",
           "Every run refreshes price and profit/loss, and checks if a trade should close.",
           "Trades close if they hit a time limit, a trailing stop, a profit target, or the signal weakens.",
           "All trades and signals are saved in reports/paper/PaperTrades.json and reports/paper/SignalEvents.json.",
-          "The dashboard shows open/closed trades and your basic results. It does not auto-change the rules yet.",
+          "The dashboard shows open/closed trades and your basic results, split by trade style. It does not auto-change the rules yet.",
         ])}
       </div>
     `;
@@ -2738,12 +2738,71 @@ function buildPaperTradingHtml(paperReport) {
   const byScore = Array.isArray(breakdowns.by_score_range) ? breakdowns.by_score_range : [];
   const bySource = Array.isArray(breakdowns.by_source) ? breakdowns.by_source : [];
   const bySignal = Array.isArray(breakdowns.by_entry_signal) ? breakdowns.by_entry_signal : [];
+  const byStyle = Array.isArray(breakdowns.by_style) ? breakdowns.by_style : [];
+  const byCostModel = Array.isArray(breakdowns.by_cost_model) ? breakdowns.by_cost_model : [];
   const byMarketPhase = Array.isArray(breakdowns.by_market_phase) ? breakdowns.by_market_phase : [];
   const byTrend = Array.isArray(breakdowns.by_trend) ? breakdowns.by_trend : [];
   const byLiquidity = Array.isArray(breakdowns.by_liquidity) ? breakdowns.by_liquidity : [];
   const byNewsPressure = Array.isArray(breakdowns.by_news_pressure) ? breakdowns.by_news_pressure : [];
   const byUnlock = Array.isArray(breakdowns.by_unlock) ? breakdowns.by_unlock : [];
   const byHygiene = Array.isArray(breakdowns.by_hygiene) ? breakdowns.by_hygiene : [];
+  const thisRun = paperReport.this_run && typeof paperReport.this_run === "object" ? paperReport.this_run : {};
+  const openedThisRunCount =
+    Number.isFinite(num(thisRun.opened_count))
+      ? thisRun.opened_count
+      : Number.isFinite(num(paperReport.trades_added))
+        ? paperReport.trades_added
+        : 0;
+  const closedThisRunCount = Number.isFinite(num(thisRun.closed_count)) ? thisRun.closed_count : 0;
+  const openedThisRun = Array.isArray(thisRun.opened) ? thisRun.opened : [];
+  const closedThisRun = Array.isArray(thisRun.closed) ? thisRun.closed : [];
+
+  const exitReasonLabel = (reason) => {
+    switch (String(reason || "")) {
+      case "time_stop":
+        return "time limit";
+      case "take_profit":
+        return "profit target";
+      case "trailing_stop":
+        return "trailing stop";
+      case "score_decay":
+        return "signal weakened";
+      default:
+        return reason ? String(reason) : "n/a";
+    }
+  };
+
+  const openedThisRunHtml =
+    openedThisRun.length === 0
+      ? `<div class="muted small">Opened this run: none</div>`
+      : `<div class="muted small">Opened this run: ${openedThisRun
+          .slice(0, 8)
+          .map((t) => {
+            const symbol = t?.symbol || "n/a";
+            const style = t?.style ? ` (${t.style})` : "";
+            return escapeHtml(`${symbol}${style}`);
+          })
+          .join(", ")}</div>`;
+
+  const closedThisRunHtml =
+    closedThisRun.length === 0
+      ? `<div class="muted small">Closed this run: none</div>`
+      : `<div style="margin-top: 6px;">
+          <div class="muted small" style="font-weight:700;">Closed this run</div>
+          <ul class="compact">
+            ${closedThisRun
+              .slice(0, 8)
+               .map((t) => {
+                 const symbol = t?.symbol || "n/a";
+                 const style = t?.style ? String(t.style) : "";
+                 const pnl = formatSignedPct(num(t?.pnl_pct), 1);
+                 const reason = exitReasonLabel(t?.exit_reason);
+                 const styleHtml = style ? ` <span class="muted small">(${escapeHtml(style)})</span>` : "";
+                 return `<li><strong>${escapeHtml(symbol)}</strong>${styleHtml}: ${escapeHtml(pnl)} (${escapeHtml(reason)})</li>`;
+               })
+               .join("")}
+          </ul>
+        </div>`;
 
   function renderPerfTable(title, rows, labelKey) {
     if (!rows.length) return "";
@@ -2791,6 +2850,7 @@ function buildPaperTradingHtml(paperReport) {
       <tr>
         <td>${escapeHtml(trade.symbol || "n/a")}</td>
         <td>${escapeHtml(trade.source || "n/a")}</td>
+        <td>${escapeHtml(trade.style || "n/a")}</td>
         <td class="num">${escapeHtml(trade.days_held ?? "n/a")}</td>
         <td class="num">${escapeHtml(formatUsd(num(trade.entry_price)))}</td>
         <td class="num">${escapeHtml(formatUsd(num(trade.current_price)))}</td>
@@ -2812,6 +2872,7 @@ function buildPaperTradingHtml(paperReport) {
       <tr>
         <td>${escapeHtml(trade.symbol || "n/a")}</td>
         <td>${escapeHtml(trade.source || "n/a")}</td>
+        <td>${escapeHtml(trade.style || "n/a")}</td>
         <td class="num">${escapeHtml(trade.days_held ?? "n/a")}</td>
         <td class="num">${escapeHtml(formatSignedPct(num(trade.pnl_pct), 1))}</td>
         <td class="num">${escapeHtml(formatUsd(num(trade.exit_price)))}</td>
@@ -2830,14 +2891,30 @@ function buildPaperTradingHtml(paperReport) {
         <h2>Paper Trading</h2>
         <div class="muted"><a href="paper/PaperReport.md">Open report</a></div>
       </div>
+      <div class="muted small" style="margin-top: 6px;">
+        <strong>Paper trading in 30 seconds:</strong>
+        <ul class="compact" style="margin-top:6px;">
+          <li>Auto paper trades run every scan (you do not need to click anything).</li>
+          <li>It opens pretend trades from Best Entries, Blue Chip Dips, Discovery (and any manual ideas) and tracks profit/loss over time.</li>
+          <li>Trades close on simple rules: profit targets, trailing stop, time limit, or the signal weakens.</li>
+          <li>We track two trade styles separately (short 2% vs swing) so the learning doesn't get mixed up.</li>
+          <li>Fees are set to 0% (MEXC spot), but we still estimate slippage/spread.</li>
+          <li>The "Manual paper trade" button only adds an extra idea (optional).</li>
+        </ul>
+      </div>
       <div class="muted small">
         Signals tracked: ${paperReport.signal_events_total ?? 0} | Open trades: ${paperReport.open_count ?? 0} | Closed trades: ${paperReport.closed_count ?? 0}
       </div>
       <div class="muted small" style="margin-top: 6px;">
+        This run: opened ${escapeHtml(openedThisRunCount)} | closed ${escapeHtml(closedThisRunCount)}
+      </div>
+      ${openedThisRunHtml}
+      ${closedThisRunHtml}
+      <div class="muted small" style="margin-top: 6px;">
         Win rate: ${escapeHtml(winRate)} | Avg return: ${escapeHtml(avgReturn)} | Expectancy: ${escapeHtml(expectancy)} | Avg hold: ${escapeHtml(avgDays)}
       </div>
       <div class="muted small" style="margin-top: 6px;">
-        Tip: auto-trades come from Best Entries and Blue Chip Dips. Use the Paper trade button to add extra manual ideas (paste into <code>reports/paper/PaperTradeIntents.json</code> before the next run).
+        Tip: to add your own manual ideas, click "Manual paper trade" on a coin, then paste into <code>reports/paper/PaperTradeIntents.json</code> before the next run.
       </div>
       <div class="table-wrap" style="margin-top: 10px;">
         <table class="table">
@@ -2845,10 +2922,11 @@ function buildPaperTradingHtml(paperReport) {
             <tr>
               <th>Symbol</th>
               <th>Source</th>
+              <th>Style</th>
               <th class="num">Days</th>
               <th class="num">Entry</th>
               <th class="num">Current</th>
-          <th class="num">Profit/Loss</th>
+              <th class="num">Profit/Loss</th>
               <th>Signal</th>
               <th class="num">Score</th>
               <th>Tags</th>
@@ -2857,7 +2935,7 @@ function buildPaperTradingHtml(paperReport) {
           <tbody>
             ${
               openRows ||
-              `<tr><td colspan="9" class="muted">No open trades.</td></tr>`
+              `<tr><td colspan="10" class="muted">No open trades.</td></tr>`
             }
           </tbody>
         </table>
@@ -2868,6 +2946,7 @@ function buildPaperTradingHtml(paperReport) {
             <tr>
               <th>Symbol</th>
               <th>Source</th>
+              <th>Style</th>
               <th class="num">Days</th>
               <th class="num">Profit/Loss</th>
               <th class="num">Exit</th>
@@ -2881,7 +2960,7 @@ function buildPaperTradingHtml(paperReport) {
           <tbody>
             ${
               closedRows ||
-              `<tr><td colspan="10" class="muted">No closed trades yet.</td></tr>`
+              `<tr><td colspan="11" class="muted">No closed trades yet.</td></tr>`
             }
           </tbody>
         </table>
@@ -2889,6 +2968,8 @@ function buildPaperTradingHtml(paperReport) {
       <div style="margin-top: 14px;">
         <h3>Performance dashboard</h3>
         <div class="muted small">Win rate and returns by signal quality.</div>
+        ${renderPerfTable("Trade style", byStyle, "style")}
+        ${renderPerfTable("Cost model", byCostModel, "cost_model")}
         ${renderPerfTable("Score range", byScore, "range")}
         ${renderPerfTable("Signal source", bySource, "source")}
         ${renderPerfTable("Entry signal", bySignal, "signal")}
@@ -2913,11 +2994,11 @@ function buildPaperTradingHtml(paperReport) {
         </ul>
       </div>
       ${buildHowThisWorks([
-        "Each scan opens a pretend trade from Best Entries or Blue Chip Dips (only one per coin).",
+        "Each scan can open a pretend trade from Best Entries, Blue Chip Dips, Discovery, or your manual ideas (still one per coin).",
         "Every run refreshes price and profit/loss, and checks if a trade should close.",
         "Trades close if they hit a time limit, a trailing stop, a profit target, or the signal weakens.",
         "All trades and signals are saved in reports/paper/PaperTrades.json and reports/paper/SignalEvents.json.",
-        "The dashboard shows open/closed trades and your basic results. It does not auto-change the rules yet.",
+        "The dashboard shows open/closed trades and your basic results, split by trade style. It does not auto-change the rules yet.",
       ])}
     </div>
   `;
@@ -3785,14 +3866,14 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         source: "dashboard",
         ...payload,
       };
-      const text = JSON.stringify(intent, null, 2);
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(() => {
-          alert("Paper trade intent copied. Paste into reports/paper/PaperTradeIntents.json or your notes.");
-        }).catch(() => {
-          alert("Unable to copy automatically. Use the console to access the payload.");
-          console.log(text);
-        });
+       const text = JSON.stringify(intent, null, 2);
+       if (navigator.clipboard && navigator.clipboard.writeText) {
+         navigator.clipboard.writeText(text).then(() => {
+          alert("Copied a MANUAL paper-trade idea (this does not place a trade). Next step: paste into reports/paper/PaperTradeIntents.json before the next scan run.");
+         }).catch(() => {
+           alert("Unable to copy automatically. Use the console to access the payload.");
+           console.log(text);
+         });
       } else {
         alert("Clipboard not available. Use the console to access the payload.");
         console.log(text);

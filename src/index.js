@@ -126,6 +126,7 @@ const COIN_CONTEXT_PATH = path.join(
   "coin_context.json"
 );
 const CATEGORIES_PATH = path.join(__dirname, "..", "config", "categories.json");
+const PAPER_TRADING_CONFIG_PATH = path.join(__dirname, "..", "config", "paper_trading.json");
 
 // Discovery auto-stage (queue -> staging) is always on.
 const AUTO_STAGE_DISCOVERY = true;
@@ -204,8 +205,25 @@ const TAKE_PROFIT_APPROACH_BUFFER = clamp(
 );
 
 // Paper trading configuration
-const PAPER_TRADE_POSITION_USD = envNumber("PAPER_TRADE_POSITION_USD", 5000);
-const PAPER_TRADE_FEE_PCT = clamp(envNumber("PAPER_TRADE_FEE_PCT", 0.1), 0, 2);
+const PAPER_TRADING_CONFIG = readJsonFile(PAPER_TRADING_CONFIG_PATH, null);
+const PAPER_TRADE_EXCHANGE = String(
+  process.env.PAPER_TRADE_EXCHANGE || PAPER_TRADING_CONFIG?.exchange || "mexc"
+);
+const PAPER_TRADE_DEFAULT_STYLE = String(
+  process.env.PAPER_TRADE_DEFAULT_STYLE || PAPER_TRADING_CONFIG?.default_style || "swing_days_weeks"
+);
+const PAPER_TRADE_POSITION_USD_DEFAULT =
+  Number.isFinite(Number(PAPER_TRADING_CONFIG?.default_position_usd)) &&
+  Number(PAPER_TRADING_CONFIG.default_position_usd) > 0
+    ? Number(PAPER_TRADING_CONFIG.default_position_usd)
+    : 5000;
+const PAPER_TRADE_FEE_PCT_DEFAULT =
+  Number.isFinite(Number(PAPER_TRADING_CONFIG?.fee_pct)) && Number(PAPER_TRADING_CONFIG.fee_pct) >= 0
+    ? Number(PAPER_TRADING_CONFIG.fee_pct)
+    : 0.1;
+
+const PAPER_TRADE_POSITION_USD = envNumber("PAPER_TRADE_POSITION_USD", PAPER_TRADE_POSITION_USD_DEFAULT);
+const PAPER_TRADE_FEE_PCT = clamp(envNumber("PAPER_TRADE_FEE_PCT", PAPER_TRADE_FEE_PCT_DEFAULT), 0, 2);
 const PAPER_TRADE_TIME_STOP_DAYS = clamp(envNumber("PAPER_TRADE_TIME_STOP_DAYS", 45), 1, 365);
 const PAPER_TRADE_TRAILING_STOP_PCT = clamp(
   envNumber("PAPER_TRADE_TRAILING_STOP_PCT", 8),
@@ -231,6 +249,91 @@ const PAPER_TRADE_MIN_SAMPLE = clamp(envNumber("PAPER_TRADE_MIN_SAMPLE", 10), 3,
 const PAPER_TRADE_STRATEGY_ID = "base_long_v1";
 const PAPER_TRADE_EXIT_STRATEGY_ID = "tp_trailing_v1";
 const PAPER_TRADE_SIGNAL_VERSION = "paper_trade_v1";
+
+const PAPER_TRADE_STYLES = (() => {
+  const stylesConfig =
+    PAPER_TRADING_CONFIG && typeof PAPER_TRADING_CONFIG === "object" && PAPER_TRADING_CONFIG.styles
+      ? PAPER_TRADING_CONFIG.styles
+      : {};
+
+  const configNumber = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const parseTargets = (value, fallback) => {
+    const list = Array.isArray(value)
+      ? value.map((item) => configNumber(item)).filter((item) => item !== null)
+      : [];
+    return list.length > 0 ? list : fallback;
+  };
+
+  const normalizeStyle = (styleId, fallback) => {
+    const cfg = stylesConfig && typeof stylesConfig === "object" ? stylesConfig[styleId] : null;
+    if (!cfg || typeof cfg !== "object") return fallback;
+    const exitCfg =
+      cfg.exit_strategy && typeof cfg.exit_strategy === "object" ? cfg.exit_strategy : cfg;
+    const position = configNumber(cfg.position_size_usd);
+    const fee = configNumber(cfg.fee_pct);
+    const trailing = configNumber(exitCfg.trailing_stop_pct);
+    const timeStop = configNumber(exitCfg.time_stop_days);
+
+    return {
+      ...fallback,
+      label: typeof cfg.label === "string" ? cfg.label : fallback.label,
+      position_size_usd: position !== null ? position : fallback.position_size_usd,
+      fee_pct: fee !== null ? clamp(fee, 0, 2) : fallback.fee_pct,
+      exit_strategy: {
+        ...fallback.exit_strategy,
+        take_profit_targets: parseTargets(exitCfg.take_profit_targets, fallback.exit_strategy.take_profit_targets),
+        trailing_stop_pct: trailing !== null ? trailing : fallback.exit_strategy.trailing_stop_pct,
+        time_stop_days: timeStop !== null ? timeStop : fallback.exit_strategy.time_stop_days,
+        score_decay_exit:
+          exitCfg.score_decay_exit !== undefined
+            ? Boolean(exitCfg.score_decay_exit)
+            : fallback.exit_strategy.score_decay_exit,
+      },
+    };
+  };
+
+  const swingFallback = {
+    label: "Swing (days/weeks)",
+    position_size_usd: PAPER_TRADE_POSITION_USD,
+    fee_pct: PAPER_TRADE_FEE_PCT,
+    exit_strategy: {
+      take_profit_targets: [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3],
+      trailing_stop_pct: PAPER_TRADE_TRAILING_STOP_PCT,
+      time_stop_days: PAPER_TRADE_TIME_STOP_DAYS,
+      score_decay_exit: true,
+    },
+  };
+
+  const scalpFallback = {
+    label: "Short (2% target)",
+    position_size_usd: PAPER_TRADE_POSITION_USD,
+    fee_pct: PAPER_TRADE_FEE_PCT,
+    exit_strategy: {
+      take_profit_targets: [2],
+      trailing_stop_pct: 2,
+      time_stop_days: 3,
+      score_decay_exit: true,
+    },
+  };
+
+  const built = {
+    scalp_2pct: normalizeStyle("scalp_2pct", scalpFallback),
+    swing_days_weeks: normalizeStyle("swing_days_weeks", swingFallback),
+  };
+
+  if (stylesConfig && typeof stylesConfig === "object") {
+    for (const key of Object.keys(stylesConfig)) {
+      if (built[key]) continue;
+      built[key] = normalizeStyle(key, { ...swingFallback, label: key });
+    }
+  }
+
+  return built;
+})();
 
 const ETF_FLOW_PROXY_URL = "https://r.jina.ai/http://farside.co.uk/btc/";
 const ETF_FLOW_CACHE_PATH = path.join(CACHE_DIR, "etf_flows_btc.json");
@@ -8322,6 +8425,7 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
         trend_regime: coin?.trend_regime || null,
         catalyst_type: coin?.catalyst_type || null,
         news_sentiment: coin?.news_sentiment || null,
+        time_horizon: coin?.explain?.time_horizon || null,
         tags,
       },
     });
@@ -8389,6 +8493,7 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
           change_24h: num(opp?.change_24h),
           market_in_fear: Boolean(blueData?.market_in_fear),
           stabilizing: Boolean(opp?.stabilizing),
+          time_horizon: "days to weeks",
           tags,
         },
       });
@@ -8466,6 +8571,7 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
         volume_to_mcap: volToMcap,
         price_change_7d: priceChange7d,
         discovery_generated_at: discoveryGeneratedAt,
+        time_horizon: "days to weeks",
         tags,
       },
     });
@@ -8509,6 +8615,10 @@ function buildManualSignalEvents({ intents, nowIso, marketPhase, marketContext }
       volume_24h: num(intent.volume_24h),
       liquidity_bucket: classifyLiquidity(num(intent.volume_24h)),
       meta: {
+        paper_style: intent.paper_style || intent.trade_style || null,
+        position_size_usd: intent.position_size_usd ?? null,
+        fee_pct: intent.fee_pct ?? null,
+        exchange: intent.exchange || null,
         trend_regime: intent.trend_regime || null,
         catalyst_type: intent.catalyst_type || null,
         news_sentiment: intent.news_sentiment || null,
@@ -8575,19 +8685,158 @@ function computeTradePnlPct({ entry_price, qty, fee_pct, slippage_pct, current_p
   return (pnl / entryCost) * 100;
 }
 
+function normalizePaperTradeStyleId(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return Object.prototype.hasOwnProperty.call(PAPER_TRADE_STYLES, trimmed) ? trimmed : null;
+}
+
+function inferPaperTradeStyleFromTimeHorizon(timeHorizon) {
+  if (typeof timeHorizon !== "string") return null;
+  const lower = timeHorizon.toLowerCase();
+  if (!lower) return null;
+  if (lower.includes("week")) return "swing_days_weeks";
+  if (lower.includes("hour")) return "scalp_2pct";
+  if (lower.includes("day")) return "scalp_2pct";
+  return null;
+}
+
+function resolvePaperTradeStyleId(event) {
+  const direct =
+    event?.paper_style ||
+    event?.trade_style ||
+    event?.meta?.paper_style ||
+    event?.meta?.trade_style;
+  const normalizedDirect = normalizePaperTradeStyleId(typeof direct === "string" ? direct : "");
+  if (normalizedDirect) return normalizedDirect;
+
+  const inferred = inferPaperTradeStyleFromTimeHorizon(event?.meta?.time_horizon);
+  const normalizedInferred = normalizePaperTradeStyleId(inferred || "");
+  if (normalizedInferred) return normalizedInferred;
+
+  const normalizedDefault = normalizePaperTradeStyleId(PAPER_TRADE_DEFAULT_STYLE);
+  return normalizedDefault || "swing_days_weeks";
+}
+
+function inferPaperTradeStyleIdFromTrade(trade) {
+  const existing = normalizePaperTradeStyleId(trade?.trade_style || "");
+  if (existing) return existing;
+
+  const targets = Array.isArray(trade?.exit_strategy?.take_profit_targets)
+    ? trade.exit_strategy.take_profit_targets
+    : [];
+  const finalTarget = targets.length > 0 ? Number(targets[targets.length - 1]) : null;
+  if (Number.isFinite(finalTarget) && finalTarget <= 5) {
+    return normalizePaperTradeStyleId("scalp_2pct") || resolvePaperTradeStyleId({ meta: {} });
+  }
+  const timeStop = Number(trade?.exit_strategy?.time_stop_days);
+  if (Number.isFinite(timeStop) && timeStop <= 7) {
+    return normalizePaperTradeStyleId("scalp_2pct") || resolvePaperTradeStyleId({ meta: {} });
+  }
+
+  return normalizePaperTradeStyleId("swing_days_weeks") || resolvePaperTradeStyleId({ meta: {} });
+}
+
+function normalizePaperTradeMeta(trade) {
+  if (!trade || typeof trade !== "object") return trade;
+
+  const styleId = inferPaperTradeStyleIdFromTrade(trade);
+  trade.trade_style = styleId;
+  if (!trade.exchange) {
+    trade.exchange = PAPER_TRADE_EXCHANGE;
+  }
+
+  const existingTags = Array.isArray(trade.signal_tags) ? trade.signal_tags : [];
+  const merged = new Set(existingTags.filter((tag) => typeof tag === "string" && tag));
+  merged.add(`style:${styleId}`);
+  merged.add(buildCostModelTag(trade.exchange, trade.fee_pct ?? PAPER_TRADE_FEE_PCT));
+  trade.signal_tags = Array.from(merged);
+
+  return trade;
+}
+
+function normalizePaperTrades(trades) {
+  const list = Array.isArray(trades) ? trades : [];
+  for (const trade of list) {
+    normalizePaperTradeMeta(trade);
+  }
+  return list;
+}
+
+function feePctToTag(feePct) {
+  const pct = Number(feePct);
+  if (!Number.isFinite(pct) || pct < 0) return "unknown";
+  if (pct === 0) return "0";
+  const trimmed = pct.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  return trimmed.replace(".", "p");
+}
+
+function buildCostModelKey(exchange, feePct) {
+  const exch =
+    typeof exchange === "string" && exchange.trim()
+      ? exchange.trim().toLowerCase()
+      : "unknown";
+  return `${exch}_fee_${feePctToTag(feePct)}`;
+}
+
+function buildCostModelTag(exchange, feePct) {
+  return `cost:${buildCostModelKey(exchange, feePct)}`;
+}
+
 function createPaperTradeFromSignal(event, nowIso, btcPrice) {
   if (!event || !event.coin_gecko_id) return null;
   const entryPriceRaw = num(event.signal_price);
   if (entryPriceRaw === null || entryPriceRaw <= 0) return null;
-  const positionSize = PAPER_TRADE_POSITION_USD;
+  const tradeStyleId = resolvePaperTradeStyleId(event);
+  const style =
+    (tradeStyleId && PAPER_TRADE_STYLES[tradeStyleId]) ||
+    PAPER_TRADE_STYLES[PAPER_TRADE_DEFAULT_STYLE] ||
+    PAPER_TRADE_STYLES.swing_days_weeks;
+
+  const overridePositionSize = Number(event?.meta?.position_size_usd);
+  const positionSize =
+    Number.isFinite(overridePositionSize) && overridePositionSize > 0
+      ? overridePositionSize
+      : Number.isFinite(style?.position_size_usd) && style.position_size_usd > 0
+        ? style.position_size_usd
+        : PAPER_TRADE_POSITION_USD;
   if (!Number.isFinite(positionSize) || positionSize <= 0) return null;
 
   const slippagePct = estimateSlippagePct(event.volume_24h);
-  const feePct = PAPER_TRADE_FEE_PCT;
+  const overrideFeePct = Number(event?.meta?.fee_pct);
+  const feePct =
+    Number.isFinite(overrideFeePct) && overrideFeePct >= 0
+      ? clamp(overrideFeePct, 0, 2)
+      : Number.isFinite(style?.fee_pct) && style.fee_pct >= 0
+        ? style.fee_pct
+        : PAPER_TRADE_FEE_PCT;
+  const exchange =
+    typeof event?.meta?.exchange === "string" && event.meta.exchange.trim()
+      ? event.meta.exchange.trim()
+      : PAPER_TRADE_EXCHANGE;
+  const costModelTag = buildCostModelTag(exchange, feePct);
   const entryPrice = entryPriceRaw * (1 + pctToDecimal(slippagePct));
   const qty = positionSize / entryPrice;
   const entryCost = entryPrice * qty;
   const entryFee = entryCost * pctToDecimal(feePct);
+  const exitStrategy = style?.exit_strategy || {
+    take_profit_targets: [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3],
+    trailing_stop_pct: PAPER_TRADE_TRAILING_STOP_PCT,
+    time_stop_days: PAPER_TRADE_TIME_STOP_DAYS,
+    score_decay_exit: true,
+  };
+
+  const baseSignalTags = Array.isArray(event?.meta?.tags) ? event.meta.tags : [];
+  const signalTags = Array.from(
+    new Set(
+      [
+        ...baseSignalTags,
+        tradeStyleId ? `style:${tradeStyleId}` : null,
+        costModelTag,
+      ].filter(Boolean)
+    )
+  );
 
   const trade = {
     trade_id: event.signal_event_id,
@@ -8595,6 +8844,8 @@ function createPaperTradeFromSignal(event, nowIso, btcPrice) {
     symbol: event.symbol || null,
     coin_gecko_id: event.coin_gecko_id,
     signal_source: event.signal_source,
+    trade_style: tradeStyleId,
+    exchange,
     entry_date: nowIso,
     entry_price_raw: entryPriceRaw,
     entry_price: entryPrice,
@@ -8609,10 +8860,19 @@ function createPaperTradeFromSignal(event, nowIso, btcPrice) {
     strategy_id: PAPER_TRADE_STRATEGY_ID,
     exit_strategy_id: PAPER_TRADE_EXIT_STRATEGY_ID,
     exit_strategy: {
-      take_profit_targets: [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3],
-      trailing_stop_pct: PAPER_TRADE_TRAILING_STOP_PCT,
-      time_stop_days: PAPER_TRADE_TIME_STOP_DAYS,
-      score_decay_exit: true,
+      take_profit_targets: Array.isArray(exitStrategy.take_profit_targets)
+        ? exitStrategy.take_profit_targets
+        : [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3],
+      trailing_stop_pct:
+        Number.isFinite(Number(exitStrategy.trailing_stop_pct))
+          ? Number(exitStrategy.trailing_stop_pct)
+          : PAPER_TRADE_TRAILING_STOP_PCT,
+      time_stop_days:
+        Number.isFinite(Number(exitStrategy.time_stop_days))
+          ? Number(exitStrategy.time_stop_days)
+          : PAPER_TRADE_TIME_STOP_DAYS,
+      score_decay_exit:
+        exitStrategy.score_decay_exit === undefined ? true : Boolean(exitStrategy.score_decay_exit),
     },
     status: "open",
     days_held: 0,
@@ -8633,7 +8893,7 @@ function createPaperTradeFromSignal(event, nowIso, btcPrice) {
     btc_return_pct: 0,
     signal_reason: event.signal_reason || null,
     liquidity_bucket: event.liquidity_bucket || null,
-    signal_tags: Array.isArray(event?.meta?.tags) ? event.meta.tags : [],
+    signal_tags: signalTags,
     signal_meta: event?.meta || {},
     post_mortem: {
       invalidation_hit: null,
@@ -9130,6 +9390,17 @@ function computePaperReport({
     .filter((v) => v !== null)
     .sort((a, b) => a - b)[0];
 
+  const expectancyComponents = closedTrades
+    .map((trade) => {
+      const ret = tradeReturnPct(trade);
+      const riskPct =
+        num(trade?.exit_strategy?.trailing_stop_pct) ?? PAPER_TRADE_TRAILING_STOP_PCT;
+      if (ret === null || riskPct === null || riskPct <= 0) return null;
+      return ret / riskPct;
+    })
+    .filter((value) => value !== null);
+
+  const byStyle = computePaperBreakdown(closedTrades, (t) => t.trade_style, "style");
   const bySource = computePaperBreakdown(closedTrades, (t) => t.signal_source, "source");
   const bySignal = computePaperBreakdown(closedTrades, (t) => t.entry_signal, "signal");
   const byScoreRange = computePaperBreakdown(closedTrades, (t) => scoreRange(t.entry_score), "range");
@@ -9137,6 +9408,11 @@ function computePaperReport({
     closedTrades,
     (t) => t.market_phase,
     "market_phase"
+  );
+  const byCostModel = computePaperBreakdown(
+    closedTrades,
+    (t) => buildCostModelKey(t?.exchange, t?.fee_pct),
+    "cost_model"
   );
   const byTrend = computePaperTagBreakdown(closedTrades, "trend:", "trend");
   const byLiquidity = computePaperBreakdown(closedTrades, (t) => t.liquidity_bucket, "liquidity");
@@ -9177,6 +9453,7 @@ function computePaperReport({
     .map((trade) => ({
       symbol: trade.symbol || null,
       source: trade.signal_source || null,
+      style: trade.trade_style || null,
       days_held: trade.days_held ?? null,
       entry_price: num(trade.entry_price_raw) ?? num(trade.entry_price),
       current_price: num(trade.current_price),
@@ -9194,6 +9471,7 @@ function computePaperReport({
     .map((trade) => ({
       symbol: trade.symbol || null,
       source: trade.signal_source || null,
+      style: trade.trade_style || null,
       days_held: trade.days_held ?? null,
       entry_price: num(trade.entry_price_raw) ?? num(trade.entry_price),
       exit_price: num(trade.exit_price),
@@ -9206,6 +9484,31 @@ function computePaperReport({
       primary_driver: trade?.post_mortem?.primary_driver || null,
     }));
 
+  const openedThisRunTrades = trades.filter((trade) => trade?.entry_date === nowIso);
+  const closedThisRunTrades = closedTrades.filter((trade) => trade?.exit_date === nowIso);
+  const closedThisRunByReason = {};
+  for (const trade of closedThisRunTrades) {
+    const reason = trade?.exit_reason || "unknown";
+    closedThisRunByReason[reason] = (closedThisRunByReason[reason] || 0) + 1;
+  }
+
+  const openedThisRun = openedThisRunTrades.slice(0, 10).map((trade) => ({
+    symbol: trade.symbol || null,
+    source: trade.signal_source || null,
+    style: trade.trade_style || null,
+    entry_signal: trade.entry_signal || null,
+    entry_score: trade.entry_score ?? null,
+  }));
+
+  const closedThisRun = closedThisRunTrades.slice(0, 10).map((trade) => ({
+    symbol: trade.symbol || null,
+    source: trade.signal_source || null,
+    style: trade.trade_style || null,
+    pnl_pct: tradeReturnPct(trade),
+    exit_reason: trade.exit_reason || null,
+    days_held: trade.days_held ?? null,
+  }));
+
   return {
     generated_at: nowIso,
     signal_events_total: signalEvents.length,
@@ -9214,12 +9517,22 @@ function computePaperReport({
     trades_added: tradesAdded,
     open_count: openTrades.length,
     closed_count: closedTrades.length,
+    this_run: {
+      opened_count: openedThisRunTrades.length,
+      closed_count: closedThisRunTrades.length,
+      opened: openedThisRun,
+      closed: closedThisRun,
+      closed_by_reason: closedThisRunByReason,
+    },
     strategy: {
       position_size_usd: PAPER_TRADE_POSITION_USD,
       fee_pct: PAPER_TRADE_FEE_PCT,
       trailing_stop_pct: PAPER_TRADE_TRAILING_STOP_PCT,
       time_stop_days: PAPER_TRADE_TIME_STOP_DAYS,
       take_profit_targets: [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3],
+      exchange: PAPER_TRADE_EXCHANGE,
+      default_style: PAPER_TRADE_DEFAULT_STYLE,
+      styles: PAPER_TRADE_STYLES,
       discovery_thresholds: {
         strong_buy: PAPER_TRADE_DISCOVERY_STRONG_BUY,
         buy: PAPER_TRADE_DISCOVERY_BUY,
@@ -9228,9 +9541,7 @@ function computePaperReport({
     overview: {
       win_rate_pct: winRatePct,
       avg_return_pct: avgReturn,
-      expectancy_r: average(
-        closedReturns.map((ret) => ret / PAPER_TRADE_TRAILING_STOP_PCT)
-      ),
+      expectancy_r: average(expectancyComponents),
       avg_days_held: avgDaysHeld,
       avg_mae_pct: avgMae,
       avg_mfe_pct: avgMfe,
@@ -9242,7 +9553,9 @@ function computePaperReport({
       by_source: bySource,
       by_entry_signal: bySignal,
       by_score_range: byScoreRange,
+      by_style: byStyle,
       by_market_phase: byMarketPhase,
+      by_cost_model: byCostModel,
       by_trend: byTrend,
       by_liquidity: byLiquidity,
       by_unlock: byUnlock,
@@ -9255,7 +9568,7 @@ function computePaperReport({
     recommendations,
     notes: {
       entry_price_convention: "Signal price at scan time plus slippage.",
-      signal_sources: ["best_entries", "blue_chip_dip", "discovery"],
+      signal_sources: ["best_entries", "blue_chip_dip", "discovery", "manual"],
     },
     post_mortem_prompts: [
       "Did the invalidation rule trigger?",
@@ -9278,6 +9591,12 @@ function renderPaperReportMarkdown(report) {
     : "n/a";
 
   lines.push("## Strategy");
+  if (strategy.exchange) {
+    lines.push(`Exchange: ${String(strategy.exchange)}`);
+  }
+  if (strategy.default_style) {
+    lines.push(`Default style: ${String(strategy.default_style)}`);
+  }
   lines.push(`Position size: ${formatUsd(strategy.position_size_usd)}`);
   lines.push(
     `Fees: ${
@@ -9292,6 +9611,24 @@ function renderPaperReportMarkdown(report) {
     }% | Time stop: ${strategy.time_stop_days || "n/a"} days`
   );
   lines.push(`Take profits: ${tpTargets}`);
+  const styles = strategy.styles && typeof strategy.styles === "object" ? strategy.styles : null;
+  if (styles) {
+    const styleIds = Object.keys(styles);
+    if (styleIds.length > 0) {
+      lines.push("");
+      lines.push("### Styles");
+      for (const styleId of styleIds) {
+        const style = styles[styleId];
+        if (!style || typeof style !== "object") continue;
+        const targets = Array.isArray(style?.exit_strategy?.take_profit_targets)
+          ? style.exit_strategy.take_profit_targets.map((t) => `${t}%`).join(", ")
+          : "n/a";
+        lines.push(
+          `- ${styleId}: ${style?.label || ""} size ${formatUsd(style?.position_size_usd)} | fee ${Number.isFinite(style?.fee_pct) ? style.fee_pct.toFixed(2) : "n/a"}% | targets ${targets} | trailing ${Number.isFinite(style?.exit_strategy?.trailing_stop_pct) ? style.exit_strategy.trailing_stop_pct : "n/a"}% | time stop ${style?.exit_strategy?.time_stop_days ?? "n/a"}d`
+        );
+      }
+    }
+  }
   lines.push("");
 
   const overview = report?.overview || {};
@@ -9310,6 +9647,11 @@ function renderPaperReportMarkdown(report) {
       report?.open_count ?? 0
     } | closed ${report?.closed_count ?? 0}`
   );
+  if (report?.this_run) {
+    lines.push(
+      `This run: opened ${report.this_run.opened_count ?? 0} | closed ${report.this_run.closed_count ?? 0}`
+    );
+  }
   lines.push(
     `Win rate: ${winRate} | Avg return: ${formatSignedPct(
       num(overview.avg_return_pct),
@@ -9340,12 +9682,12 @@ function renderPaperReportMarkdown(report) {
     lines.push("- None");
     lines.push("");
   } else {
-    lines.push("| Symbol | Source | Days | Entry | Current | PnL | Signal | Score | Tags |");
-    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    lines.push("| Symbol | Source | Style | Days | Entry | Current | PnL | Signal | Score | Tags |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
     for (const trade of openPositions) {
       const tags = Array.isArray(trade.tags) && trade.tags.length > 0 ? trade.tags.join(", ") : "n/a";
       lines.push(
-        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${
+        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${trade.style || "n/a"} | ${
           trade.days_held ?? "n/a"
         } | ${formatUsd(trade.entry_price)} | ${formatUsd(
           trade.current_price
@@ -9365,13 +9707,13 @@ function renderPaperReportMarkdown(report) {
     lines.push("- None");
     lines.push("");
   } else {
-    lines.push("| Symbol | Source | Days | PnL | Exit | Reason | Signal | Score | Outcome | Tags |");
-    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    lines.push("| Symbol | Source | Style | Days | PnL | Exit | Reason | Signal | Score | Outcome | Tags |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
     for (const trade of closedPositions) {
       const tags = Array.isArray(trade.tags) && trade.tags.length > 0 ? trade.tags.join(", ") : "n/a";
       const outcome = trade.outcome_tag || "n/a";
       lines.push(
-        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${
+        `| ${trade.symbol || "n/a"} | ${trade.source || "n/a"} | ${trade.style || "n/a"} | ${
           trade.days_held ?? "n/a"
         } | ${formatSignedPct(num(trade.pnl_pct), 1)} | ${formatUsd(
           trade.exit_price
@@ -9406,6 +9748,8 @@ function renderPaperReportMarkdown(report) {
     lines.push("");
   };
 
+  renderPerfTable("Performance by Trade Style", breakdowns.by_style, "style", "Style");
+  renderPerfTable("Performance by Cost Model", breakdowns.by_cost_model, "cost_model", "Cost model");
   renderPerfTable("Performance by Source", breakdowns.by_source, "source", "Source");
   renderPerfTable("Performance by Score Range", breakdowns.by_score_range, "range", "Score");
   renderPerfTable("Performance by Entry Signal", breakdowns.by_entry_signal, "signal", "Signal");
@@ -9472,7 +9816,7 @@ async function runPaperTrading({ layer1Report, discoveryReport, discoveryQueue, 
   }
   const existingSignals = loadPaperSignalEvents();
 
-  const existingTrades = loadPaperTrades();
+  const existingTrades = normalizePaperTrades(loadPaperTrades());
   const openIds = new Set(
     existingTrades
       .filter((trade) => trade?.status === "open")

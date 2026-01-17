@@ -79,6 +79,8 @@ Step-by-step (recommended):
    - News pressure label (positive/negative/mixed)
    - Unlock risk (yes/no)
    - Liquidity bucket (good/ok/low)
+   - Trade style (example: `scalp_2pct` vs `swing_days_weeks`) so stats don't get mixed
+   - Exchange/cost model (example: `mexc_fee_0`) so results match your real costs
 2) Build a “what worked” scoreboard:
    - Win rate and average return by tag (example: “uptrend + clean catalyst” vs “downtrend + oversold”).
 3) Add an “Auto-improve suggestions” section:
@@ -292,3 +294,90 @@ Implementation notes (for dev)
 2) Rename/clarify “setup” wording so the counters and sections match.
 3) Move AI summary near the top and expand it to summarize more features (without making up facts).
 4) Make chat visibly support “today’s plays” and match the same shortlist.
+
+---
+
+## 6) Paper trading is confusing (make it obvious + surface daily changes)
+
+### The problem (plain English)
+- The dashboard has paper trading results, but it is not obvious that it runs automatically on each scan.
+- The "Paper trade" button sounded like it would do the trade, when really it just copies a manual idea to your clipboard.
+- The paper trading section did not clearly show what changed today (what opened and what closed).
+
+### What we changed (now implemented)
+- Renamed the button from **Paper trade** to **Manual paper trade** so it is clear it is optional and manual.
+- Added **Paper trading in 30 seconds** at the top of the Paper Trading section.
+- Added **This run: opened X | closed Y** plus a short list of trades that closed this run (with reason).
+
+### Why
+- Friends should understand paper trading without guessing or reading code.
+
+### How to verify it worked
+1) Run: `node src/index.js`
+2) Open: `reports/Dashboard.html`
+3) Scroll to **Paper Trading** and confirm:
+   - It explains "auto paper trades run every scan"
+   - The button says **Manual paper trade**
+   - It shows **opened/closed this run** and closed reasons
+
+---
+
+## 7) Paper trading parameters (critique + how to improve)
+
+### Current defaults (what they mean)
+- Pretend size per trade: **$5,000** (`PAPER_TRADE_POSITION_USD`)
+- Fees: **0.1% per side** (`PAPER_TRADE_FEE_PCT`) + the model also estimates slippage
+- Take profit targets: **+15%**, **+30%**, **+50%** (`TAKE_PROFIT_TARGET_1/2/3`)
+- Trailing stop: **8%** (`PAPER_TRADE_TRAILING_STOP_PCT`) + it only turns on after the first target is hit
+- Time limit: **45 days** (`PAPER_TRADE_TIME_STOP_DAYS`)
+- Exit if the signal weakens: yes (after a few days, if the signal flips to "wait/overbought" or score < 40)
+
+### What's good about these defaults
+- It is simple and consistent - good for learning which signals work.
+- It includes fees and a slippage estimate (so results are not fantasy).
+- It has multiple ways to exit, so trades do not stay open forever.
+
+### What could be misleading / confusing
+- The pretend trade size is fixed, but the slippage model does not fully depend on size.
+  - In real life, bigger trades usually cause more slippage.
+- The trailing stop only activates after +15%.
+  - That means a trade can drop a lot before the trailing stop ever becomes active.
+- Take profit targets (15/30/50) may be too big for some market phases, so many trades might only close by time limit.
+- One set of settings for every coin can be unfair:
+  - A small coin and a large coin should not have the same trade rules.
+
+### Improvements (next)
+1) Add a "Your trading style" settings area (so paper trades match how you actually trade):
+    - Typical trade size (example: $1,000)
+    - Style preset: Short trade vs Swing trade (days/weeks)
+    - Profit target and stop rules used by paper trades
+    - Saved so it stays the same each day
+    - Spot-only (no leverage), since you only trade spot on MEXC
+    - Settings file: `config/paper_trading.json` (so the scanner uses them every run)
+2) Add a "Short trade" preset that fits your idea of small targets:
+   - Profit target around 2% (configurable)
+   - Tighter trailing stop / faster exits
+   - Shorter time limit (example: 1-7 days)
+   - Note: a 2% target can be eaten by fees + slippage, so we should always show NET profit after costs.
+   - Note for you: you trade on MEXC with no fees, so a small target like 2% is more realistic (but slippage/spread still exist)
+3) Make slippage depend on trade size vs daily volume (more realistic).
+4) Show the cost breakdown per trade (so the user can trust the result):
+   - Fees estimate
+   - Slippage estimate
+   - Net P/L vs raw price move
+5) Add a simple "bail out" stop for losers (example: exit if down -X% or breaks invalidation support).
+6) Make time limit, targets, and trailing stop adapt by market phase (accumulation vs run vs caution).
+7) Record and show: "What % of trades closed by time limit vs rules" so we know if the exits are meaningful.
+8) Make the learning match your bracket:
+   - Track performance by trade style preset (short vs swing)
+   - Track performance by trade size bucket (so results stay relevant to your $1,000 habit)
+9) Keep learning clean by splitting it into 2 scoreboards (so one style doesn't "ruin" the other):
+   - `scalp_2pct`: small target, fast exits, short time limit
+   - `swing_days_weeks`: bigger targets, wider stops, longer time limit
+10) Let Manual paper trades pick a style:
+   - Default to your chosen style, but allow switching per trade intent
+11) Make fees configurable per exchange (so your real setup is reflected):
+    - For MEXC: set fee to 0
+    - Still show slippage/spread as a cost (because it is real)
+
+**Status update (2026-01-17):** Implemented 2 trade styles + MEXC fee=0 via `config/paper_trading.json`, and the paper trading report/dashboard now break down results by trade style and cost model.

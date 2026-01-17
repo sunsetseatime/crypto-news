@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "exchange": "mexc",
+  "fee_pct": 0,
+  "default_position_usd": 1000,
+  "default_style": "scalp_2pct",
+  "styles": {
+    "scalp_2pct": {
+      "label": "Short (2% target)",
+      "position_size_usd": 1000,
+      "fee_pct": 0,
+      "exit_strategy": {
+        "take_profit_targets": [2],
+        "trailing_stop_pct": 2,
+        "time_stop_days": 3,
+        "score_decay_exit": true
+      }
+    },
+    "swing_days_weeks": {
+      "label": "Swing (days/weeks)",
+      "position_size_usd": 1000,
+      "fee_pct": 0,
+      "exit_strategy": {
+        "take_profit_targets": [15, 30, 50],
+        "trailing_stop_pct": 8,
+        "time_stop_days": 45,
+        "score_decay_exit": true
+      }
+    }
+  }
+}
