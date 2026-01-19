@@ -3,6 +3,7 @@ export const maxDuration = 60;
 
 const DEFAULT_REPORTS_BASE_URL = 'https://sunsetseatime.github.io/crypto-news';
 const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
+const COINGECKO_API_BASE_URL = 'https://api.coingecko.com/api/v3';
 
 const reportCache = {
   fetchedAt: 0,
@@ -11,6 +12,7 @@ const reportCache = {
 };
 
 const rateLimitMap = new Map();
+const coinGeckoAboutCache = new Map();
 
 function getReportsBaseUrl() {
   const raw = process.env.REPORTS_BASE_URL || DEFAULT_REPORTS_BASE_URL;
@@ -33,6 +35,98 @@ function getOpenAiModel() {
 
 function nowMs() {
   return Date.now();
+}
+
+function normalizeCoinGeckoId(value) {
+  const id = String(value ?? '').trim().toLowerCase();
+  if (!id) return '';
+  if (!/^[a-z0-9-_]+$/.test(id)) return '';
+  return id;
+}
+
+function stripHtmlToText(value) {
+  const raw = String(value ?? '');
+  if (!raw) return '';
+  return raw
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function summarizeDescription(value, maxLen = 520) {
+  const cleaned = stripHtmlToText(value);
+  if (!cleaned) return null;
+  if (cleaned.length <= maxLen) return cleaned;
+  const head = cleaned.slice(0, maxLen);
+  const lastStop = Math.max(head.lastIndexOf('.'), head.lastIndexOf('!'), head.lastIndexOf('?'));
+  if (lastStop >= 220) return head.slice(0, lastStop + 1);
+  return `${head}...`;
+}
+
+async function fetchCoinGeckoProjectBasics(coinGeckoId) {
+  const id = normalizeCoinGeckoId(coinGeckoId);
+  if (!id) return null;
+
+  const cached = coinGeckoAboutCache.get(id);
+  const now = nowMs();
+  if (cached && now - cached.fetchedAt < cached.ttlMs) return cached.data;
+
+  const url = `${COINGECKO_API_BASE_URL}/coins/${encodeURIComponent(id)}?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false&sparkline=false`;
+
+  try {
+    const res = await fetch(url, { next: { revalidate: 60 * 60 } });
+    if (res.status === 404) return null;
+    if (!res.ok) return null;
+    const data = await res.json();
+
+    const homepage =
+      Array.isArray(data?.links?.homepage) && data.links.homepage.length > 0
+        ? String(data.links.homepage.find((h) => String(h || '').trim()) || '').trim()
+        : '';
+    const categories = Array.isArray(data?.categories) ? data.categories : [];
+
+    const payload = {
+      source: 'CoinGecko',
+      fetched_at: new Date().toISOString(),
+      summary: summarizeDescription(data?.description?.en) || null,
+      website: homepage || null,
+      categories: categories
+        .map((c) => safeText(c, 40))
+        .filter(Boolean)
+        .slice(0, 6),
+    };
+
+    coinGeckoAboutCache.set(id, {
+      fetchedAt: now,
+      ttlMs: 12 * 60 * 60 * 1000,
+      data: payload,
+    });
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function shouldAttachProjectBasics(conversation) {
+  const lastUser = [...conversation].reverse().find((m) => m?.role === 'user');
+  const text = String(lastUser?.content || '').toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('what is') ||
+    text.includes('tell me about') ||
+    text.includes('what does') ||
+    text.includes('does it do') ||
+    text.includes('project') ||
+    text.includes('overview') ||
+    text.includes('use case') ||
+    text.includes('purpose')
+  );
 }
 
 function checkRateLimit(ip) {
@@ -258,6 +352,36 @@ function summarizeCoin(coinEntry, reports) {
       )
     : null;
 
+  const todayPlay = Array.isArray(reports?.layer1?.today_plays?.items)
+    ? reports.layer1.today_plays.items.find(
+        (p) =>
+          String(p?.symbol || '').toUpperCase() ===
+          String(coinEntry.symbol || '').toUpperCase(),
+      )
+    : null;
+
+  const newsHeadlines = Array.isArray(coinEntry?.news_headlines)
+    ? coinEntry.news_headlines
+        .slice(0, 3)
+        .map((h) => ({
+          title: safeText(h?.title, 140) || null,
+          url: typeof h?.url === 'string' && h.url.trim() ? h.url.trim() : null,
+          source:
+            typeof h?.source === 'string' && h.source.trim() ? h.source.trim() : null,
+          published:
+            typeof h?.published === 'string' && h.published.trim()
+              ? h.published.trim()
+              : typeof h?.published_at === 'string' && h.published_at.trim()
+                ? h.published_at.trim()
+                : null,
+          sentiment:
+            typeof h?.sentiment === 'string' && h.sentiment.trim()
+              ? h.sentiment.trim()
+              : null,
+        }))
+        .filter((h) => h.title || h.url)
+    : [];
+
   const gateFailuresRaw = Array.isArray(coinEntry.gates_failed)
     ? coinEntry.gates_failed
     : [];
@@ -327,10 +451,19 @@ function summarizeCoin(coinEntry, reports) {
           market_cap: shortUsd(discoveryForCoin.market_cap),
           volume_24h: shortUsd(discoveryForCoin.volume_24h),
           volume_to_mcap: volumeToMcapPct(discoveryForCoin.volume_to_mcap),
-          price_change_7d: pct(discoveryForCoin.price_change_7d),
-          source: discoveryForCoin.source || null,
+           price_change_7d: pct(discoveryForCoin.price_change_7d),
+           source: discoveryForCoin.source || null,
+         }
+       : null,
+    today_play: todayPlay
+      ? {
+          action: todayPlay?.action || null,
+          why: Array.isArray(todayPlay?.why) ? todayPlay.why.slice(0, 2) : [],
+          main_risk: todayPlay?.main_risk || null,
+          source: todayPlay?.source_section || todayPlay?.source || null,
         }
       : null,
+    recent_news: newsHeadlines,
     explain: coinEntry?.explain
       ? {
           why: Array.isArray(coinEntry.explain?.why)
@@ -729,7 +862,7 @@ function buildSystemPrompt() {
     'Your job: help the user understand the latest Watchlist / Discovery / DeFi reports in plain English.',
     '',
     'Rules:',
-    '- Use ONLY the report context provided. If something is not in the context, say you do not know.',
+    '- Use ONLY the context JSON provided. If something is not in the context, say you do not know.',
     '- Use plain English. Avoid jargon and acronyms. If you must use an acronym (like FDV), define it first.',
     '- Do not give financial advice. You may use action labels (Buy/Wait/Avoid) only as dashboard signal labels, not advice.',
     '- Discovery results are NOT recommendations. Discovery is just a shortlist that passed the discovery filters (volume, size, and recent move). Meme coins can appear if they match the numbers.',
@@ -737,6 +870,9 @@ function buildSystemPrompt() {
     '  - on the Watchlist/Staging list (manually added or staged), and why it got its decision label, OR',
     '  - on the Discovery list (passed the discovery filters), and show the key numbers that triggered it.',
     '- If the user asks for "today\'s plays", use global.today_plays and say it comes from the dashboard shortlist.',
+    '- If the user asks "why was this recommended today?", prefer selected_item.data.today_play when available (it is the dashboard shortlist reason).',
+    '- If the user asks "what is this project / what does it do?", use selected_item.data.project_basics when available, and say it comes from CoinGecko.',
+    '- If the user asks "what news recently?", use selected_item.data.recent_news (titles + links) when available.',
     '- When discussing big holders:',
     '  - Exchange wallets can look huge but often represent many customers, so they are usually lower "single whale" risk.',
     '  - Never guess whether an address is an exchange. Only call it an exchange if the report explicitly labels it as an exchange.',
@@ -874,6 +1010,17 @@ export async function POST(req) {
     reports,
     selectedItem,
   });
+
+  if (shouldAttachProjectBasics(conversation)) {
+    const target = selectedItem || mentionedItems[0] || null;
+    const id = target?.data?.id || null;
+    if (id && target?.data && !target.data.project_basics) {
+      const basics = await fetchCoinGeckoProjectBasics(id);
+      if (basics?.summary) {
+        target.data.project_basics = basics;
+      }
+    }
+  }
 
   const system = buildSystemPrompt();
   const context = {

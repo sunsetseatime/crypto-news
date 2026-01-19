@@ -772,11 +772,31 @@ function buildDiscoverySectionHtml(discoveryReport) {
       const score = Number.isFinite(c.discovery_score) ? c.discovery_score.toFixed(1) : "n/a";
       const ch7d = Number.isFinite(c.price_change_7d) ? formatSignedPct(c.price_change_7d, 1) : "n/a";
       const vol = Number.isFinite(c.volume_24h) ? formatUsdCompact(c.volume_24h) : "n/a";
+      const newsPressure = String(c?.news_pressure_label || "").toLowerCase();
+      const newsHeadline = c?.news_headline ? String(c.news_headline) : "";
+      const headlineShort = newsHeadline ? newsHeadline.slice(0, 90) : "";
+      const hasNewsMeta =
+        newsPressure ||
+        Number.isFinite(num(c?.news_event_count)) ||
+        Boolean(newsHeadline);
+      const toneText =
+        newsPressure === "negative"
+          ? "warning (looks negative)"
+          : newsPressure === "positive"
+            ? "looks positive"
+            : newsPressure === "mixed"
+              ? "mixed"
+              : "looks neutral";
+      const newsText = !hasNewsMeta
+        ? "News: not checked yet"
+        : Number.isFinite(num(c?.news_event_count)) && Number(c.news_event_count) === 0 && !newsHeadline
+          ? `News: ${NO_HEADLINES_MESSAGE}`
+          : `News: ${toneText}${headlineShort ? ` - ${headlineShort}` : ""}`;
       return `
         <div class="play-item play-momentum">
           <span class="play-symbol">${escapeHtml(String(c.symbol || "").toUpperCase())}</span>
           <span class="play-action">Score ${escapeHtml(score)}</span>
-          <span class="play-reason">${escapeHtml(`${ch7d} 7d | Vol ${vol}`)}</span>
+          <span class="play-reason">${escapeHtml(`${ch7d} 7d | Vol ${vol} | ${newsText}`)}</span>
         </div>
       `;
     })
@@ -798,6 +818,7 @@ function buildDiscoverySectionHtml(discoveryReport) {
       ${buildHowThisWorks([
         "Scores rank new coins by liquidity, volume, and recent price action.",
         "Higher scores mean stronger short-term attention, not long-term quality.",
+        "Each coin gets a quick headline check; negative headlines show as a warning.",
         "Why it matters: it turns a huge market into a short research list.",
         "Always review project basics before adding to your watchlist.",
       ])}
@@ -1673,11 +1694,31 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
     const cautionText = riskWarnings.length > 0 ? ` | Caution: ${riskWarnings[0]}` : "";
     const mcapText = fmtMcap(opp.market_cap);
     const contextText = contextNote ? ` | ${contextNote}` : "";
+    const newsPressure = String(opp?.news_pressure_label || "").toLowerCase();
+    const newsHeadline = opp?.news_headline ? String(opp.news_headline) : "";
+    const headlineShort = newsHeadline ? newsHeadline.slice(0, 90) : "";
+    const hasNewsMeta =
+      newsPressure ||
+      Number.isFinite(num(opp?.news_event_count)) ||
+      Boolean(newsHeadline);
+    const toneText =
+      newsPressure === "negative"
+        ? "warning (looks negative)"
+        : newsPressure === "positive"
+          ? "looks positive"
+          : newsPressure === "mixed"
+            ? "mixed"
+            : "looks neutral";
+    const newsText = !hasNewsMeta
+      ? "News: not checked yet"
+      : Number.isFinite(num(opp?.news_event_count)) && Number(opp.news_event_count) === 0 && !newsHeadline
+        ? `News: ${NO_HEADLINES_MESSAGE}`
+        : `News: ${toneText}${headlineShort ? ` - ${headlineShort}` : ""}`;
     return `
       <div class="play-item ${entryClass}">
         <span class="play-symbol">${escapeHtml(opp.symbol || "")}</span>
         <span class="play-action">${escapeHtml(action)}</span>
-        <span class="play-reason">${escapeHtml(`${signalsText} | MCap: ${mcapText}${cautionText}${contextText}`)}</span>
+        <span class="play-reason">${escapeHtml(`${signalsText} | MCap: ${mcapText}${cautionText}${contextText} | ${newsText}`)}</span>
       </div>
     `;
   }).join("");
@@ -1696,11 +1737,31 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
     const extra = riskWarnings.length > 0 ? ` | Caution: ${riskWarnings[0]}` : "";
     const contextText = contextNote ? ` | ${contextNote}` : "";
     const mcapText = fmtMcap(opp.market_cap);
+    const newsPressure = String(opp?.news_pressure_label || "").toLowerCase();
+    const newsHeadline = opp?.news_headline ? String(opp.news_headline) : "";
+    const headlineShort = newsHeadline ? newsHeadline.slice(0, 90) : "";
+    const hasNewsMeta =
+      newsPressure ||
+      Number.isFinite(num(opp?.news_event_count)) ||
+      Boolean(newsHeadline);
+    const toneText =
+      newsPressure === "negative"
+        ? "warning (looks negative)"
+        : newsPressure === "positive"
+          ? "looks positive"
+          : newsPressure === "mixed"
+            ? "mixed"
+            : "looks neutral";
+    const newsText = !hasNewsMeta
+      ? "News: not checked yet"
+      : Number.isFinite(num(opp?.news_event_count)) && Number(opp.news_event_count) === 0 && !newsHeadline
+        ? `News: ${NO_HEADLINES_MESSAGE}`
+        : `News: ${toneText}${headlineShort ? ` - ${headlineShort}` : ""}`;
     return `
       <div class="play-item play-wait">
         <span class="play-symbol">${escapeHtml(opp.symbol || "")}</span>
         <span class="play-action">Wait</span>
-        <span class="play-reason">${escapeHtml(`${waitReason} | ${signalsText} | MCap: ${mcapText}${extra}${contextText}`)}</span>
+        <span class="play-reason">${escapeHtml(`${waitReason} | ${signalsText} | MCap: ${mcapText}${extra}${contextText} | ${newsText}`)}</span>
       </div>
     `;
   }).join("");
@@ -1736,6 +1797,7 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
         "Scans top market-cap coins for dips and stabilization.",
         "Signals use RSI oversold, dip from 7-day high, and weekly loss.",
         "Moves to Wait list if still falling fast today.",
+        "Each coin also gets a quick headline check; negative headlines show as a warning.",
         "Adds a BCH-style history note when a coin has known structural headwinds.",
         "Coins tagged short-term only are bounce ideas, not long-term holds.",
         "Why it matters: larger coins are usually more liquid and safer.",

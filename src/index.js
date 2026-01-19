@@ -4545,9 +4545,27 @@ function detectNegativeHeadline(headlines) {
   return null;
 }
 
-async function enrichBlueChipOpportunitiesWithNews(blueChipData, maxCoins = 5, marketPhase = "neutral", coinContext = null) {
+async function enrichBlueChipOpportunitiesWithNews(
+  blueChipData,
+  maxCoins = 5,
+  marketPhase = "neutral",
+  coinContext = null,
+  exchangeNewsIndex = null
+) {
   if (!blueChipData || !Array.isArray(blueChipData.opportunities)) return;
-  const top = blueChipData.opportunities.slice(0, Math.max(0, maxCoins));
+  const limit = Math.max(0, maxCoins);
+  const topOpps = blueChipData.opportunities.slice(0, limit);
+  const topWait = Array.isArray(blueChipData.wait_list)
+    ? blueChipData.wait_list.slice(0, limit)
+    : [];
+  const seen = new Set();
+  const top = [...topOpps, ...topWait].filter((opp) => {
+    const key = String(opp?.coin_gecko_id || opp?.symbol || "").toUpperCase();
+    if (!key) return false;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   if (top.length === 0) return;
 
   const contextLookup =
@@ -4565,20 +4583,28 @@ async function enrichBlueChipOpportunitiesWithNews(blueChipData, maxCoins = 5, m
       } catch {
         news = null;
       }
-      if (!news) return;
+
+      const extraHeadlines =
+        exchangeNewsIndex?.bySymbol?.get?.(String(symbol).toUpperCase()) || [];
+      if (!news && extraHeadlines.length === 0) return;
 
       const summary = evaluateNewsMomentum(news, {
         symbol,
         name: opp?.name || null,
         marketPhase,
+        extraHeadlines,
       });
-      opp.news_source = summary.sources_label || news.source || null;
+      opp.news_source = summary.sources_label || news?.source || null;
       opp.news_signal = summary.news_signal || "quiet";
       opp.news_sentiment = summary.sentiment || "neutral";
       opp.news_activity = summary.activity_label;
       opp.news_pressure_score = summary.pressure_score;
       opp.news_pressure_label = summary.pressure_label;
       opp.news_event_count = summary.event_count;
+      opp.news_fetched_at = news?.fetched_at || null;
+      opp.news_headlines = Array.isArray(summary.headlines)
+        ? summary.headlines.slice(0, 3)
+        : [];
 
       const headline = Array.isArray(summary.headlines)
         ? summary.headlines.find((h) => h && h.title)
@@ -4613,6 +4639,89 @@ async function enrichBlueChipOpportunitiesWithNews(blueChipData, maxCoins = 5, m
       }
     })
   );
+}
+
+async function enrichDiscoveryReportWithNews(
+  discoveryReport,
+  { maxCandidates = 10, marketPhase = "neutral", exchangeNewsIndex = null } = {}
+) {
+  if (!discoveryReport || !Array.isArray(discoveryReport.candidates)) return discoveryReport;
+
+  const candidates = discoveryReport.candidates;
+  const limit = clamp(Number(maxCandidates || 0), 0, 50);
+  if (limit === 0 || candidates.length === 0) return discoveryReport;
+
+  const top = candidates
+    .slice()
+    .sort((a, b) => (num(b?.discovery_score) || 0) - (num(a?.discovery_score) || 0))
+    .slice(0, limit);
+
+  await Promise.all(
+    top.map(async (candidate) => {
+      const symbol = candidate?.symbol ? String(candidate.symbol).toUpperCase() : "";
+      const coinId = normalizeCoinGeckoId(candidate?.coinGeckoId || candidate?.id);
+      if (!symbol || !coinId) return;
+
+      const extraHeadlines = exchangeNewsIndex?.bySymbol?.get?.(symbol) || [];
+      let news = null;
+      try {
+        news = await fetchNewsSentiment(symbol, coinId);
+      } catch {
+        news = null;
+      }
+
+      if (!news && extraHeadlines.length === 0) {
+        candidate.news_checked_at = new Date().toISOString();
+        candidate.news_source = null;
+        candidate.news_fetched_at = null;
+        candidate.news_signal = "quiet";
+        candidate.news_sentiment = "neutral";
+        candidate.news_activity = "quiet";
+        candidate.news_momentum_score = 0;
+        candidate.news_is_viral = false;
+        candidate.news_pressure_score = 0;
+        candidate.news_pressure_label = "neutral";
+        candidate.news_pressure_confidence = "low";
+        candidate.news_event_count = 0;
+        candidate.news_events = [];
+        candidate.news_headlines = [];
+        candidate.news_headline = null;
+        return;
+      }
+
+      const summary = evaluateNewsMomentum(news, {
+        symbol,
+        name: candidate?.name || null,
+        marketPhase,
+        extraHeadlines,
+      });
+
+      candidate.news_checked_at = new Date().toISOString();
+      candidate.news_source = summary.sources_label || news?.source || null;
+      candidate.news_fetched_at = news?.fetched_at || null;
+      candidate.news_signal = summary.news_signal || "quiet";
+      candidate.news_sentiment = summary.sentiment || "neutral";
+      candidate.news_activity = summary.activity_label;
+      candidate.news_momentum_score = summary.momentum_score;
+      candidate.news_is_viral = summary.is_viral;
+      candidate.news_pressure_score = summary.pressure_score;
+      candidate.news_pressure_label = summary.pressure_label;
+      candidate.news_pressure_confidence = summary.pressure_confidence;
+      candidate.news_event_count = summary.event_count;
+      candidate.news_events = Array.isArray(summary.events) ? summary.events : [];
+      candidate.news_headlines = Array.isArray(summary.headlines)
+        ? summary.headlines.slice(0, 3)
+        : [];
+      const headline = candidate.news_headlines.find((h) => h && h.title) || null;
+      candidate.news_headline = headline?.title || null;
+    })
+  );
+
+  discoveryReport.news_enriched_at = new Date().toISOString();
+  discoveryReport.news_enrichment_note =
+    "Adds per-coin headlines and tone for top candidates (used for dashboard context).";
+
+  return discoveryReport;
 }
 
 // ============================================================================
@@ -10461,8 +10570,37 @@ async function main() {
       };
     })
     .filter(Boolean);
+  const blueChipCoinRefs = Array.isArray(blueChipsData?.coins)
+    ? blueChipsData.coins
+        .map((coin) => ({
+          symbol: coin?.symbol ? String(coin.symbol).trim().toUpperCase() : "",
+          name: coin?.name || coin?.id || "",
+          coinGeckoId: coin?.id || "",
+        }))
+        .filter((coin) => coin.symbol && coin.coinGeckoId)
+    : [];
+  const discoveryCoinRefs = Array.isArray(discoveryCandidates)
+    ? discoveryCandidates
+        .slice()
+        .sort(
+          (a, b) =>
+            (num(b?.discovery_score) || 0) - (num(a?.discovery_score) || 0)
+        )
+        .slice(0, 30)
+        .map((entry) => ({
+          symbol: entry?.symbol ? String(entry.symbol).trim().toUpperCase() : "",
+          name: entry?.name || entry?.id || entry?.coinGeckoId || "",
+          coinGeckoId: entry?.coinGeckoId || entry?.id || "",
+        }))
+        .filter((coin) => coin.symbol && coin.coinGeckoId)
+    : [];
   const exchangeNewsCoinsBySymbol = new Map();
-  for (const coin of [...watchlist, ...categoryCoinRefs]) {
+  for (const coin of [
+    ...watchlist,
+    ...categoryCoinRefs,
+    ...blueChipCoinRefs,
+    ...discoveryCoinRefs,
+  ]) {
     const symbol = String(coin?.symbol || "").trim().toUpperCase();
     if (!symbol) continue;
     if (!exchangeNewsCoinsBySymbol.has(symbol)) {
@@ -10506,7 +10644,8 @@ async function main() {
     blueChipOpportunities,
     5,
     marketCondition?.market_phase || "neutral",
-    coinContext
+    coinContext,
+    exchangeNewsIndex
   );
   console.log(`Blue Chip Scanner: ${blueChipOpportunities.scanned_count} top cryptos scanned, ${blueChipOpportunities.opportunities.length} dip opportunities found`);
   
@@ -11047,6 +11186,23 @@ async function main() {
     discoveryReport = readJsonFile(path.join(REPORTS_DIR, "DiscoveryReport.json"), null);
   } catch {
     discoveryReport = null;
+  }
+  try {
+    discoveryReport = await enrichDiscoveryReportWithNews(discoveryReport, {
+      maxCandidates: 12,
+      marketPhase: marketCondition?.market_phase || "neutral",
+      exchangeNewsIndex,
+    });
+    if (discoveryReport) {
+      const discoveryPath = path.join(REPORTS_DIR, "DiscoveryReport.json");
+      fs.writeFileSync(
+        discoveryPath,
+        JSON.stringify(discoveryReport, null, 2),
+        "utf8"
+      );
+    }
+  } catch (err) {
+    console.warn(`Discovery news enrichment failed: ${err.message}`);
   }
   try {
     const paperResult = await runPaperTrading({

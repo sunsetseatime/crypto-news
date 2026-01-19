@@ -211,7 +211,7 @@ function injectChat(html, { reportsBaseUrl }) {
       </select>
     </div>
     <div class="cn-chat-hint">
-      Uses Watchlist, Discovery, DeFi, Alerts, and Diff reports. If something is not in the reports, it will say so.<br />
+      Uses Watchlist, Discovery, DeFi, Alerts, and Diff reports. For “what is this project?”, it may also pull a short description from CoinGecko.<br />
       Reports source: <a id="cn-chat-reports-link" href="#" target="_blank" rel="noreferrer">open</a>
       <div>
         <button class="cn-chat-suggest" type="button" data-prompt="What are today's top plays and why?">Try: What are today's top plays?</button>

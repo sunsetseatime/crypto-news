@@ -53,12 +53,17 @@ This document captures the 3 main gaps we discussed, plus a quick check of the c
 3) **Whenever headlines are missing, always show this message**:
    - “No headlines available at the time of scan.”
 4) Make sure the message appears anywhere we “look for news” (Category Pulse, Story Cards, per-coin “Why”, etc.).
+5) Make sure **Blue Chip Dips** and **Discovery** also get the same headline scan (not just your watchlist).
+   - If the tone looks negative, show it as a **warning** (but do not hide the coin).
 
 ### How to verify it worked
 1) Run scan: `node src/index.js`
 2) Open: `reports/Dashboard.html`
 3) Pick a category/coin you know has little news → you should see “No headlines available at the time of scan.”
 4) Pick a coin with exchange news → you should see headlines + links.
+5) Check **Blue Chip Dip Opportunities** and **Discovery** → each line should include a **News:** note (or the “No headlines…” message).
+
+**Status update (2026-01-19):** The scan now pulls headlines for Watchlist, Blue Chip Dips, and Discovery. If the tone looks negative, it is shown as a warning (it does not remove the coin).
 
 ---
 
@@ -286,6 +291,40 @@ Implementation notes (for dev)
 - Chat API: `app/api/chat/route.js`
 - Chat UI injection: `app/route.js`
 - GitHub Pages dashboard will not have chat (static hosting). Vercel wraps the GitHub dashboard and adds chat.
+
+---
+
+### F) Chat: Ask about any coin in the dashboard (why it was picked + what it is + recent news)
+
+**What we change**
+- Make sure chat can answer common coin questions like:
+  - “Why did it recommend PAAL?”
+  - “What is PAAL and what does it do?”
+  - “What news did we see recently for PAAL?”
+- Ensure the chat always has these **per-coin** inputs available:
+  - The coin’s “today’s plays” reasoning (if it’s on the shortlist)
+  - The top headlines we already collected during the scan (title + link)
+  - A short “project basics” blurb (either from your manual context file, or pulled from CoinGecko)
+- If something isn’t available, the chat should say that clearly (no guessing).
+
+**Why**
+- This turns chat into a simple “click a coin → ask questions” helper, without you hunting around the dashboard.
+
+**How to verify**
+1) Open the Vercel dashboard and click **Chat** (bottom-right).
+2) Click a coin row in the dashboard (it should auto-select that coin in chat).
+3) Ask: “Why did it recommend <coin>?”
+4) Ask: “What is <coin> and what does it do?”
+5) Ask: “What news did we see recently for <coin>?”
+6) Confirm the chat:
+   - Uses the same shortlist as the dashboard (when it says “recommended today”).
+   - Shows 1–3 headline titles with links (or says no headlines were available).
+   - Gives a short project basics answer (or clearly says it’s missing).
+
+Implementation notes (for dev)
+- Chat API context: `app/api/chat/route.js` (selected coin + mentioned coins)
+- Chat UI coin selection: `app/route.js` (click-to-select + dropdown)
+- Manual coin context (optional): `config/coin_context.json`
 
 ---
 

@@ -160,7 +160,7 @@ You still keep GitHub Actions as the “daily engine” that generates the repor
 - Click a coin row to auto-select it, then ask follow-up questions
 
 Notes:
-- The chat is education-focused and will not pretend to know facts that are not in your reports.
+- The chat is education-focused and answers from your reports (and may pull a short CoinGecko project description when you ask “what is this project?”).
 - Exchange wallets are treated as lower “single whale” risk, but only when the report explicitly labels them as an exchange.
 
 ## Output
