@@ -2,6 +2,14 @@
 
 Full documentation: `readme/README.md`.
 
+## Docs map (so you don’t have to search)
+
+- `readme/README.md` - Full setup + usage guide
+- `readme/DEMO_GUIDE.md` - Quick demo script
+- `CHANGELOG_LAST_2_DAYS.md` - Recent changes (update record)
+- `to_do_readme/ISSUES_AUDIT_AND_NEXT_STEPS.md` - Known issues + next steps
+- `readme/FEATURES_ROADMAP.md` - Roadmap / future ideas
+
 ## GitHub Actions + GitHub Pages (runs when your PC is off)
 
 This repo includes a scheduled workflow that runs the scanner daily and publishes the latest dashboard to GitHub Pages:

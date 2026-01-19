@@ -80,6 +80,11 @@
 - **Dashboard display**: Shows backtest confidence in hygiene labels
 - **Gate improvements**: Entry signal and DeFi security now part of gate evaluation
 
+### 11. Dashboard Chat Improvements
+- **Coin-specific Q&A**: Chat can explain why a coin was picked (watchlist vs discovery) and why it shows up in today’s shortlist
+- **Recent headlines**: Chat includes the same recent headlines already collected during the scan (titles + links)
+- **Project basics (optional)**: When you ask “what is this project?”, chat may pull a short project description from CoinGecko
+
 ---
 
 ## 📁 Files Modified
