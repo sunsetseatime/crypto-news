@@ -1196,7 +1196,9 @@ function buildMacroPulseHtml(macroPulse) {
     const windowLabel = item?.window || "recent";
     const symbol = item?.symbol || "n/a";
     const title = item?.title || "";
-    return `${symbol} (${tone}, ${windowLabel}): ${title}`;
+    const source = item?.source ? String(item.source) : "";
+    const sourceText = source ? ` (${source})` : "";
+    return `${symbol} (${tone}, ${windowLabel})${sourceText}: ${title}`;
   });
   const newsHtml = newsLines.length
     ? newsLines.map((line) => `<div class=\"muted small\">${escapeHtml(line)}</div>`).join("")
@@ -1262,6 +1264,7 @@ function buildMacroPulseHtml(macroPulse) {
         <div class="macro-block">
           <h4>Leverage check (BTC futures)</h4>
           ${leverage.error ? `<div class="muted">${escapeHtml(leverage.error)}</div>` : `
+            <div class="muted small">Source: ${escapeHtml(leverage.source || "n/a")}</div>
             <div class="macro-stat">Funding cost: ${escapeHtml(fundingPct)}</div>
             <div class="muted small">Funding tone: ${escapeHtml(fundingLabel)}</div>
             <div class="muted small">Open positions: ${escapeHtml(oiUsd)} (${escapeHtml(oiLabel)}, ${escapeHtml(oiChange)})</div>

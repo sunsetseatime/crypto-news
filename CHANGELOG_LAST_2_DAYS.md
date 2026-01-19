@@ -282,4 +282,13 @@
 
 ---
 
+## 2026-01-19 Fixes (Market Pulse)
+- Alt news now pulls from real RSS headlines (CoinDesk / Decrypt / The Block / Bitcoin Magazine) matched to major alts (ETH/BNB/SOL/XRP/LTC/XMR), so it doesn’t go empty for days.
+- BTC leverage check now uses a Bybit fallback when Binance futures endpoints are blocked (fixes repeated HTTP 451 errors on some servers).
+- Dashboard Market Pulse now shows the leverage data source, and alt headlines include the source name.
+
+## 2026-01-19 Fixes (Chat)
+- Chat now answers “what does this project do?” directly from a short CoinGecko description (when available), instead of replying that it doesn’t know.
+- Added retries + optional `COINGECKO_API_KEY` support for Vercel chat to reduce rate-limit failures.
+
 **End of Changelog**

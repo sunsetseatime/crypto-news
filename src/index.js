@@ -342,12 +342,12 @@ const GLOBAL_MARKET_CACHE_PATH = path.join(CACHE_DIR, "global_market.json");
 const GLOBAL_MARKET_HISTORY_PATH = path.join(CACHE_DIR, "global_market_history.json");
 const ALT_MARKET_CACHE_PATH = path.join(CACHE_DIR, "alt_market_snapshot.json");
 const ALT_PULSE_COINS = [
-  { id: "ethereum", symbol: "ETH" },
-  { id: "binancecoin", symbol: "BNB" },
-  { id: "solana", symbol: "SOL" },
-  { id: "ripple", symbol: "XRP" },
-  { id: "litecoin", symbol: "LTC" },
-  { id: "monero", symbol: "XMR" },
+  { id: "ethereum", symbol: "ETH", name: "Ethereum" },
+  { id: "binancecoin", symbol: "BNB", name: "Binance Coin" },
+  { id: "solana", symbol: "SOL", name: "Solana" },
+  { id: "ripple", symbol: "XRP", name: "Ripple" },
+  { id: "litecoin", symbol: "LTC", name: "Litecoin" },
+  { id: "monero", symbol: "XMR", name: "Monero" },
 ];
 const ALT_PULSE_IDS = ALT_PULSE_COINS.map((coin) => coin.id);
 
@@ -5080,6 +5080,77 @@ function summarizeAltNews(newsEntries) {
   return items.slice(0, 3);
 }
 
+async function buildAltPulseNewsEntriesFromRss() {
+  const now = Date.now();
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+
+  const rssEntries = await Promise.all(
+    GENERAL_NEWS_SOURCES.map(async (source) => {
+      const items = await fetchRSSFeed(source.url, { maxItems: 25 });
+      return items.map((item) => ({
+        ...item,
+        source: source.name,
+      }));
+    })
+  );
+
+  const flatItems = rssEntries.flat();
+  const bySymbol = new Map();
+  for (const coin of ALT_PULSE_COINS) {
+    const symbol = String(coin?.symbol || "").trim().toUpperCase();
+    if (!symbol) continue;
+    if (!bySymbol.has(symbol)) bySymbol.set(symbol, []);
+  }
+
+  for (const item of flatItems) {
+    const title = String(item?.title || "").trim();
+    if (!title) continue;
+
+    const publishedMs = item?.date ? Date.parse(item.date) : NaN;
+    if (Number.isFinite(publishedMs) && publishedMs < sevenDaysAgo) continue;
+
+    for (const coin of ALT_PULSE_COINS) {
+      const symbol = String(coin?.symbol || "").trim().toUpperCase();
+      if (!symbol) continue;
+
+      if (!matchCoinInTitle(title, coin)) continue;
+
+      const eventMeta = classifyNewsEvent(title);
+      const sentiment =
+        eventMeta.direction > 0 ? "bullish" : eventMeta.direction < 0 ? "bearish" : "neutral";
+
+      const bucket = bySymbol.get(symbol);
+      if (!bucket) continue;
+
+      bucket.push({
+        title,
+        url: item?.url || "",
+        source: item?.source || "",
+        published: item?.date || null,
+        sentiment,
+        event_type: eventMeta.type,
+      });
+    }
+  }
+
+  const entries = ALT_PULSE_COINS.map((coin) => {
+    const symbol = String(coin?.symbol || "").trim().toUpperCase();
+    const headlines = Array.isArray(bySymbol.get(symbol)) ? bySymbol.get(symbol) : [];
+    headlines.sort((a, b) => {
+      const at = a?.published ? Date.parse(a.published) : 0;
+      const bt = b?.published ? Date.parse(b.published) : 0;
+      return bt - at;
+    });
+    return {
+      symbol,
+      sentiment: "neutral",
+      headlines: headlines.slice(0, 5),
+    };
+  });
+
+  return entries;
+}
+
 function shouldIncludeExchangeHeadline(title) {
   const text = String(title || "").toLowerCase();
   if (!text) return false;
@@ -5287,48 +5358,138 @@ async function fetchLeverageSnapshot() {
   const cached = readCache(LEVERAGE_CACHE_PATH);
   if (cached) return cached;
 
-  const fundingUrl =
-    "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT";
-  const oiUrl =
-    "https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1d&limit=2";
+  const fetchBybit = async () => {
+    const tickerUrl =
+      "https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT";
+    const oiUrl =
+      "https://api.bybit.com/v5/market/open-interest?category=linear&symbol=BTCUSDT&intervalTime=1d&limit=2";
 
-  const [funding, oiHist] = await Promise.all([
-    fetchJson(fundingUrl, {}, 1),
-    fetchJson(oiUrl, {}, 1),
-  ]);
+    const [tickerData, oiData] = await Promise.all([
+      fetchJson(tickerUrl, {}, 1),
+      fetchJson(oiUrl, {}, 1),
+    ]);
 
-  const fundingRate = Number(funding?.lastFundingRate);
-  const fundingLabel = classifyFundingRate(fundingRate);
+    const ticker = Array.isArray(tickerData?.result?.list)
+      ? tickerData.result.list[0]
+      : null;
+    const fundingRate = ticker ? Number(ticker.fundingRate) : NaN;
+    const openInterestUsd = ticker ? Number(ticker.openInterestValue) : NaN;
 
-  let openInterestUsd = null;
-  let openInterestChangePct = null;
-  if (Array.isArray(oiHist) && oiHist.length > 0) {
-    const sorted = [...oiHist].sort(
-      (a, b) => (a.timestamp || 0) - (b.timestamp || 0)
-    );
-    const latest = sorted[sorted.length - 1];
-    const previous = sorted.length > 1 ? sorted[sorted.length - 2] : null;
-    openInterestUsd = Number(latest?.sumOpenInterestValue);
-    if (previous && Number(previous?.sumOpenInterestValue) > 0) {
-      openInterestChangePct =
-        ((openInterestUsd - Number(previous.sumOpenInterestValue)) /
-          Number(previous.sumOpenInterestValue)) *
-        100;
+    let openInterestChangePct = null;
+    if (Array.isArray(oiData?.result?.list) && oiData.result.list.length >= 2) {
+      const hist = oiData.result.list
+        .map((entry) => ({
+          ts: Number(entry?.timestamp),
+          oi: Number(entry?.openInterest),
+        }))
+        .filter((entry) => Number.isFinite(entry.ts) && Number.isFinite(entry.oi));
+
+      hist.sort((a, b) => a.ts - b.ts);
+      if (hist.length >= 2) {
+        const latest = hist[hist.length - 1];
+        const previous = hist[hist.length - 2];
+        if (previous.oi > 0) {
+          openInterestChangePct = ((latest.oi - previous.oi) / previous.oi) * 100;
+        }
+      }
+    }
+
+    return {
+      source: "Bybit BTCUSDT perp",
+      funding_rate: Number.isFinite(fundingRate) ? fundingRate : null,
+      funding_rate_pct: Number.isFinite(fundingRate) ? fundingRate * 100 : null,
+      funding_label: classifyFundingRate(fundingRate),
+      open_interest_usd: Number.isFinite(openInterestUsd) ? openInterestUsd : null,
+      open_interest_change_pct: Number.isFinite(openInterestChangePct)
+        ? openInterestChangePct
+        : null,
+      open_interest_label: classifyOpenInterest(openInterestChangePct),
+      as_of: new Date().toISOString(),
+    };
+  };
+
+  let leverage = null;
+  let binanceError = null;
+  let bybitError = null;
+
+  try {
+    const fundingUrl =
+      "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT";
+    const oiUrl =
+      "https://fapi.binance.com/futures/data/openInterestHist?symbol=BTCUSDT&period=1d&limit=2";
+
+    const [funding, oiHist] = await Promise.all([
+      fetchJson(fundingUrl, {}, 1),
+      fetchJson(oiUrl, {}, 1),
+    ]);
+
+    const fundingRate = Number(funding?.lastFundingRate);
+    const fundingLabel = classifyFundingRate(fundingRate);
+
+    let openInterestUsd = null;
+    let openInterestChangePct = null;
+    if (Array.isArray(oiHist) && oiHist.length > 0) {
+      const sorted = [...oiHist].sort(
+        (a, b) => (a.timestamp || 0) - (b.timestamp || 0)
+      );
+      const latest = sorted[sorted.length - 1];
+      const previous = sorted.length > 1 ? sorted[sorted.length - 2] : null;
+      openInterestUsd = Number(latest?.sumOpenInterestValue);
+      if (previous && Number(previous?.sumOpenInterestValue) > 0) {
+        openInterestChangePct =
+          ((openInterestUsd - Number(previous.sumOpenInterestValue)) /
+            Number(previous.sumOpenInterestValue)) *
+          100;
+      }
+    }
+
+    leverage = {
+      source: "Binance BTCUSDT perp",
+      funding_rate: Number.isFinite(fundingRate) ? fundingRate : null,
+      funding_rate_pct: Number.isFinite(fundingRate) ? fundingRate * 100 : null,
+      funding_label: fundingLabel,
+      open_interest_usd: Number.isFinite(openInterestUsd) ? openInterestUsd : null,
+      open_interest_change_pct: Number.isFinite(openInterestChangePct)
+        ? openInterestChangePct
+        : null,
+      open_interest_label: classifyOpenInterest(openInterestChangePct),
+      as_of: new Date().toISOString(),
+    };
+  } catch (err) {
+    binanceError = err;
+    leverage = null;
+  }
+
+  if (!leverage) {
+    try {
+      leverage = await fetchBybit();
+    } catch (err) {
+      bybitError = err;
+      leverage = null;
     }
   }
 
-  const leverage = {
-    source: "Binance BTCUSDT perp",
-    funding_rate: Number.isFinite(fundingRate) ? fundingRate : null,
-    funding_rate_pct: Number.isFinite(fundingRate) ? fundingRate * 100 : null,
-    funding_label: fundingLabel,
-    open_interest_usd: Number.isFinite(openInterestUsd) ? openInterestUsd : null,
-    open_interest_change_pct: Number.isFinite(openInterestChangePct)
-      ? openInterestChangePct
-      : null,
-    open_interest_label: classifyOpenInterest(openInterestChangePct),
-    as_of: new Date().toISOString(),
-  };
+  if (!leverage) {
+    const binanceMessage = String(binanceError?.message || "");
+    const bybitMessage = String(bybitError?.message || "");
+    const binanceBlocked =
+      /HTTP 451|restricted location|ineligible/i.test(binanceMessage);
+
+    const shorten = (value) => {
+      const text = String(value || "").replace(/\s+/g, " ").trim();
+      return text.length > 180 ? `${text.slice(0, 180)}...` : text;
+    };
+
+    const detail = bybitMessage ? ` Bybit error: ${shorten(bybitMessage)}` : "";
+    if (binanceBlocked) {
+      throw new Error(
+        `Binance futures data is blocked from this server location.${detail}`
+      );
+    }
+    throw new Error(
+      `Leverage data unavailable right now.${detail || binanceMessage ? ` ${shorten(bybitMessage || binanceMessage)}` : ""}`
+    );
+  }
 
   writeCache(LEVERAGE_CACHE_PATH, leverage);
   return leverage;
@@ -5500,19 +5661,28 @@ async function buildMacroPulse({ btcData } = {}) {
   }
 
   try {
-    const newsEntries = await Promise.all(
-      ALT_PULSE_COINS.map(async (coin) => {
-        const sentiment = await fetchNewsSentiment(coin.symbol, coin.id);
-        return {
-          symbol: coin.symbol,
-          sentiment: sentiment?.sentiment || "neutral",
-          headlines: sentiment?.headlines || [],
-        };
-      })
-    );
-    altNews = summarizeAltNews(newsEntries);
+    const rssEntries = await buildAltPulseNewsEntriesFromRss();
+    altNews = summarizeAltNews(rssEntries);
   } catch (err) {
     altNews = [];
+  }
+
+  if (altNews.length === 0) {
+    try {
+      const newsEntries = await Promise.all(
+        ALT_PULSE_COINS.map(async (coin) => {
+          const sentiment = await fetchNewsSentiment(coin.symbol, coin.id);
+          return {
+            symbol: coin.symbol,
+            sentiment: sentiment?.sentiment || "neutral",
+            headlines: sentiment?.headlines || [],
+          };
+        })
+      );
+      altNews = summarizeAltNews(newsEntries);
+    } catch {
+      altNews = [];
+    }
   }
 
   try {
@@ -5601,6 +5771,9 @@ function renderMacroPulseMarkdown(macroPulse) {
   if (lev.error) {
     lines.push(`- ${lev.error}`);
   } else {
+    if (lev.source) {
+      lines.push(`- Source: ${lev.source}`);
+    }
     const fundingPct = Number.isFinite(lev.funding_rate_pct)
       ? `${lev.funding_rate_pct.toFixed(3)}%`
       : "n/a";
@@ -5662,7 +5835,8 @@ function renderMacroPulseMarkdown(macroPulse) {
       const windowLabel = item?.window || "recent";
       const title = item?.title || "";
       const symbol = item?.symbol || "n/a";
-      lines.push(`- ${symbol} (${tone}, ${windowLabel}): ${title}`);
+      const source = item?.source ? ` (${item.source})` : "";
+      lines.push(`- ${symbol} (${tone}, ${windowLabel})${source}: ${title}`);
     }
   }
   lines.push("");

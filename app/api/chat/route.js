@@ -4,6 +4,7 @@ export const maxDuration = 60;
 const DEFAULT_REPORTS_BASE_URL = 'https://sunsetseatime.github.io/crypto-news';
 const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
 const COINGECKO_API_BASE_URL = 'https://api.coingecko.com/api/v3';
+const COINGECKO_KEY_HEADER_DEFAULT = 'x_cg_demo_api_key';
 
 const reportCache = {
   fetchedAt: 0,
@@ -33,8 +34,22 @@ function getOpenAiModel() {
   return String(process.env.OPENAI_MODEL_CHAT || DEFAULT_OPENAI_MODEL);
 }
 
+function getCoinGeckoKey() {
+  const raw = process.env.COINGECKO_API_KEY;
+  return raw ? String(raw) : '';
+}
+
+function getCoinGeckoKeyHeader() {
+  const raw = process.env.COINGECKO_API_KEY_HEADER;
+  return raw ? String(raw) : COINGECKO_KEY_HEADER_DEFAULT;
+}
+
 function nowMs() {
   return Date.now();
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeCoinGeckoId(value) {
@@ -69,6 +84,12 @@ function summarizeDescription(value, maxLen = 520) {
   return `${head}...`;
 }
 
+function buildCoinGeckoCoinUrl(coinGeckoId) {
+  const id = normalizeCoinGeckoId(coinGeckoId);
+  if (!id) return null;
+  return `https://www.coingecko.com/en/coins/${encodeURIComponent(id)}`;
+}
+
 async function fetchCoinGeckoProjectBasics(coinGeckoId) {
   const id = normalizeCoinGeckoId(coinGeckoId);
   if (!id) return null;
@@ -78,11 +99,57 @@ async function fetchCoinGeckoProjectBasics(coinGeckoId) {
   if (cached && now - cached.fetchedAt < cached.ttlMs) return cached.data;
 
   const url = `${COINGECKO_API_BASE_URL}/coins/${encodeURIComponent(id)}?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false&sparkline=false`;
+  const headers = {
+    accept: 'application/json',
+    'User-Agent': 'Mozilla/5.0',
+  };
+  const apiKey = getCoinGeckoKey();
+  if (apiKey) {
+    headers[getCoinGeckoKeyHeader()] = apiKey;
+  }
 
   try {
-    const res = await fetch(url, { next: { revalidate: 60 * 60 } });
-    if (res.status === 404) return null;
-    if (!res.ok) return null;
+    let res = null;
+    let lastStatus = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      res = await fetch(url, {
+        next: { revalidate: 60 * 60 },
+        headers,
+      });
+      lastStatus = res.status;
+
+      if (res.status === 429 && attempt < 2) {
+        const retryAfter = res.headers.get('retry-after');
+        const waitMs = retryAfter
+          ? Math.min(5000, Number(retryAfter) * 1000)
+          : 1000 * (attempt + 1);
+        await delay(waitMs);
+        continue;
+      }
+      break;
+    }
+
+    if (lastStatus === 404) return null;
+    if (!res || !res.ok) {
+      const blocked = lastStatus === 429;
+      const payload = {
+        source: 'CoinGecko',
+        fetched_at: new Date().toISOString(),
+        summary: null,
+        website: null,
+        categories: [],
+        coingecko_url: buildCoinGeckoCoinUrl(id),
+        error: blocked
+          ? 'CoinGecko rate-limited this request (try again in a minute).'
+          : `CoinGecko request failed (HTTP ${lastStatus || 'n/a'}).`,
+      };
+      coinGeckoAboutCache.set(id, {
+        fetchedAt: now,
+        ttlMs: blocked ? 10 * 60 * 1000 : 5 * 60 * 1000,
+        data: payload,
+      });
+      return payload;
+    }
     const data = await res.json();
 
     const homepage =
@@ -100,6 +167,7 @@ async function fetchCoinGeckoProjectBasics(coinGeckoId) {
         .map((c) => safeText(c, 40))
         .filter(Boolean)
         .slice(0, 6),
+      coingecko_url: buildCoinGeckoCoinUrl(id),
     };
 
     coinGeckoAboutCache.set(id, {
@@ -127,6 +195,63 @@ function shouldAttachProjectBasics(conversation) {
     text.includes('use case') ||
     text.includes('purpose')
   );
+}
+
+function isProjectBasicsQuestion(conversation) {
+  const lastUser = [...conversation].reverse().find((m) => m?.role === 'user');
+  const text = String(lastUser?.content || '').toLowerCase();
+  if (!text) return false;
+
+  return (
+    text.includes('what is') ||
+    text.includes('what does') ||
+    text.includes('tell me about') ||
+    text.includes('does it do') ||
+    text.includes('use case') ||
+    text.includes('overview') ||
+    text.includes('purpose')
+  );
+}
+
+function renderProjectBasicsAnswer({ item, basics }) {
+  const symbol = item?.symbol ? String(item.symbol).toUpperCase() : '';
+  const name = item?.name ? String(item.name) : symbol || 'This coin';
+  const title = symbol && name ? `${name} (${symbol})` : name || symbol || 'This coin';
+
+  const summary = basics?.summary ? String(basics.summary).trim() : '';
+  const website = basics?.website ? String(basics.website).trim() : '';
+  const coingeckoUrl = basics?.coingecko_url || buildCoinGeckoCoinUrl(item?.id);
+  const categories = Array.isArray(basics?.categories) ? basics.categories.filter(Boolean) : [];
+  const fetchedAt = basics?.fetched_at ? String(basics.fetched_at) : '';
+  const error = basics?.error ? String(basics.error).trim() : '';
+
+  const lines = [];
+  lines.push(`${title} — what it does (plain English)`);
+  lines.push('');
+  if (summary) {
+    lines.push(`- ${summary}`);
+  } else if (error) {
+    lines.push(`- I tried to fetch a short description from CoinGecko, but it failed: ${error}`);
+  } else {
+    lines.push('- I do not have a project description for this coin in the current data.');
+  }
+
+  lines.push('- Token = the “coin” the project uses inside its own ecosystem.');
+
+  if (categories.length > 0) {
+    lines.push(`- Categories: ${categories.join(', ')}`);
+  }
+  if (website) {
+    lines.push(`- Website: ${website}`);
+  }
+  if (coingeckoUrl) {
+    const meta = fetchedAt ? ` (${fetchedAt})` : '';
+    lines.push(`- Source: CoinGecko${meta}: ${coingeckoUrl}`);
+  }
+
+  lines.push('');
+  lines.push('Educational only — not financial advice.');
+  return lines.join('\n');
 }
 
 function checkRateLimit(ip) {
@@ -1011,14 +1136,49 @@ export async function POST(req) {
     selectedItem,
   });
 
-  if (shouldAttachProjectBasics(conversation)) {
+  const wantsProjectBasics = shouldAttachProjectBasics(conversation);
+  const isProjectQuestion = isProjectBasicsQuestion(conversation);
+  if (wantsProjectBasics || isProjectQuestion) {
     const target = selectedItem || mentionedItems[0] || null;
     const id = target?.data?.id || null;
-    if (id && target?.data && !target.data.project_basics) {
+
+    if (target?.data && id && !target.data.project_basics) {
       const basics = await fetchCoinGeckoProjectBasics(id);
-      if (basics?.summary) {
+      if (basics && (basics.summary || basics.error)) {
         target.data.project_basics = basics;
       }
+    }
+
+    if (isProjectQuestion) {
+      if (!target?.data) {
+        return new Response(
+          JSON.stringify({
+            answer:
+              "Which coin do you mean? Select a coin in the chat dropdown (or type its symbol/name in your message).",
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+
+      const basics = target?.data?.project_basics || null;
+      if (basics && (basics.summary || basics.error)) {
+        return new Response(
+          JSON.stringify({
+            answer: renderProjectBasicsAnswer({ item: target.data, basics }),
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+
+      const coinUrl = buildCoinGeckoCoinUrl(target?.data?.id);
+      return new Response(
+        JSON.stringify({
+          answer: coinUrl
+            ? `I tried to fetch a short description, but it is not available right now. Try again later, or open CoinGecko: ${coinUrl}`
+            : 'I tried to fetch a short description, but I could not identify which coin you meant.',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
     }
   }
 

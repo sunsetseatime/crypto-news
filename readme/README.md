@@ -153,6 +153,7 @@ You still keep GitHub Actions as the “daily engine” that generates the repor
 - `OPENAI_API_KEY` = your OpenAI key (server-side only)
 - `CHAT_PASSWORD` = a strong private password (required, prevents public abuse)
 - Optional: `OPENAI_MODEL_CHAT` = defaults to `gpt-4o-mini`
+- Optional: `COINGECKO_API_KEY` = improves “what does this project do?” answers (avoids public rate limits)
 
 **3) Deploy**
 - Open your Vercel URL and click **Chat** (bottom-right)
@@ -160,7 +161,7 @@ You still keep GitHub Actions as the “daily engine” that generates the repor
 - Click a coin row to auto-select it, then ask follow-up questions
 
 Notes:
-- The chat is education-focused and answers from your reports (and may pull a short CoinGecko project description when you ask “what is this project?”).
+- The chat is education-focused and answers from your reports (and pulls a short CoinGecko project description when you ask “what is this project?”).
 - Exchange wallets are treated as lower “single whale” risk, but only when the report explicitly labels them as an exchange.
 
 ## Output
@@ -169,7 +170,7 @@ Notes:
 |------|-------------|
 | `reports/Layer1Report.json` | Raw deterministic data for all coins |
 | `reports/Summary.md` | Human-readable summary table |
-| `reports/MacroPulse.md` | Daily macro pulse (ETF money flow, leverage, BTC share, alt news) |
+| `reports/MacroPulse.md` | Daily macro pulse (ETF money flow, BTC leverage check, BTC share, alt headlines) |
 | `reports/Dashboard.html` | Local dashboard UI (opens in your browser) |
 | `reports/Alerts.md` | Alerts for this run (high-score / actionable items) |
 | `reports/Alerts.json` | Alerts (structured JSON) |
@@ -211,7 +212,7 @@ Use `config/watchlist_staging.json` as a safe sandbox for newly discovered coins
 - `reports/Summary.md` shows **Watchlist** and **Staging Watchlist** separately so your main list stays clean.
 
 Optional:
-- Enable discovery auto-staging (so top discovery picks get scanned daily in the staging section) via `AUTO_STAGE_DISCOVERY=1`.
+- Discovery auto-staging is **always on** (the scanner will add a few top discovery picks into staging each run).
 - Block specific CoinGecko IDs from being auto-staged by adding them to `config/auto_stage_ignore.json`.
 
 ### Address Book (Optional: Label Exchange Wallets)
@@ -286,11 +287,12 @@ TAKE_PROFIT_TARGET_2=30
 TAKE_PROFIT_TARGET_3=50
 TAKE_PROFIT_APPROACH_BUFFER=2
 
-# Discovery auto-stage (optional)
+# Discovery auto-stage (always on)
 # - Adds top discovery picks into the staging scan automatically.
-AUTO_STAGE_DISCOVERY=1
+# - Control how many/which coins with the settings below.
+# - Note: `AUTO_STAGE_DISCOVERY` is no longer used (auto-staging is always enabled).
 # - Stage up to N coins per run
-AUTO_STAGE_LIMIT=2
+AUTO_STAGE_LIMIT=4
 # - Only stage when score/flow is strong (defaults shown)
 AUTO_STAGE_DISCOVERY_SCORE_MIN=85
 AUTO_STAGE_VOLUME_24H_MIN=10000000
