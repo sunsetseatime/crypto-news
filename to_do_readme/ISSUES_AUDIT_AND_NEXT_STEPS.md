@@ -325,6 +325,7 @@ Implementation notes (for dev)
 - Chat API context: `app/api/chat/route.js` (selected coin + mentioned coins)
 - Chat UI coin selection: `app/route.js` (click-to-select + dropdown)
 - Manual coin context (optional): `config/coin_context.json`
+- Optional: add a **Research mode** toggle in chat to pull extra info + links (CoinGecko/GitHub) for the selected coin.
 
 **Status update (2026-01-19):** Chat now pulls a short “project basics” description from CoinGecko (with retries). If you set `COINGECKO_API_KEY` on Vercel, it is more reliable under heavy usage.
 

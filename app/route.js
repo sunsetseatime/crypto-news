@@ -84,6 +84,15 @@ function injectChat(html, { reportsBaseUrl }) {
     background: rgba(0,0,0,0.08);
   }
   .cn-chat-row { display: grid; gap: 6px; }
+  .cn-chat-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font: 600 13px/1.2 var(--sans, ui-sans-serif, system-ui);
+    color: var(--text, #e6edf3);
+    user-select: none;
+  }
+  .cn-chat-toggle input { width: 16px; height: 16px; }
   .cn-chat-label {
     font-size: 12px;
     color: var(--muted, #9fb0c0);
@@ -194,7 +203,7 @@ function injectChat(html, { reportsBaseUrl }) {
   <div class="cn-chat-header">
     <div>
       <div class="cn-chat-title">Ask the dashboard</div>
-      <div class="cn-chat-subtitle">Plain English answers from your latest reports</div>
+      <div class="cn-chat-subtitle">Plain English answers from your latest reports (optional research)</div>
     </div>
     <button id="cn-chat-close" class="cn-chat-icon-btn" type="button" aria-label="Close chat">×</button>
   </div>
@@ -209,6 +218,13 @@ function injectChat(html, { reportsBaseUrl }) {
       <select id="cn-chat-coin" class="cn-chat-select">
         <option value="">General question (no coin selected)</option>
       </select>
+    </div>
+    <div class="cn-chat-row">
+      <label class="cn-chat-toggle">
+        <input id="cn-chat-research" type="checkbox" />
+        <span>Research mode (optional)</span>
+      </label>
+      <div class="cn-chat-label">When on, chat may pull extra info + links from CoinGecko/GitHub.</div>
     </div>
     <div class="cn-chat-hint">
       Uses Watchlist, Discovery, DeFi, Alerts, and Diff reports. For “what is this project?”, it may also pull a short description from CoinGecko.<br />
@@ -365,6 +381,7 @@ function injectChat(html, { reportsBaseUrl }) {
       var closeBtn = qs('#cn-chat-close');
       var keyInput = qs('#cn-chat-key');
       var coinSelect = qs('#cn-chat-coin');
+      var researchToggle = qs('#cn-chat-research');
       var messagesEl = qs('#cn-chat-messages');
       var form = qs('#cn-chat-form');
       var input = qs('#cn-chat-input');
@@ -372,10 +389,11 @@ function injectChat(html, { reportsBaseUrl }) {
       var reportsLink = qs('#cn-chat-reports-link');
       var suggestButtons = qsa('.cn-chat-suggest');
 
-      if (!openBtn || !panel || !closeBtn || !keyInput || !coinSelect || !messagesEl || !form || !input || !sendBtn) return;
+      if (!openBtn || !panel || !closeBtn || !keyInput || !coinSelect || !researchToggle || !messagesEl || !form || !input || !sendBtn) return;
 
       var state = readState();
       if (state.accessKey) keyInput.value = state.accessKey;
+      researchToggle.checked = Boolean(state.research);
       if (reportsLink && REPORTS_BASE_URL) {
         reportsLink.href = REPORTS_BASE_URL.replace(/\\/+$/, '') + '/';
         reportsLink.textContent = REPORTS_BASE_URL.replace(/^https?:\\/\\//, '');
@@ -411,6 +429,11 @@ function injectChat(html, { reportsBaseUrl }) {
       coinSelect.addEventListener('change', function () {
         var next = readState();
         next.coinId = coinSelect.value || '';
+        writeState(next);
+      });
+      researchToggle.addEventListener('change', function () {
+        var next = readState();
+        next.research = Boolean(researchToggle.checked);
         writeState(next);
       });
 
@@ -460,7 +483,7 @@ function injectChat(html, { reportsBaseUrl }) {
               'content-type': 'application/json',
               'x-chat-password': accessKey
             },
-            body: JSON.stringify({ messages: chatMessages.slice(-20), coin: coin })
+            body: JSON.stringify({ messages: chatMessages.slice(-20), coin: coin, research: Boolean(researchToggle.checked) })
           });
           var data = await res.json().catch(function () { return {}; });
           if (!res.ok) {

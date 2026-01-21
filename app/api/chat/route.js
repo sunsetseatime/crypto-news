@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
@@ -5,6 +8,10 @@ const DEFAULT_REPORTS_BASE_URL = 'https://sunsetseatime.github.io/crypto-news';
 const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
 const COINGECKO_API_BASE_URL = 'https://api.coingecko.com/api/v3';
 const COINGECKO_KEY_HEADER_DEFAULT = 'x_cg_demo_api_key';
+const GITHUB_API_BASE_URL = 'https://api.github.com';
+
+const WATCHLIST_PATH = path.join(process.cwd(), 'config', 'watchlist.json');
+const WATCHLIST_STAGING_PATH = path.join(process.cwd(), 'config', 'watchlist_staging.json');
 
 const reportCache = {
   fetchedAt: 0,
@@ -14,6 +21,9 @@ const reportCache = {
 
 const rateLimitMap = new Map();
 const coinGeckoAboutCache = new Map();
+const localCoinConfigCache = { loadedAt: 0, ttlMs: 10 * 60 * 1000, data: null };
+const githubReleasesCache = new Map();
+const researchBundleCache = new Map();
 
 function getReportsBaseUrl() {
   const raw = process.env.REPORTS_BASE_URL || DEFAULT_REPORTS_BASE_URL;
@@ -138,6 +148,9 @@ async function fetchCoinGeckoProjectBasics(coinGeckoId) {
         summary: null,
         website: null,
         categories: [],
+        twitter: null,
+        github_repos: [],
+        recent_updates: [],
         coingecko_url: buildCoinGeckoCoinUrl(id),
         error: blocked
           ? 'CoinGecko rate-limited this request (try again in a minute).'
@@ -157,6 +170,34 @@ async function fetchCoinGeckoProjectBasics(coinGeckoId) {
         ? String(data.links.homepage.find((h) => String(h || '').trim()) || '').trim()
         : '';
     const categories = Array.isArray(data?.categories) ? data.categories : [];
+    const twitterHandle =
+      typeof data?.links?.twitter_screen_name === 'string'
+        ? data.links.twitter_screen_name.trim()
+        : '';
+    const twitterUrl = twitterHandle ? `https://twitter.com/${twitterHandle}` : null;
+
+    const githubReposRaw = Array.isArray(data?.links?.repos_url?.github)
+      ? data.links.repos_url.github
+      : [];
+    const githubRepos = githubReposRaw
+      .map((u) => String(u || '').trim())
+      .filter(Boolean)
+      .slice(0, 3);
+
+    const statusUpdates = Array.isArray(data?.status_updates) ? data.status_updates : [];
+    const recentUpdates = statusUpdates
+      .slice(0, 3)
+      .map((u) => {
+        const description = summarizeDescription(u?.description, 320);
+        const url = typeof u?.url === 'string' ? u.url.trim() : '';
+        return {
+          description: description || null,
+          url: url || null,
+          created_at: u?.created_at || null,
+          category: u?.category || null,
+        };
+      })
+      .filter((u) => u.description || u.url);
 
     const payload = {
       source: 'CoinGecko',
@@ -167,6 +208,9 @@ async function fetchCoinGeckoProjectBasics(coinGeckoId) {
         .map((c) => safeText(c, 40))
         .filter(Boolean)
         .slice(0, 6),
+      twitter: twitterUrl,
+      github_repos: githubRepos,
+      recent_updates: recentUpdates,
       coingecko_url: buildCoinGeckoCoinUrl(id),
     };
 
@@ -307,6 +351,205 @@ function includesWord(haystackLower, wordLower) {
   if (!wordLower) return false;
   const re = new RegExp(`\\b${escapeRegExp(wordLower)}\\b`, 'i');
   return re.test(haystackLower);
+}
+
+function normalizeSymbol(value) {
+  const s = String(value ?? '').trim().toUpperCase();
+  if (!s) return '';
+  if (!/^[A-Z0-9]{2,15}$/.test(s)) return '';
+  return s;
+}
+
+function readJsonFileSafe(filePath, fallbackValue) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return fallbackValue;
+  }
+}
+
+function loadLocalCoinConfigs() {
+  const now = nowMs();
+  if (localCoinConfigCache.data && now - localCoinConfigCache.loadedAt < localCoinConfigCache.ttlMs) {
+    return localCoinConfigCache.data;
+  }
+
+  const byId = new Map();
+  const bySymbol = new Map();
+  const byName = new Map();
+
+  const addEntry = (item, listName) => {
+    if (!item || typeof item !== 'object') return;
+
+    const id = normalizeCoinGeckoId(item.coinGeckoId || item.coin_gecko_id || item.id);
+    const symbol = normalizeSymbol(item.symbol);
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    const nameLower = name ? name.toLowerCase() : '';
+
+    if (!id && !symbol && !nameLower) return;
+
+    const urls = item.urls && typeof item.urls === 'object' ? item.urls : {};
+    const payload = {
+      source: 'repo_config',
+      list: listName,
+      id: id || null,
+      symbol: symbol || null,
+      name: name || null,
+      category: safeText(item.category, 40) || null,
+      notes: safeText(item.notes, 280) || null,
+      urls: {
+        official: safeText(urls.official, 240) || null,
+        x: safeText(urls.x, 240) || null,
+        blog: safeText(urls.blog, 240) || null,
+        github: safeText(urls.github, 240) || null,
+      },
+    };
+
+    if (id && !byId.has(id)) byId.set(id, payload);
+    if (symbol && !bySymbol.has(symbol)) bySymbol.set(symbol, payload);
+    if (nameLower && !byName.has(nameLower)) byName.set(nameLower, payload);
+  };
+
+  const watchlist = readJsonFileSafe(WATCHLIST_PATH, []);
+  if (Array.isArray(watchlist)) {
+    for (const item of watchlist) addEntry(item, 'watchlist');
+  }
+  const staging = readJsonFileSafe(WATCHLIST_STAGING_PATH, []);
+  if (Array.isArray(staging)) {
+    for (const item of staging) addEntry(item, 'staging');
+  }
+
+  const data = { loaded_at: new Date().toISOString(), byId, bySymbol, byName };
+  localCoinConfigCache.data = data;
+  localCoinConfigCache.loadedAt = now;
+  return data;
+}
+
+function findLocalCoinConfig({ id, symbol, name }) {
+  const cfg = loadLocalCoinConfigs();
+  const idNorm = normalizeCoinGeckoId(id);
+  const symbolNorm = normalizeSymbol(symbol);
+  const nameLower = String(name ?? '').trim().toLowerCase();
+
+  if (idNorm && cfg.byId.has(idNorm)) return cfg.byId.get(idNorm);
+  if (symbolNorm && cfg.bySymbol.has(symbolNorm)) return cfg.bySymbol.get(symbolNorm);
+  if (nameLower && cfg.byName.has(nameLower)) return cfg.byName.get(nameLower);
+  return null;
+}
+
+function parseGitHubOwnerRepo(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const match = raw.match(/github\.com\/([^/?#]+)\/([^/?#]+)(?:\.git)?/i);
+  if (!match) return null;
+  const owner = String(match[1] || '').trim();
+  const repo = String(match[2] || '').replace(/\.git$/i, '').trim();
+  if (!owner || !repo) return null;
+  return { owner, repo, repo_url: `https://github.com/${owner}/${repo}` };
+}
+
+async function fetchGitHubReleases({ owner, repo }) {
+  const ownerSafe = String(owner ?? '').trim();
+  const repoSafe = String(repo ?? '').trim();
+  if (!ownerSafe || !repoSafe) return null;
+
+  const cacheKey = `${ownerSafe}/${repoSafe}`.toLowerCase();
+  const cached = githubReleasesCache.get(cacheKey);
+  const now = nowMs();
+  if (cached && now - cached.fetchedAt < cached.ttlMs) return cached.data;
+
+  const url = `${GITHUB_API_BASE_URL}/repos/${encodeURIComponent(ownerSafe)}/${encodeURIComponent(repoSafe)}/releases?per_page=5`;
+  const headers = {
+    accept: 'application/vnd.github+json',
+    'User-Agent': 'crypto-news-chat',
+  };
+
+  try {
+    const res = await fetch(url, { next: { revalidate: 30 * 60 }, headers });
+    if (res.status === 404) return null;
+
+    const remaining = res.headers.get('x-ratelimit-remaining');
+    const blocked = res.status === 403 && remaining === '0';
+
+    if (!res.ok) {
+      const payload = {
+        source: 'GitHub',
+        fetched_at: new Date().toISOString(),
+        repo: `${ownerSafe}/${repoSafe}`,
+        repo_url: `https://github.com/${ownerSafe}/${repoSafe}`,
+        releases: [],
+        error: blocked
+          ? 'GitHub rate-limited this request (try again later).'
+          : `GitHub request failed (HTTP ${res.status}).`,
+      };
+      githubReleasesCache.set(cacheKey, {
+        fetchedAt: now,
+        ttlMs: blocked ? 30 * 60 * 1000 : 5 * 60 * 1000,
+        data: payload,
+      });
+      return payload;
+    }
+
+    const json = await res.json();
+    const releases = Array.isArray(json) ? json : [];
+    const trimmed = releases.slice(0, 3).map((rel) => ({
+      name: safeText(rel?.name || rel?.tag_name, 100) || null,
+      tag: safeText(rel?.tag_name, 60) || null,
+      published_at: rel?.published_at || rel?.created_at || null,
+      url: rel?.html_url || null,
+    }));
+
+    const payload = {
+      source: 'GitHub',
+      fetched_at: new Date().toISOString(),
+      repo: `${ownerSafe}/${repoSafe}`,
+      repo_url: `https://github.com/${ownerSafe}/${repoSafe}`,
+      releases: trimmed.filter((r) => r.name || r.tag || r.url),
+    };
+
+    githubReleasesCache.set(cacheKey, {
+      fetchedAt: now,
+      ttlMs: 30 * 60 * 1000,
+      data: payload,
+    });
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function buildResearchBundleForCoin({ item }) {
+  const id = normalizeCoinGeckoId(item?.id);
+  if (!id) return null;
+
+  const cached = researchBundleCache.get(id);
+  const now = nowMs();
+  if (cached && now - cached.fetchedAt < cached.ttlMs) return cached.data;
+
+  const repoConfig = findLocalCoinConfig({
+    id,
+    symbol: item?.symbol,
+    name: item?.name,
+  });
+
+  const coingecko = await fetchCoinGeckoProjectBasics(id);
+  const githubUrl =
+    repoConfig?.urls?.github ||
+    (Array.isArray(coingecko?.github_repos) ? coingecko.github_repos[0] : null) ||
+    null;
+  const gh = parseGitHubOwnerRepo(githubUrl);
+  const github = gh ? await fetchGitHubReleases(gh) : null;
+
+  const payload = {
+    fetched_at: new Date().toISOString(),
+    repo_config: repoConfig || null,
+    coingecko: coingecko || null,
+    github_releases: github || null,
+  };
+
+  researchBundleCache.set(id, { fetchedAt: now, ttlMs: 10 * 60 * 1000, data: payload });
+  return payload;
 }
 
 async function fetchJson(url) {
@@ -998,6 +1241,9 @@ function buildSystemPrompt() {
     '- If the user asks "why was this recommended today?", prefer selected_item.data.today_play when available (it is the dashboard shortlist reason).',
     '- If the user asks "what is this project / what does it do?", use selected_item.data.project_basics when available, and say it comes from CoinGecko.',
     '- If the user asks "what news recently?", use selected_item.data.recent_news (titles + links) when available.',
+    '- Research mode: if research.enabled is true, you may use research.coin (repo_config + CoinGecko + GitHub) to go deeper.',
+    '  - When you use research, include source links (example: CoinGecko URL, GitHub repo URL).',
+    '  - If research.enabled is false and the user asks for deep research beyond the reports, tell them to turn on Research mode.',
     '- When discussing big holders:',
     '  - Exchange wallets can look huge but often represent many customers, so they are usually lower "single whale" risk.',
     '  - Never guess whether an address is an exchange. Only call it an exchange if the report explicitly labels it as an exchange.',
@@ -1083,6 +1329,7 @@ export async function POST(req) {
   }
 
   const coin = body?.coin || null;
+  const researchEnabled = body?.research === true;
   const incomingMessages = Array.isArray(body?.messages) ? body.messages : null;
   const singleMessage = typeof body?.message === 'string' ? body.message.trim() : '';
 
@@ -1182,12 +1429,31 @@ export async function POST(req) {
     }
   }
 
+  let research = { enabled: false };
+  if (researchEnabled) {
+    const target = selectedItem || mentionedItems[0] || null;
+    if (!target?.data) {
+      research = {
+        enabled: true,
+        note: 'No coin selected. Select a coin in the chat dropdown to enable research mode for that coin.',
+        coin: null,
+      };
+    } else {
+      const bundle = await buildResearchBundleForCoin({ item: target.data });
+      research = {
+        enabled: true,
+        coin: bundle,
+      };
+    }
+  }
+
   const system = buildSystemPrompt();
   const context = {
     reports_base_url: reports.baseUrl,
     selected_item: selectedItem,
     mentioned_items: mentionedItems,
     global: globalSummary,
+    research,
   };
 
   const messages = [

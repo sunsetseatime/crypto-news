@@ -133,6 +133,8 @@ If your repo is private and you’re on GitHub Free, Pages will prompt you to up
 - If you’re on a paid plan and Pages is enabled for a private repo: set repo variable `ENABLE_PAGES=1` so the workflow deploys to Pages.
 
 Notes:
+- The chat answers from your reports by default.
+- Turn on **Research mode** in Chat to pull extra info + links from CoinGecko/GitHub for the selected coin.
 - Schedule/time is configured in `.github/workflows/daily-scan-pages.yml` (cron is UTC).
 - The workflow keeps small state (history/backtest/discovery queue) via Actions cache so “Diff”/backtests work across runs.
 
@@ -159,6 +161,7 @@ You still keep GitHub Actions as the “daily engine” that generates the repor
 - Open your Vercel URL and click **Chat** (bottom-right)
 - Paste the same `CHAT_PASSWORD` into the chat panel once (it saves in your browser)
 - Click a coin row to auto-select it, then ask follow-up questions
+- Optional: turn on **Research mode** in the chat for deeper info + links (CoinGecko/GitHub)
 
 Notes:
 - The chat is education-focused and answers from your reports (and pulls a short CoinGecko project description when you ask “what is this project?”).

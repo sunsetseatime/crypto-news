@@ -83,6 +83,7 @@
 ### 11. Dashboard Chat Improvements
 - **Coin-specific Q&A**: Chat can explain why a coin was picked (watchlist vs discovery) and why it shows up in today’s shortlist
 - **Recent headlines**: Chat includes the same recent headlines already collected during the scan (titles + links)
+- **Research mode (toggle)**: Optional deep dive that pulls extra linked info from CoinGecko/GitHub for the selected coin
 - **Project basics (optional)**: When you ask “what is this project?”, chat may pull a short project description from CoinGecko
 
 ---
