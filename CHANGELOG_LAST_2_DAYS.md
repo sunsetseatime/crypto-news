@@ -78,6 +78,16 @@
 ### 10. Backtest Confidence Integration
 - **Confidence scoring**: Calculates precision and recall for hygiene gates
 - **Dashboard display**: Shows backtest confidence in hygiene labels
+
+### 11. Vercel Chat “Research Mode” (stronger coin deep-dives)
+- **Toggle in chat UI**: Turn Research mode on/off per conversation
+- **Model split**: Normal chat uses `OPENAI_MODEL_CHAT` (default `gpt-4o-mini`); Research mode uses `OPENAI_MODEL_CHAT_RESEARCH` (default `gpt-5.2`)
+- **Free external sources (with links)**:
+  - CoinGecko project basics
+  - GitHub releases (when a repo is detected)
+  - Curated RSS news feeds (CoinDesk, Decrypt, The Block, Bitcoin Magazine)
+  - Project blog feed (auto-detected from `config/watchlist*.json` when `urls.blog` is set)
+- **Source labeling**: When research/news is used, answers should include the publisher name + the link so you can verify
 - **Gate improvements**: Entry signal and DeFi security now part of gate evaluation
 
 ### 11. Dashboard Chat Improvements

@@ -6,9 +6,13 @@ export const maxDuration = 60;
 
 const DEFAULT_REPORTS_BASE_URL = 'https://sunsetseatime.github.io/crypto-news';
 const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
+const DEFAULT_OPENAI_MODEL_RESEARCH = 'gpt-5.2';
 const COINGECKO_API_BASE_URL = 'https://api.coingecko.com/api/v3';
 const COINGECKO_KEY_HEADER_DEFAULT = 'x_cg_demo_api_key';
 const GITHUB_API_BASE_URL = 'https://api.github.com';
+const RESEARCH_FETCH_TIMEOUT_MS = 6500;
+const RESEARCH_NEWS_MAX_ITEMS = 8;
+const RESEARCH_BLOG_MAX_ITEMS = 5;
 
 const WATCHLIST_PATH = path.join(process.cwd(), 'config', 'watchlist.json');
 const WATCHLIST_STAGING_PATH = path.join(process.cwd(), 'config', 'watchlist_staging.json');
@@ -24,6 +28,18 @@ const coinGeckoAboutCache = new Map();
 const localCoinConfigCache = { loadedAt: 0, ttlMs: 10 * 60 * 1000, data: null };
 const githubReleasesCache = new Map();
 const researchBundleCache = new Map();
+const feedCache = new Map();
+const blogFeedUrlCache = new Map();
+
+const RESEARCH_NEWS_FEEDS = [
+  {
+    name: 'CoinDesk',
+    url: 'https://www.coindesk.com/arc/outboundfeeds/rss/?outputType=xml',
+  },
+  { name: 'Decrypt', url: 'https://decrypt.co/feed' },
+  { name: 'The Block', url: 'https://www.theblock.co/rss.xml' },
+  { name: 'Bitcoin Magazine', url: 'https://bitcoinmagazine.com/feed' },
+];
 
 function getReportsBaseUrl() {
   const raw = process.env.REPORTS_BASE_URL || DEFAULT_REPORTS_BASE_URL;
@@ -44,6 +60,10 @@ function getOpenAiModel() {
   return String(process.env.OPENAI_MODEL_CHAT || DEFAULT_OPENAI_MODEL);
 }
 
+function getOpenAiResearchModel() {
+  return String(process.env.OPENAI_MODEL_CHAT_RESEARCH || DEFAULT_OPENAI_MODEL_RESEARCH);
+}
+
 function getCoinGeckoKey() {
   const raw = process.env.COINGECKO_API_KEY;
   return raw ? String(raw) : '';
@@ -60,6 +80,62 @@ function nowMs() {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeHttpUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTextWithTimeout(url, { timeoutMs = RESEARCH_FETCH_TIMEOUT_MS, headers } = {}) {
+  const safeUrl = normalizeHttpUrl(url);
+  if (!safeUrl) {
+    return { ok: false, status: 0, error: 'Invalid URL.' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(safeUrl, {
+      signal: controller.signal,
+      redirect: 'follow',
+      next: { revalidate: 10 * 60 },
+      headers: {
+        accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, text/html;q=0.9, */*;q=0.8',
+        'User-Agent': 'crypto-news-chat',
+        ...(headers || {}),
+      },
+    });
+
+    if (res.status === 404) return { ok: false, status: 404, error: 'Not found.' };
+    const contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        contentType,
+        error: `HTTP ${res.status}`,
+        text: text.slice(0, 1200),
+      };
+    }
+
+    return { ok: true, status: res.status, contentType, text };
+  } catch (err) {
+    const msg = err?.name === 'AbortError' ? 'Timed out.' : err?.message || String(err);
+    return { ok: false, status: 0, error: msg };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function normalizeCoinGeckoId(value) {
@@ -519,6 +595,291 @@ async function fetchGitHubReleases({ owner, repo }) {
   }
 }
 
+function unwrapCdata(value) {
+  const raw = String(value ?? '');
+  if (!raw) return '';
+  return raw.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1');
+}
+
+function extractFirstTagText(xml, tagName) {
+  const tag = escapeRegExp(tagName);
+  const match = String(xml ?? '').match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+  if (!match) return '';
+  return unwrapCdata(match[1] || '').trim();
+}
+
+function extractAtomLink(entryXml) {
+  const raw = String(entryXml ?? '');
+  const links = [...raw.matchAll(/<link\b([^>]*?)\/?>/gi)];
+  if (links.length === 0) return '';
+
+  const pickHref = (attrs) => {
+    const m = String(attrs || '').match(/\bhref=['"]([^'"]+)['"]/i);
+    return m ? String(m[1] || '').trim() : '';
+  };
+
+  for (const [, attrs] of links) {
+    const rel = String(attrs || '').match(/\brel=['"]([^'"]+)['"]/i);
+    if (rel && String(rel[1] || '').toLowerCase() !== 'alternate') continue;
+    const href = pickHref(attrs);
+    if (href) return href;
+  }
+
+  const fallback = pickHref(links[0]?.[1]);
+  return fallback || '';
+}
+
+function normalizePublishedAt(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) return raw;
+  return new Date(parsed).toISOString();
+}
+
+function parseFeedItems(xmlText, { sourceName, feedUrl, maxItems = 18 } = {}) {
+  const xml = String(xmlText ?? '').trim();
+  if (!xml) return [];
+
+  const items = [];
+  const rssMatches = [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)];
+  const blocks =
+    rssMatches.length > 0
+      ? rssMatches.map((m) => ({ kind: 'rss', xml: m[1] }))
+      : [...xml.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/gi)].map((m) => ({
+          kind: 'atom',
+          xml: m[1],
+        }));
+
+  for (const block of blocks.slice(0, maxItems)) {
+    const chunk = String(block.xml || '');
+    const titleRaw = extractFirstTagText(chunk, 'title');
+    const title = safeText(stripHtmlToText(titleRaw), 180) || null;
+
+    let url = '';
+    if (block.kind === 'atom') {
+      url = extractAtomLink(chunk) || extractFirstTagText(chunk, 'link');
+    } else {
+      url = extractFirstTagText(chunk, 'link') || extractFirstTagText(chunk, 'guid');
+    }
+    url = normalizeHttpUrl(url) || '';
+
+    const published =
+      normalizePublishedAt(extractFirstTagText(chunk, 'pubDate')) ||
+      normalizePublishedAt(extractFirstTagText(chunk, 'published')) ||
+      normalizePublishedAt(extractFirstTagText(chunk, 'updated')) ||
+      normalizePublishedAt(extractFirstTagText(chunk, 'dc:date')) ||
+      null;
+
+    if (!title && !url) continue;
+    items.push({
+      source: sourceName || null,
+      title,
+      url: url || null,
+      published_at: published,
+      feed_url: feedUrl || null,
+    });
+  }
+
+  return items;
+}
+
+async function fetchFeed({ name, url, ttlMs = 10 * 60 * 1000 }) {
+  const feedUrl = normalizeHttpUrl(url);
+  if (!feedUrl) {
+    return {
+      source: name || null,
+      fetched_at: new Date().toISOString(),
+      feed_url: url || null,
+      items: [],
+      error: 'Invalid feed URL.',
+    };
+  }
+
+  const cached = feedCache.get(feedUrl);
+  const now = nowMs();
+  if (cached && now - cached.fetchedAt < cached.ttlMs) return cached.data;
+
+  const res = await fetchTextWithTimeout(feedUrl, { timeoutMs: RESEARCH_FETCH_TIMEOUT_MS });
+  const payload = {
+    source: name || null,
+    fetched_at: new Date().toISOString(),
+    feed_url: feedUrl,
+    items: [],
+    error: null,
+  };
+
+  if (!res.ok) {
+    payload.error = res.error || `Feed fetch failed (HTTP ${res.status || 'n/a'}).`;
+    feedCache.set(feedUrl, { fetchedAt: now, ttlMs: 5 * 60 * 1000, data: payload });
+    return payload;
+  }
+
+  const items = parseFeedItems(res.text, { sourceName: name, feedUrl, maxItems: 22 });
+  payload.items = items;
+  feedCache.set(feedUrl, { fetchedAt: now, ttlMs, data: payload });
+  return payload;
+}
+
+function coinMatchesText({ textLower, idLower, nameLower, symbolUpper }) {
+  if (!textLower) return false;
+  if (idLower && textLower.includes(idLower)) return true;
+  if (nameLower && textLower.includes(nameLower)) return true;
+  const symbol = normalizeSymbol(symbolUpper);
+  if (symbol && symbol.length >= 3 && includesWord(textLower, symbol.toLowerCase())) return true;
+  return false;
+}
+
+async function fetchCoinNewsMentions({ item }) {
+  const idLower = normalizeCoinGeckoId(item?.id || item?.coin_gecko_id || item?.coinGeckoId);
+  const nameLower = String(item?.name || '').trim().toLowerCase();
+  const symbolUpper = normalizeSymbol(item?.symbol);
+
+  const feedResults = await Promise.all(
+    RESEARCH_NEWS_FEEDS.map((feed) =>
+      fetchFeed({ name: feed.name, url: feed.url, ttlMs: 10 * 60 * 1000 }),
+    ),
+  );
+
+  const seen = new Set();
+  const mentions = [];
+  for (const feed of feedResults) {
+    for (const entry of Array.isArray(feed?.items) ? feed.items : []) {
+      const title = String(entry?.title || '').trim();
+      const link = normalizeHttpUrl(entry?.url) || '';
+      const hay = `${title} ${link}`.toLowerCase();
+      if (!coinMatchesText({ textLower: hay, idLower, nameLower, symbolUpper })) continue;
+
+      const key = link || title.toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+
+      mentions.push({
+        title: safeText(title, 180) || null,
+        url: link || null,
+        published_at: entry?.published_at || null,
+        source: feed?.source || null,
+      });
+    }
+  }
+
+  const sortKey = (x) => {
+    const t = Date.parse(String(x?.published_at || ''));
+    return Number.isFinite(t) ? t : 0;
+  };
+
+  mentions.sort((a, b) => sortKey(b) - sortKey(a));
+
+  const feedsMeta = feedResults.map((f) => ({
+    source: f?.source || null,
+    feed_url: f?.feed_url || null,
+    fetched_at: f?.fetched_at || null,
+    error: f?.error || null,
+  }));
+
+  return {
+    source: 'rss',
+    fetched_at: new Date().toISOString(),
+    query: { id: idLower || null, name: item?.name || null, symbol: symbolUpper || null },
+    feeds: feedsMeta,
+    items: mentions.slice(0, RESEARCH_NEWS_MAX_ITEMS),
+  };
+}
+
+function looksLikeFeedUrl(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw) return false;
+  return (
+    raw.endsWith('.xml') ||
+    raw.includes('/rss') ||
+    raw.includes('/feed') ||
+    raw.includes('atom')
+  );
+}
+
+async function discoverBlogFeedUrl(blogUrl) {
+  const blog = normalizeHttpUrl(blogUrl);
+  if (!blog) return null;
+
+  const cached = blogFeedUrlCache.get(blog);
+  const now = nowMs();
+  if (cached && now - cached.fetchedAt < cached.ttlMs) return cached.data;
+
+  const base = new URL(blog);
+  const candidates = [];
+
+  if (looksLikeFeedUrl(blog)) candidates.push(blog);
+
+  const suffixes = ['/feed', '/rss', '/rss/', '/feed.xml', '/rss.xml', '/atom.xml', '/index.xml'];
+  for (const suffix of suffixes) {
+    try {
+      const u = new URL(suffix, base);
+      const normalized = normalizeHttpUrl(u.toString());
+      if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+    } catch {
+      // ignore
+    }
+  }
+
+  let winner = null;
+  for (const candidate of candidates.slice(0, 7)) {
+    const res = await fetchTextWithTimeout(candidate, { timeoutMs: 4500 });
+    if (!res.ok || !res.text) continue;
+    const head = res.text.slice(0, 1200).toLowerCase();
+    if (!head.includes('<rss') && !head.includes('<feed')) continue;
+    winner = candidate;
+    break;
+  }
+
+  blogFeedUrlCache.set(blog, {
+    fetchedAt: now,
+    ttlMs: 6 * 60 * 60 * 1000,
+    data: winner,
+  });
+
+  return winner;
+}
+
+async function fetchProjectBlogPosts({ blogUrl }) {
+  const blog = normalizeHttpUrl(blogUrl);
+  if (!blog) return null;
+
+  const feedUrl = await discoverBlogFeedUrl(blog);
+  if (!feedUrl) {
+    return {
+      source: 'project_blog',
+      fetched_at: new Date().toISOString(),
+      blog_url: blog,
+      feed_url: null,
+      items: [],
+      error: 'Could not find a blog RSS/Atom feed automatically.',
+    };
+  }
+
+  const host = (() => {
+    try {
+      return new URL(blog).hostname.replace(/^www\./i, '');
+    } catch {
+      return null;
+    }
+  })();
+
+  const feed = await fetchFeed({
+    name: host ? `Project blog (${host})` : 'Project blog',
+    url: feedUrl,
+    ttlMs: 15 * 60 * 1000,
+  });
+
+  return {
+    source: 'project_blog',
+    fetched_at: new Date().toISOString(),
+    blog_url: blog,
+    feed_url: feedUrl,
+    items: Array.isArray(feed?.items) ? feed.items.slice(0, RESEARCH_BLOG_MAX_ITEMS) : [],
+    error: feed?.error || null,
+  };
+}
+
 async function buildResearchBundleForCoin({ item }) {
   const id = normalizeCoinGeckoId(item?.id);
   if (!id) return null;
@@ -539,13 +900,21 @@ async function buildResearchBundleForCoin({ item }) {
     (Array.isArray(coingecko?.github_repos) ? coingecko.github_repos[0] : null) ||
     null;
   const gh = parseGitHubOwnerRepo(githubUrl);
-  const github = gh ? await fetchGitHubReleases(gh) : null;
+  const blogUrl = repoConfig?.urls?.blog || null;
+
+  const [github, newsMentions, projectBlog] = await Promise.all([
+    gh ? fetchGitHubReleases(gh) : Promise.resolve(null),
+    fetchCoinNewsMentions({ item }),
+    blogUrl ? fetchProjectBlogPosts({ blogUrl }) : Promise.resolve(null),
+  ]);
 
   const payload = {
     fetched_at: new Date().toISOString(),
     repo_config: repoConfig || null,
     coingecko: coingecko || null,
     github_releases: github || null,
+    news_mentions: newsMentions || null,
+    project_blog: projectBlog || null,
   };
 
   researchBundleCache.set(id, { fetchedAt: now, ttlMs: 10 * 60 * 1000, data: payload });
@@ -1230,7 +1599,11 @@ function buildSystemPrompt() {
     'Your job: help the user understand the latest Watchlist / Discovery / DeFi reports in plain English.',
     '',
     'Rules:',
-    '- Use ONLY the context JSON provided. If something is not in the context, say you do not know.',
+    '- If research.enabled is false: use ONLY the context JSON provided. If something is not in the context, say you do not know.',
+    '- If research.enabled is true:',
+    '  - You may use research.coin (repo config + CoinGecko + GitHub + RSS feeds) as extra context.',
+    '  - You may add simple background explanations from general knowledge (not time-sensitive).',
+    '  - Do NOT invent specifics. Any numbers, dates, “recently”, or news claims must be backed by a link from the context.',
     '- Use plain English. Avoid jargon and acronyms. If you must use an acronym (like FDV), define it first.',
     '- Do not give financial advice. You may use action labels (Buy/Wait/Avoid) only as dashboard signal labels, not advice.',
     '- Discovery results are NOT recommendations. Discovery is just a shortlist that passed the discovery filters (volume, size, and recent move). Meme coins can appear if they match the numbers.',
@@ -1240,9 +1613,10 @@ function buildSystemPrompt() {
     '- If the user asks for "today\'s plays", use global.today_plays and say it comes from the dashboard shortlist.',
     '- If the user asks "why was this recommended today?", prefer selected_item.data.today_play when available (it is the dashboard shortlist reason).',
     '- If the user asks "what is this project / what does it do?", use selected_item.data.project_basics when available, and say it comes from CoinGecko.',
-    '- If the user asks "what news recently?", use selected_item.data.recent_news (titles + links) when available.',
-    '- Research mode: if research.enabled is true, you may use research.coin (repo_config + CoinGecko + GitHub) to go deeper.',
-    '  - When you use research, include source links (example: CoinGecko URL, GitHub repo URL).',
+    '- If the user asks "what news recently?", use selected_item.data.recent_news (titles + links + source) when available.',
+    '- Research mode output rules (when research.enabled is true):',
+    '  - Prefer research.coin.news_mentions and research.coin.project_blog for extra news context.',
+    '  - For every headline you mention, include the publisher name + the link (so the user can verify it).',
     '  - If research.enabled is false and the user asks for deep research beyond the reports, tell them to turn on Research mode.',
     '- When discussing big holders:',
     '  - Exchange wallets can look huge but often represent many customers, so they are usually lower "single whale" risk.',
@@ -1276,6 +1650,19 @@ async function callOpenAi({ apiKey, model, messages }) {
     throw new Error('OpenAI returned no message content.');
   }
   return content;
+}
+
+function looksLikeModelAccessError(err) {
+  const msg = String(err?.message || '').toLowerCase();
+  if (!msg) return false;
+  return (
+    msg.includes('model') &&
+    (msg.includes('not found') ||
+      msg.includes('does not exist') ||
+      msg.includes('model_not_found') ||
+      msg.includes('do not have access') ||
+      msg.includes('not have access'))
+  );
 }
 
 export async function POST(req) {
@@ -1407,25 +1794,28 @@ export async function POST(req) {
         );
       }
 
-      const basics = target?.data?.project_basics || null;
-      if (basics && (basics.summary || basics.error)) {
+      // If Research mode is enabled, do not short-circuit: let the model answer using the full research bundle.
+      if (!researchEnabled) {
+        const basics = target?.data?.project_basics || null;
+        if (basics && (basics.summary || basics.error)) {
+          return new Response(
+            JSON.stringify({
+              answer: renderProjectBasicsAnswer({ item: target.data, basics }),
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+
+        const coinUrl = buildCoinGeckoCoinUrl(target?.data?.id);
         return new Response(
           JSON.stringify({
-            answer: renderProjectBasicsAnswer({ item: target.data, basics }),
+            answer: coinUrl
+              ? `I tried to fetch a short description, but it is not available right now. Try again later, or open CoinGecko: ${coinUrl}`
+              : 'I tried to fetch a short description, but I could not identify which coin you meant.',
           }),
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
-
-      const coinUrl = buildCoinGeckoCoinUrl(target?.data?.id);
-      return new Response(
-        JSON.stringify({
-          answer: coinUrl
-            ? `I tried to fetch a short description, but it is not available right now. Try again later, or open CoinGecko: ${coinUrl}`
-            : 'I tried to fetch a short description, but I could not identify which coin you meant.',
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      );
     }
   }
 
@@ -1466,16 +1856,34 @@ export async function POST(req) {
   ];
 
   try {
-    const answer = await callOpenAi({
-      apiKey,
-      model: getOpenAiModel(),
-      messages,
-    });
-    return new Response(JSON.stringify({ answer }), {
+    const primaryModel = researchEnabled ? getOpenAiResearchModel() : getOpenAiModel();
+    let answer = await callOpenAi({ apiKey, model: primaryModel, messages });
+    let modelUsed = primaryModel;
+
+    return new Response(JSON.stringify({ answer, model: modelUsed }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
   } catch (err) {
+    if (researchEnabled && looksLikeModelAccessError(err)) {
+      const fallbackModel = getOpenAiModel();
+      if (fallbackModel && fallbackModel !== getOpenAiResearchModel()) {
+        try {
+          const fallbackAnswer = await callOpenAi({
+            apiKey,
+            model: fallbackModel,
+            messages,
+          });
+          const answer = `Note: Research mode model (${getOpenAiResearchModel()}) was not available, so I used ${fallbackModel}.\n\n${fallbackAnswer}`;
+          return new Response(JSON.stringify({ answer, model: fallbackModel }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        } catch {
+          // fall through to main error response
+        }
+      }
+    }
     return new Response(
       JSON.stringify({
         error: 'Chat request failed.',

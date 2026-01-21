@@ -305,6 +305,8 @@ Implementation notes (for dev)
   - The coin’s “today’s plays” reasoning (if it’s on the shortlist)
   - The top headlines we already collected during the scan (title + link)
   - A short “project basics” blurb (either from your manual context file, or pulled from CoinGecko)
+- Optional: add a **Research mode** toggle in chat to pull extra info + links for the selected coin (CoinGecko + GitHub releases + free RSS news + the project’s blog feed when available).  
+  - All external headlines must show **publisher name + link** (so you can verify).
 - If something isn’t available, the chat should say that clearly (no guessing).
 
 **Why**
@@ -316,18 +318,24 @@ Implementation notes (for dev)
 3) Ask: “Why did it recommend <coin>?”
 4) Ask: “What is <coin> and what does it do?”
 5) Ask: “What news did we see recently for <coin>?”
-6) Confirm the chat:
+6) Turn on **Research mode** and ask: “What’s new this week for <coin>?” (or “Any official blog posts?”)
+7) Confirm the chat:
    - Uses the same shortlist as the dashboard (when it says “recommended today”).
    - Shows 1–3 headline titles with links (or says no headlines were available).
    - Gives a short project basics answer (or clearly says it’s missing).
+   - In Research mode: shows the publisher name + link for any RSS/blog headline it mentions.
 
 Implementation notes (for dev)
 - Chat API context: `app/api/chat/route.js` (selected coin + mentioned coins)
 - Chat UI coin selection: `app/route.js` (click-to-select + dropdown)
 - Manual coin context (optional): `config/coin_context.json`
-- Optional: add a **Research mode** toggle in chat to pull extra info + links (CoinGecko/GitHub) for the selected coin.
+- Research mode: `app/route.js` sends `research: true/false` and the server builds `research.coin` in `app/api/chat/route.js`.
+- Research model: `OPENAI_MODEL_CHAT_RESEARCH` (defaults to `gpt-5.2`).
 
-**Status update (2026-01-19):** Chat now pulls a short “project basics” description from CoinGecko (with retries). If you set `COINGECKO_API_KEY` on Vercel, it is more reliable under heavy usage.
+**Status update (2026-01-21):**
+- Chat supports click-to-select coins and answers “why picked / what is it / recent news” from report context.
+- Research mode toggle is implemented (CoinGecko + GitHub releases + free RSS + project blog feed) and should label headline sources with links.
+- If you set `COINGECKO_API_KEY` on Vercel, CoinGecko project basics are more reliable under heavy usage.
 
 ---
 

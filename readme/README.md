@@ -134,7 +134,7 @@ If your repo is private and you’re on GitHub Free, Pages will prompt you to up
 
 Notes:
 - The chat answers from your reports by default.
-- Turn on **Research mode** in Chat to pull extra info + links from CoinGecko/GitHub for the selected coin.
+- Turn on **Research mode** in Chat to pull extra info + links for the selected coin (CoinGecko + GitHub + free RSS news feeds + the project’s blog feed when available).
 - Schedule/time is configured in `.github/workflows/daily-scan-pages.yml` (cron is UTC).
 - The workflow keeps small state (history/backtest/discovery queue) via Actions cache so “Diff”/backtests work across runs.
 
@@ -155,16 +155,18 @@ You still keep GitHub Actions as the “daily engine” that generates the repor
 - `OPENAI_API_KEY` = your OpenAI key (server-side only)
 - `CHAT_PASSWORD` = a strong private password (required, prevents public abuse)
 - Optional: `OPENAI_MODEL_CHAT` = defaults to `gpt-4o-mini`
+- Optional: `OPENAI_MODEL_CHAT_RESEARCH` = defaults to `gpt-5.2` (used only when Research mode is ON)
 - Optional: `COINGECKO_API_KEY` = improves “what does this project do?” answers (avoids public rate limits)
 
 **3) Deploy**
 - Open your Vercel URL and click **Chat** (bottom-right)
 - Paste the same `CHAT_PASSWORD` into the chat panel once (it saves in your browser)
 - Click a coin row to auto-select it, then ask follow-up questions
-- Optional: turn on **Research mode** in the chat for deeper info + links (CoinGecko/GitHub)
+- Optional: turn on **Research mode** in the chat for deeper info + links (CoinGecko/GitHub/RSS/blog)
 
 Notes:
-- The chat is education-focused and answers from your reports (and pulls a short CoinGecko project description when you ask “what is this project?”).
+- The chat is education-focused and answers from your reports (and can pull extra research sources when Research mode is on).
+- When it uses news/research links, it will include the publisher name + link so you can verify.
 - Exchange wallets are treated as lower “single whale” risk, but only when the report explicitly labels them as an exchange.
 
 ## Output
