@@ -15,6 +15,10 @@ Write-Host "Running discovery..." -ForegroundColor Yellow
 node src/discover.js
 if ($LASTEXITCODE -ne 0) { throw "Discovery failed." }
 
+Write-Host "Running Signal Engine (fundamentals)..." -ForegroundColor Yellow
+node src/signal_engine.js
+if ($LASTEXITCODE -ne 0) { throw "Signal Engine failed." }
+
 Write-Host "Running watchlist scan..." -ForegroundColor Yellow
 node src/index.js
 if ($LASTEXITCODE -ne 0) { throw "Watchlist scan failed." }

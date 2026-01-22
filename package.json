@@ -5,8 +5,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "scan:watchlist": "node src/index.js && node scripts/verify_technical_signals.js",
+    "scan:watchlist": "node src/signal_engine.js && node src/index.js && node scripts/verify_technical_signals.js",
     "scan:discovery": "node src/discover.js",
+    "scan:signal-engine": "node src/signal_engine.js",
     "scan:defi": "node src/defi_scan.js",
     "verify:ta": "node scripts/verify_technical_signals.js"
   },

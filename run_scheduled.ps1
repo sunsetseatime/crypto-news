@@ -1,6 +1,7 @@
 param(
   [switch]$SkipDiscovery,
   [switch]$SkipDefi,
+  [switch]$SkipSignalEngine,
   [switch]$SkipWatchlist
 )
 
@@ -63,6 +64,12 @@ try {
     Run-Node "src\\discover.js"
   } else {
     Write-LogLine $logPath "Skipping discovery (SkipDiscovery=1)"
+  }
+
+  if (-not $SkipSignalEngine) {
+    Run-Node "src\\signal_engine.js"
+  } else {
+    Write-LogLine $logPath "Skipping Signal Engine (SkipSignalEngine=1)"
   }
 
   if (-not $SkipDefi) {

@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "notes": "Optional per-project source hints for Signal Engine selection. Leave blank if unknown.",
+  "projects": [
+    {
+      "coin_gecko_id": "render-token",
+      "statusPageUrl": "",
+      "utilizationSource": "",
+      "feesSource": "",
+      "emissionsSource": "",
+      "assetValueSource": "",
+      "issuerSource": ""
+    },
+    {
+      "coin_gecko_id": "akash-network",
+      "statusPageUrl": "",
+      "utilizationSource": "",
+      "feesSource": "",
+      "emissionsSource": "",
+      "assetValueSource": "",
+      "issuerSource": ""
+    },
+    {
+      "coin_gecko_id": "io",
+      "statusPageUrl": "",
+      "utilizationSource": "",
+      "feesSource": "",
+      "emissionsSource": "",
+      "assetValueSource": "",
+      "issuerSource": ""
+    },
+    {
+      "coin_gecko_id": "ondo-finance",
+      "statusPageUrl": "",
+      "utilizationSource": "",
+      "feesSource": "",
+      "emissionsSource": "",
+      "assetValueSource": "",
+      "issuerSource": ""
+    },
+    {
+      "coin_gecko_id": "centrifuge",
+      "statusPageUrl": "",
+      "utilizationSource": "",
+      "feesSource": "",
+      "emissionsSource": "",
+      "assetValueSource": "",
+      "issuerSource": ""
+    },
+    {
+      "coin_gecko_id": "chainlink",
+      "statusPageUrl": "",
+      "utilizationSource": "",
+      "feesSource": "",
+      "emissionsSource": "",
+      "assetValueSource": "",
+      "issuerSource": ""
+    },
+    {
+      "coin_gecko_id": "the-graph",
+      "statusPageUrl": "",
+      "utilizationSource": "",
+      "feesSource": "",
+      "emissionsSource": "",
+      "assetValueSource": "",
+      "issuerSource": ""
+    }
+  ]
+}

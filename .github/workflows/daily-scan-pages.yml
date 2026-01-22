@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p reports/backtest reports/defi/snapshots reports/history/watchlist reports/paper
+          mkdir -p reports/backtest reports/defi/snapshots reports/history/watchlist reports/history/signal_engine reports/paper reports/signal_engine/cache
 
       - name: Restore state cache (history/backtest/queue)
         uses: actions/cache@v4
@@ -51,7 +51,9 @@ jobs:
             reports/backtest
             reports/defi/snapshots
             reports/history/watchlist
+            reports/history/signal_engine
             reports/paper
+            reports/signal_engine/cache
           key: crypto-news-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             crypto-news-state-${{ runner.os }}-${{ github.ref_name }}-
@@ -62,6 +64,9 @@ jobs:
           COINGECKO_API_KEY_HEADER: ${{ secrets.COINGECKO_API_KEY_HEADER }}
           COINGECKO_BASE_URL: ${{ secrets.COINGECKO_BASE_URL }}
         run: node src/discover.js
+
+      - name: Run Signal Engine (fundamentals)
+        run: node src/signal_engine.js
 
       - name: Run DeFi scan
         if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.skip_defi == 'true') }}
@@ -120,12 +125,22 @@ jobs:
             fi
           fi
 
+          # Keep last 60 Signal Engine runs.
+          if [ -d "reports/history/signal_engine" ]; then
+            mapfile -t runs < <(ls -1 "reports/history/signal_engine"/*_SignalEngine.json 2>/dev/null | sort -r || true)
+            if [ "${#runs[@]}" -gt 60 ]; then
+              for old in "${runs[@]:60}"; do
+                rm -f "$old" || true
+              done
+            fi
+          fi
+
       - name: Build Pages site (latest reports)
         shell: bash
         run: |
           set -euo pipefail
           rm -rf site
-          mkdir -p site/backtest site/defi site/paper
+          mkdir -p site/backtest site/defi site/paper site/signal_engine
 
           # Dashboard
           if [ -f "reports/Dashboard.html" ]; then
@@ -150,6 +165,20 @@ jobs:
               cp "reports/$f" "site/$f"
             fi
           done
+
+          # Signal Engine (fundamentals)
+          if [ -f "reports/signal_engine/SignalEngine.md" ]; then
+            cp "reports/signal_engine/SignalEngine.md" "site/signal_engine/SignalEngine.md"
+          fi
+          if [ -f "reports/signal_engine/SignalEngine.json" ]; then
+            cp "reports/signal_engine/SignalEngine.json" "site/signal_engine/SignalEngine.json"
+          fi
+          if [ -f "reports/signal_engine/signal_engine_candidate_suggestions.json" ]; then
+            cp "reports/signal_engine/signal_engine_candidate_suggestions.json" "site/signal_engine/signal_engine_candidate_suggestions.json"
+          fi
+          if [ -f "reports/signal_engine/signal_engine_projects.pending.json" ]; then
+            cp "reports/signal_engine/signal_engine_projects.pending.json" "site/signal_engine/signal_engine_projects.pending.json"
+          fi
 
           # Backtest + DeFi (copy if present)
           if [ -f "reports/backtest/BacktestReport.md" ]; then

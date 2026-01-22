@@ -45,13 +45,14 @@ Each coin receives a hygiene label:
 .\run.ps1
 
 # Or directly with Node
+node src/signal_engine.js
 node src/index.js
 node scripts/verify_technical_signals.js
 
 # Or use the batch file
 .\Run Scanner.bat
 
-# Or via npm (scan + automatic sanity check)
+# Or via npm (scan + Signal Engine + automatic sanity check)
 npm run scan:watchlist
 ```
 
@@ -182,6 +183,10 @@ Notes:
 | `reports/Summary.md` | Human-readable summary table |
 | `reports/MacroPulse.md` | Daily macro pulse (ETF money flow, BTC leverage check, BTC share, alt headlines) |
 | `reports/Dashboard.html` | Local dashboard UI (opens in your browser) |
+| `reports/signal_engine/SignalEngine.md` | Signal Engine fundamentals report (low-noise, niche-based) |
+| `reports/signal_engine/SignalEngine.json` | Signal Engine data (structured JSON) |
+| `reports/signal_engine/signal_engine_candidate_suggestions.json` | Signal Engine candidate suggestions (needs approval) |
+| `reports/signal_engine/signal_engine_projects.pending.json` | Pending shortlist for review (does not auto-apply) |
 | `reports/Alerts.md` | Alerts for this run (high-score / actionable items) |
 | `reports/Alerts.json` | Alerts (structured JSON) |
 | `reports/SupervisorSummary.json` | AI summary (only if `OPENAI_API_KEY` is set) |
@@ -197,6 +202,25 @@ Notes:
 | `reports/MacroPulse.json` | Macro pulse data (flows, leverage, share, alt strength/news) |
 
 ## Configuration
+
+### Signal Engine (fundamentals candidates)
+Edit `config/signal_engine_projects.json` to choose your fixed 7 candidates:
+- 3 = AI Compute
+- 2 = RWA
+- 2 = Picks & Shovels (Data / Infra)
+
+Optional: add known data sources per project in `config/signal_engine_metric_registry.json`:
+- `statusPageUrl`
+- `utilizationSource`
+- `feesSource`
+- `emissionsSource`
+- `assetValueSource`
+- `issuerSource`
+
+Promote a suggested candidate into the tracked 7 (with confirmation):
+```powershell
+node src/signal_engine_promote.js promote <coingecko-id>
+```
 
 ### Watchlist
 Edit `config/watchlist.json` to manage your tracked coins:
@@ -342,6 +366,8 @@ The scanner now includes:
 | **On-chain holder analysis** | ✅ **NEW!** | Ethplorer (Ethereum) + explorers where supported; Covalent/GoldRush fallback. |
 | Progress logging | ✅ Implemented | Real-time scan progress |
 | Alerts | ✅ **NEW!** | Local thresholds + Dashboard card (`reports/Alerts.md`) |
+| Signal Engine (Fundamentals) | ✅ **NEW!** | DefiLlama fees + TVL (proxy) + manual config (`config/signal_engine_projects.json`) |
+| Signal Engine Candidate Suggestions | ✅ **NEW!** | Data-first suggestions + coverage scoring (`signal_engine_candidate_suggestions.json`) |
 
 **Notes**: 
 - Some coins may show `unlock_confidence: UNKNOWN` if not listed on DefiLlama

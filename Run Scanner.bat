@@ -24,6 +24,21 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo.
+echo Running Signal Engine (fundamentals)...
+echo.
+node src/signal_engine.js
+
+if errorlevel 1 (
+  echo.
+  echo ========================================
+  echo   Signal Engine Failed! See errors above.
+  echo ========================================
+  echo.
+  pause
+  exit /b 1
+)
+
 node src/index.js
 
 if errorlevel 1 (

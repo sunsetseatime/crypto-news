@@ -218,11 +218,18 @@
 ### New Files
 - `to_do_readme/IMPROVEMENTS.md`: Comprehensive improvement tracking document
 - `CHANGELOG_LAST_2_DAYS.md`: This file
+- `readme/CRYPTO_SIGNAL_ENGINE_IMPLEMENTATION_OUTLINE.md`: Implementation outline for the fundamentals-focused Signal Engine
+- `src/signal_engine.js`: Generates the Signal Engine (fundamentals) report
+- `config/signal_engine_projects.json`: Signal Engine candidate list (3 AI Compute, 2 RWA, 2 Picks & Shovels)
+- `config/signal_engine_metric_registry.json`: Signal Engine metric registry (status/utilization/fees/emissions/etc.)
+- `src/signal_engine_promote.js`: Promote suggested candidates into the tracked list (with confirmation)
 
 ### Updated Documentation
 - Dashboard now includes legends and explanations for new features
 - Action column has a clear legend (what each label means)
 - Market condition indicators explained
+- Added Signal Engine docs + feature entry
+- Added Signal Engine candidate suggestions + promote flow docs
 
 ---
 
@@ -310,5 +317,8 @@
 ## 2026-01-19 Fixes (Chat)
 - Chat now answers “what does this project do?” directly from a short CoinGecko description (when available), instead of replying that it doesn’t know.
 - Added retries + optional `COINGECKO_API_KEY` support for Vercel chat to reduce rate-limit failures.
+
+## 2026-01-22 Signal Engine Suggestions
+- Added a candidate suggestion layer (data coverage + evidence scoring) with a dashboard panel and a pending approval file.
 
 **End of Changelog**

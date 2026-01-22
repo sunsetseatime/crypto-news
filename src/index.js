@@ -97,6 +97,16 @@ const MACRO_PULSE_MD_PATH = path.join(REPORTS_DIR, "MacroPulse.md");
 const DASHBOARD_PATH = path.join(REPORTS_DIR, "Dashboard.html");
 const ALERTS_JSON_PATH = path.join(REPORTS_DIR, "Alerts.json");
 const ALERTS_MD_PATH = path.join(REPORTS_DIR, "Alerts.md");
+const SIGNAL_ENGINE_JSON_PATH = path.join(
+  REPORTS_DIR,
+  "signal_engine",
+  "SignalEngine.json"
+);
+const SIGNAL_ENGINE_SUGGESTIONS_PATH = path.join(
+  REPORTS_DIR,
+  "signal_engine",
+  "signal_engine_candidate_suggestions.json"
+);
 const ALERT_STATE_PATH = path.join(REPORTS_DIR, "alert_state.json");
 const WATCHLIST_PATH = path.join(__dirname, "..", "config", "watchlist.json");
 const MACRO_CALENDAR_PATH = path.join(__dirname, "..", "config", "macro_calendar.json");
@@ -127,6 +137,12 @@ const COIN_CONTEXT_PATH = path.join(
 );
 const CATEGORIES_PATH = path.join(__dirname, "..", "config", "categories.json");
 const PAPER_TRADING_CONFIG_PATH = path.join(__dirname, "..", "config", "paper_trading.json");
+const SIGNAL_ENGINE_CONFIG_PATH = path.join(
+  __dirname,
+  "..",
+  "config",
+  "signal_engine_projects.json"
+);
 
 // Discovery auto-stage (queue -> staging) is always on.
 const AUTO_STAGE_DISCOVERY = true;
@@ -656,6 +672,79 @@ function loadCategoriesConfig() {
     notes: raw.notes || null,
     categories: out,
   };
+}
+
+function buildSignalEngineCategoryIndex(categoriesConfig) {
+  const categories = Array.isArray(categoriesConfig?.categories)
+    ? categoriesConfig.categories
+    : [];
+  const byId = new Map();
+  for (const cat of categories) {
+    if (!cat?.id || !Array.isArray(cat?.coin_gecko_ids)) continue;
+    byId.set(String(cat.id), new Set(cat.coin_gecko_ids));
+  }
+
+  const ai = byId.get("ai_compute") || new Set();
+  const rwa = byId.get("rwa") || new Set();
+  const picks = new Set([
+    ...(byId.get("oracles_data") || new Set()),
+    ...(byId.get("infra_middleware") || new Set()),
+  ]);
+
+  return { ai, rwa, picks };
+}
+
+function enrichDiscoveryReportWithSignalEngineHints(discoveryReport, { categoriesConfig, trackedIds }) {
+  if (!discoveryReport || !Array.isArray(discoveryReport.candidates)) return discoveryReport;
+  const idx = buildSignalEngineCategoryIndex(categoriesConfig);
+  const tracked = trackedIds instanceof Set ? trackedIds : new Set();
+
+  for (const candidate of discoveryReport.candidates) {
+    const coinId = normalizeCoinGeckoId(candidate?.coinGeckoId || candidate?.id);
+    if (!coinId) continue;
+
+    let niche = null;
+    let nicheLabel = null;
+    if (idx.ai.has(coinId)) {
+      niche = "ai_compute";
+      nicheLabel = "AI Compute";
+    } else if (idx.rwa.has(coinId)) {
+      niche = "rwa";
+      nicheLabel = "RWA";
+    } else if (idx.picks.has(coinId)) {
+      niche = "picks_shovels";
+      nicheLabel = "Picks & Shovels";
+    }
+
+    if (!niche) {
+      candidate.signal_engine = {
+        in_scope: false,
+        niche: null,
+        niche_label: null,
+        is_tracked: tracked.has(coinId),
+        confidence: "low",
+        note: "Not mapped to one of the Signal Engine niches yet.",
+      };
+      continue;
+    }
+
+    const isTracked = tracked.has(coinId);
+    candidate.signal_engine = {
+      in_scope: true,
+      niche,
+      niche_label: nicheLabel,
+      is_tracked: isTracked,
+      confidence: "medium",
+      note: isTracked
+        ? "Already tracked in the Signal Engine."
+        : "Matches a Signal Engine niche. Still needs a manual check for real revenue + real users.",
+    };
+  }
+
+  discoveryReport.signal_engine_hint_note =
+    "Adds an in-scope hint for Signal Engine niches (AI Compute / RWA / Picks & Shovels) based on your categories list.";
+
+  return discoveryReport;
 }
 
 function escapeRegExp(value) {
@@ -10737,6 +10826,12 @@ async function main() {
   const defiKnowledge = loadDefiKnowledge(); // Load DeFi scan data for audit/hack context
   const coinContext = loadCoinContext();
   const categoriesConfig = loadCategoriesConfig();
+  const signalEngineConfigRaw = readJsonFile(SIGNAL_ENGINE_CONFIG_PATH, null);
+  const signalEngineTrackedIds = new Set(
+    (Array.isArray(signalEngineConfigRaw?.candidates) ? signalEngineConfigRaw.candidates : [])
+      .map((c) => normalizeCoinGeckoId(c?.coin_gecko_id || c?.coinGeckoId))
+      .filter(Boolean)
+  );
 
   const autoStageIgnoreRaw = readJsonFile(AUTO_STAGE_IGNORE_PATH, []);
   const autoStageIgnoreIds = new Set(
@@ -11487,6 +11582,10 @@ async function main() {
       marketPhase: marketCondition?.market_phase || "neutral",
       exchangeNewsIndex,
     });
+    discoveryReport = enrichDiscoveryReportWithSignalEngineHints(discoveryReport, {
+      categoriesConfig,
+      trackedIds: signalEngineTrackedIds,
+    });
     if (discoveryReport) {
       const discoveryPath = path.join(REPORTS_DIR, "DiscoveryReport.json");
       fs.writeFileSync(
@@ -11598,6 +11697,19 @@ async function main() {
     supervisorResult = { status: "error", reason: err.message };
   }
 
+  let signalEngineReport = null;
+  try {
+    signalEngineReport = readJsonFile(SIGNAL_ENGINE_JSON_PATH, null);
+  } catch {
+    signalEngineReport = null;
+  }
+  let signalEngineSuggestions = null;
+  try {
+    signalEngineSuggestions = readJsonFile(SIGNAL_ENGINE_SUGGESTIONS_PATH, null);
+  } catch {
+    signalEngineSuggestions = null;
+  }
+
   let dashboardHtml = null;
   try {
     dashboardHtml = renderDashboard({
@@ -11611,6 +11723,8 @@ async function main() {
       macroPulse,
       paperReport,
       discoveryReport,
+      signalEngineReport,
+      signalEngineSuggestions,
     });
     fs.writeFileSync(DASHBOARD_PATH, dashboardHtml, "utf8");
   } catch (err) {

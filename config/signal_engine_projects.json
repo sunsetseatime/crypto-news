@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "notes": "Crypto Signal Engine candidates (fundamentals monitoring). This is NOT a buy list. Edit this file to pick your 7 candidates (3 AI Compute, 2 RWA, 2 Picks & Shovels).",
+  "candidates": [
+    {
+      "coin_gecko_id": "render-token",
+      "symbol": "RNDR",
+      "name": "Render",
+      "niche": "ai_compute",
+      "defillama_slug": null,
+      "manual": {
+        "emissions_usd_30d": null
+      }
+    },
+    {
+      "coin_gecko_id": "akash-network",
+      "symbol": "AKT",
+      "name": "Akash Network",
+      "niche": "ai_compute",
+      "defillama_slug": null,
+      "manual": {
+        "emissions_usd_30d": null
+      }
+    },
+    {
+      "coin_gecko_id": "io",
+      "symbol": "IO",
+      "name": "io.net",
+      "niche": "ai_compute",
+      "defillama_slug": null,
+      "manual": {
+        "emissions_usd_30d": null
+      }
+    },
+    {
+      "coin_gecko_id": "ondo-finance",
+      "symbol": "ONDO",
+      "name": "Ondo Finance",
+      "niche": "rwa",
+      "defillama_slug": null,
+      "manual": {
+        "emissions_usd_30d": null
+      }
+    },
+    {
+      "coin_gecko_id": "centrifuge",
+      "symbol": "CFG",
+      "name": "Centrifuge",
+      "niche": "rwa",
+      "defillama_slug": null,
+      "manual": {
+        "emissions_usd_30d": null
+      }
+    },
+    {
+      "coin_gecko_id": "chainlink",
+      "symbol": "LINK",
+      "name": "Chainlink",
+      "niche": "picks_shovels",
+      "defillama_slug": null,
+      "manual": {
+        "emissions_usd_30d": null
+      }
+    },
+    {
+      "coin_gecko_id": "the-graph",
+      "symbol": "GRT",
+      "name": "The Graph",
+      "niche": "picks_shovels",
+      "defillama_slug": null,
+      "manual": {
+        "emissions_usd_30d": null
+      }
+    }
+  ]
+}

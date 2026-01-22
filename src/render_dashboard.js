@@ -611,6 +611,8 @@ function buildQuickStartHtml({ layer1Report, diffReport, alertsReport, paperRepo
     { href: "#best-entries", label: "Best Entries" },
     { href: "#blue-chip-dips", label: "Blue Chip Dips" },
     { href: "#watchlist", label: "Watchlist" },
+    { href: "#signal-engine-suggestions", label: "Signal Engine Suggestions" },
+    { href: "#signal-engine", label: "Signal Engine" },
     { href: "#paper-trading", label: "Paper Trading" },
   ];
 
@@ -794,11 +796,22 @@ function buildDiscoverySectionHtml(discoveryReport) {
         : Number.isFinite(num(c?.news_event_count)) && Number(c.news_event_count) === 0 && !newsHeadline
           ? `News: ${NO_HEADLINES_MESSAGE}`
           : `News: ${toneText}${headlineShort ? ` - ${headlineShort}` : ""}`;
+
+      const se = c?.signal_engine || null;
+      const seText =
+        se?.is_tracked
+          ? `Signal Engine: tracked (${se?.niche_label || "in scope"})`
+          : se?.in_scope
+            ? `Signal Engine: in-scope (${se?.niche_label || "in scope"})`
+            : "";
+      const reasonParts = [`${ch7d} 7d`, `Vol ${vol}`, newsText];
+      if (seText) reasonParts.push(seText);
+      const reason = reasonParts.join(" | ");
       return `
         <div class="play-item play-momentum">
           <span class="play-symbol">${escapeHtml(String(c.symbol || "").toUpperCase())}</span>
           <span class="play-action">Score ${escapeHtml(score)}</span>
-          <span class="play-reason">${escapeHtml(`${ch7d} 7d | Vol ${vol} | ${newsText}`)}</span>
+          <span class="play-reason">${escapeHtml(reason)}</span>
         </div>
       `;
     })
@@ -821,8 +834,276 @@ function buildDiscoverySectionHtml(discoveryReport) {
         "Scores rank new coins by liquidity, volume, and recent price action.",
         "Higher scores mean stronger short-term attention, not long-term quality.",
         "Each coin gets a quick headline check; negative headlines show as a warning.",
+        "If a coin is tagged 'Signal Engine: in-scope', it matches one of your niches (still needs a manual fundamentals check).",
         "Why it matters: it turns a huge market into a short research list.",
         "Always review project basics before adding to your watchlist.",
+      ])}
+    </div>
+  `;
+}
+
+function buildSignalEngineHtml(signalEngineReport) {
+  if (!signalEngineReport) {
+    return `
+      <div class="card" id="signal-engine">
+        <div class="row space-between">
+          <h2>Signal Engine (Fundamentals)</h2>
+          <div class="muted small">Not generated yet</div>
+        </div>
+        <p class="muted small">Tracks hard-to-fake fundamentals for a small, fixed set of candidates. Not a trading bot.</p>
+        <p class="muted">No Signal Engine report found. Run: <span class="mono">node src/signal_engine.js</span></p>
+        ${buildHowThisWorks([
+          "Discovery finds fresh ideas; Signal Engine tracks the few you choose long-term.",
+          "Signals prefer paid usage and repeat behavior over hype.",
+          "If this section is empty, the Signal Engine has not run yet.",
+        ])}
+      </div>
+    `;
+  }
+
+  const generatedAt = signalEngineReport.generated_at ? formatUtc(signalEngineReport.generated_at) : "n/a";
+  const candidates = Array.isArray(signalEngineReport.candidates) ? signalEngineReport.candidates : [];
+
+  function statusBadge(status) {
+    const s = String(status || "").toLowerCase();
+    if (s === "conviction building") return badge("Conviction", "badge-positive");
+    if (s === "warming up") return badge("Warming up", "badge-positive");
+    if (s === "thesis broken") return badge("Thesis broken", "badge-critical");
+    return badge(status || "Monitor", "badge-muted");
+  }
+
+  function nicheTitle(nicheId) {
+    switch (String(nicheId || "").toLowerCase()) {
+      case "ai_compute":
+        return "AI Compute";
+      case "rwa":
+        return "RWA (Real-World Assets)";
+      case "picks_shovels":
+        return "Picks & Shovels (Data / Infra)";
+      default:
+        return nicheId || "Other";
+    }
+  }
+
+  function renderTable(list) {
+    if (!list || list.length === 0) return `<p class="muted small">No candidates in this niche.</p>`;
+
+    const rows = list
+      .map((c) => {
+        const symbol = c?.symbol ? String(c.symbol).toUpperCase() : "";
+        const name = c?.name ? String(c.name) : "";
+        const label = symbol ? `${symbol} - ${name}` : name;
+
+        const scores = c?.scores || {};
+        const growth = Number.isFinite(scores?.growth?.value) ? scores.growth.value : null;
+        const quality = Number.isFinite(scores?.quality?.value) ? scores.quality.value : null;
+        const surviv = Number.isFinite(scores?.survivability?.value) ? scores.survivability.value : null;
+
+        const metrics = c?.metrics || {};
+        const fees30d = Number.isFinite(num(metrics?.fees_total30d_usd)) ? formatUsdCompact(metrics.fees_total30d_usd) : "n/a";
+        const feesMoM = Number.isFinite(num(metrics?.fees_change_30dover30d_pct))
+          ? formatSignedPct(metrics.fees_change_30dover30d_pct, 1)
+          : "n/a";
+        const tvl = Number.isFinite(num(metrics?.tvl_usd)) ? formatUsdCompact(metrics.tvl_usd) : "n/a";
+
+        const signals = Array.isArray(c?.signals) ? c.signals : [];
+        const improving = signals.filter((s) => s?.state === "improving").map((s) => s?.code).filter(Boolean);
+        const worsening = signals.filter((s) => s?.state === "worsening").map((s) => s?.code).filter(Boolean);
+        const signalNote =
+          improving.length > 0
+            ? `Improving: ${improving.join(", ")}`
+            : worsening.length > 0
+              ? `Worsening: ${worsening.join(", ")}`
+              : "No strong signals yet";
+
+        return `
+          <tr data-symbol="${escapeHtml(symbol)}" data-name="${escapeHtml(name)}">
+            <td style="font-weight:700;">${escapeHtml(label)}</td>
+            <td>${statusBadge(c?.status)}</td>
+            <td class="mono">${escapeHtml(growth ?? "n/a")}</td>
+            <td class="mono">${escapeHtml(quality ?? "n/a")}</td>
+            <td class="mono">${escapeHtml(surviv ?? "n/a")}</td>
+            <td class="mono">${escapeHtml(fees30d)}</td>
+            <td class="mono">${escapeHtml(feesMoM)}</td>
+            <td class="mono">${escapeHtml(tvl)}</td>
+            <td class="small muted">${escapeHtml(signalNote)}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    return `
+      <table class="filterable" style="margin-top: 10px;">
+        <thead>
+          <tr>
+            <th>Project</th>
+            <th>Status</th>
+            <th>Growth</th>
+            <th>Quality</th>
+            <th>Survive</th>
+            <th>Fees 30d</th>
+            <th>Fees MoM</th>
+            <th>TVL</th>
+            <th>Signal note</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    `;
+  }
+
+  const byNiche = new Map();
+  for (const c of candidates) {
+    const niche = c?.niche || "unknown";
+    if (!byNiche.has(niche)) byNiche.set(niche, []);
+    byNiche.get(niche).push(c);
+  }
+
+  const order = ["ai_compute", "rwa", "picks_shovels"];
+  const sections = order
+    .map((niche) => {
+      const list = byNiche.get(niche) || [];
+      return `
+        <div style="margin-top: 12px;">
+          <div style="font-weight: 700;">${escapeHtml(nicheTitle(niche))}</div>
+          ${renderTable(list)}
+        </div>
+      `;
+    })
+    .join("");
+
+  const warnings = Array.isArray(signalEngineReport?.warnings) ? signalEngineReport.warnings : [];
+  const warningsHtml =
+    warnings.length > 0
+      ? `<ul class="compact" style="margin-top: 10px;">${warnings
+          .slice(0, 4)
+          .map((w) => `<li>${escapeHtml(w)}</li>`)
+          .join("")}</ul>`
+      : "";
+
+  return `
+    <div class="card" id="signal-engine">
+      <div class="row space-between">
+        <h2>Signal Engine (Fundamentals)</h2>
+        <div class="muted small">${escapeHtml(candidates.length)} candidates | ${escapeHtml(generatedAt)}</div>
+      </div>
+      <p class="muted small">Tracks a small, fixed list of projects by niche. Signals prefer paid usage over hype and avoid price-based alerts.</p>
+      <div class="muted small">
+        <a href="${escapeHtml(path.posix.join("signal_engine", "SignalEngine.md"))}">Open SignalEngine.md</a>
+        <span class="muted"> • </span>
+        <a href="${escapeHtml(path.posix.join("signal_engine", "SignalEngine.json"))}">Open SignalEngine.json</a>
+      </div>
+      ${warningsHtml}
+      ${sections}
+      ${buildHowThisWorks([
+        "Discovery is for new ideas; Signal Engine is for long-term conviction tracking.",
+        "Some signals will show n/a until we add the best data source for that metric.",
+        "Why it matters: it helps you watch fundamentals without watching charts all day.",
+      ])}
+    </div>
+  `;
+}
+
+function buildSignalEngineSuggestionsHtml(suggestionsReport) {
+  if (!suggestionsReport || !suggestionsReport.niches) {
+    return `
+      <div class="card" id="signal-engine-suggestions">
+        <div class="row space-between">
+          <h2>Suggested for Signal Engine</h2>
+          <div class="muted small">Not generated yet</div>
+        </div>
+        <p class="muted small">This list is produced by the new candidate suggestion layer (data-first).</p>
+        <p class="muted">No suggestions file found. Run: <span class="mono">node src/signal_engine.js</span></p>
+      </div>
+    `;
+  }
+
+  const generatedAt = suggestionsReport.generatedAt ? formatUtc(suggestionsReport.generatedAt) : "n/a";
+  const niches = suggestionsReport.niches || {};
+
+  function nicheTitle(nicheId) {
+    switch (String(nicheId || "").toLowerCase()) {
+      case "ai_compute":
+        return "AI Compute";
+      case "rwa":
+        return "RWA (Real-World Assets)";
+      case "picks_and_shovels":
+        return "Picks & Shovels (Data / Infra)";
+      default:
+        return nicheId || "Other";
+    }
+  }
+
+  function renderList(nicheId, items) {
+    const list = Array.isArray(items) ? items : [];
+    if (list.length === 0) {
+      return `<p class="muted small">No suggestions for this niche yet.</p>`;
+    }
+
+    return `
+      <div class="play-section">
+        ${list
+          .map((item) => {
+            const symbol = item?.symbol ? String(item.symbol).toUpperCase() : "";
+            const name = item?.name ? String(item.name) : item?.id || "";
+            const label = symbol ? `${symbol} - ${name}` : name;
+            const score = Number.isFinite(num(item?.score)) ? item.score.toFixed(1) : "n/a";
+            const coverage = Number.isFinite(num(item?.coverageScore)) ? `${item.coverageScore}/7` : "n/a";
+            const reasons = Array.isArray(item?.reasons) ? item.reasons.join("; ") : "";
+            const missing = Array.isArray(item?.missing) ? item.missing.join("; ") : "";
+            const lowCoverage = item?.lowCoverageOverride ? " (low coverage - limited options)" : "";
+            const tracked = item?.isTracked ? "Already tracked" : "Not tracked";
+            const promoteDisabled = item?.isTracked ? "disabled" : "";
+
+            return `
+              <div class="play-item play-momentum">
+                <span class="play-symbol">${escapeHtml(label)}</span>
+                <span class="play-action">Score ${escapeHtml(score)} | Coverage ${escapeHtml(coverage)}${escapeHtml(lowCoverage)}</span>
+                <span class="play-reason">${escapeHtml(reasons ? `Reasons: ${reasons}` : "Reasons: n/a")}</span>
+                <span class="play-reason">${escapeHtml(missing ? `Missing: ${missing}` : "Missing: none")}</span>
+                <span class="muted small">Status: ${escapeHtml(tracked)}</span>
+                <button class="chip" style="margin-top:6px;" ${promoteDisabled} onclick="promoteSignalEngine('${escapeHtml(String(item?.id || ""))}', '${escapeHtml(String(nicheId))}')">
+                  Promote to tracked list
+                </button>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    `;
+  }
+
+  const sections = Object.keys(niches)
+    .map((nicheId) => {
+      const list = niches[nicheId];
+      return `
+        <div style="margin-top: 12px;">
+          <div style="font-weight: 700;">${escapeHtml(nicheTitle(nicheId))}</div>
+          ${renderList(nicheId, list)}
+        </div>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="card" id="signal-engine-suggestions">
+      <div class="row space-between">
+        <h2>Suggested for Signal Engine</h2>
+        <div class="muted small">${escapeHtml(generatedAt)}</div>
+      </div>
+      <p class="muted small">Auto-suggested candidates by niche. These do NOT replace your tracked list without approval.</p>
+      <div class="muted small">
+        <a href="${escapeHtml(path.posix.join("signal_engine", "signal_engine_candidate_suggestions.json"))}">Open suggestions JSON</a>
+        <span class="muted"> • </span>
+        <a href="${escapeHtml(path.posix.join("signal_engine", "signal_engine_projects.pending.json"))}">Open pending shortlist</a>
+      </div>
+      ${sections}
+      ${buildHowThisWorks([
+        "Selection is separate from monitoring: suggestions are ranked by data coverage + evidence.",
+        "Projects with missing data are deprioritized to reduce n/a signals.",
+        "Click Promote to copy the command that updates the tracked list (with confirmation).",
       ])}
     </div>
   `;
@@ -3295,7 +3576,7 @@ function buildFunnelHtml(funnelStats, backtestStats) {
   `;
 }
 
-function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLatest, alertsReport, backtestStats, funnelStats, macroPulse, paperReport, discoveryReport }) {
+function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLatest, alertsReport, backtestStats, funnelStats, macroPulse, paperReport, discoveryReport, signalEngineReport, signalEngineSuggestions }) {
   const coins = Array.isArray(layer1Report?.coins) ? layer1Report.coins : [];
   const mainCoins = coins.filter((c) => (c.watchlist_source || "main") !== "staging");
   const stagingCoins = coins.filter((c) => c.watchlist_source === "staging");
@@ -3333,6 +3614,9 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
     { name: "PaperReport.md", href: path.posix.join("paper", "PaperReport.md") },
     { name: "DiscoveryReport.md", href: "DiscoveryReport.md" },
     { name: "DeFi Latest.md", href: path.posix.join("defi", "Latest.md") },
+    { name: "SignalEngine.md", href: path.posix.join("signal_engine", "SignalEngine.md") },
+    { name: "SignalEngineSuggestions.json", href: path.posix.join("signal_engine", "signal_engine_candidate_suggestions.json") },
+    { name: "SignalEnginePending.json", href: path.posix.join("signal_engine", "signal_engine_projects.pending.json") },
   ];
 
   const fileLinksHtml = fileLinks
@@ -3689,6 +3973,14 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         ${buildDiscoverySectionHtml(discoveryReport)}
       </div>
 
+      <div style="margin-top:14px;">
+        ${buildSignalEngineSuggestionsHtml(signalEngineSuggestions)}
+      </div>
+
+      <div style="margin-top:14px;">
+        ${buildSignalEngineHtml(signalEngineReport)}
+      </div>
+
       <!-- OPPORTUNITY BUCKETS -->
       <div style="margin-top:14px;">
         ${buildOpportunityBucketsHtml(coins)}
@@ -3978,6 +4270,28 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
     }
 
     document.addEventListener("click", handlePaperTradeClick);
+
+    window.promoteSignalEngine = function promoteSignalEngine(id, niche) {
+      if (!id) return;
+      const command = "node src/signal_engine_promote.js promote " + id;
+      const confirmed = window.confirm(
+        "Promote " +
+          id +
+          " (" +
+          niche +
+          ") to the tracked Signal Engine list?\n\nThis will NOT run automatically. The command will be copied to your clipboard so you can run it in PowerShell."
+      );
+      if (!confirmed) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(command).then(() => {
+          alert("Command copied to clipboard:\n" + command + "\n\nRun it in PowerShell to apply.");
+        }).catch(() => {
+          prompt("Copy and run this command:", command);
+        });
+      } else {
+        prompt("Copy and run this command:", command);
+      }
+    };
   })();
 </script>
   </body>
