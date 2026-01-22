@@ -5,9 +5,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "scan:watchlist": "node src/index.js",
+    "scan:watchlist": "node src/index.js && node scripts/verify_technical_signals.js",
     "scan:discovery": "node src/discover.js",
-    "scan:defi": "node src/defi_scan.js"
+    "scan:defi": "node src/defi_scan.js",
+    "verify:ta": "node scripts/verify_technical_signals.js"
   },
   "dependencies": {
     "next": "16.1.1",

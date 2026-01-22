@@ -125,6 +125,7 @@ Step-by-step (recommended):
 ### Note on “code deleted by mistake”
 - In the current work we’ve done, we did **not** remove core features; changes have been additive (new features + wiring).
 - We should still do a short “feature checklist run” after each change (discovery, scan, dashboard, Pages deploy, Vercel proxy) to catch regressions early.
+  - For technical entry logic: run `npm run scan:watchlist` and confirm the built-in TA sanity check passes (or run `npm run verify:ta` manually).
 
 ---
 

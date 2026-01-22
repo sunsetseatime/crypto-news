@@ -46,9 +46,13 @@ Each coin receives a hygiene label:
 
 # Or directly with Node
 node src/index.js
+node scripts/verify_technical_signals.js
 
 # Or use the batch file
 .\Run Scanner.bat
+
+# Or via npm (scan + automatic sanity check)
+npm run scan:watchlist
 ```
 
 ### Option 3: Discover New Coins
@@ -83,6 +87,7 @@ node src/promote_discovery.js stage <coingecko-id>
 
 # 4) Run the scanner (it scans main + staging, but keeps them separate in Summary.md)
 node src/index.js
+node scripts/verify_technical_signals.js
 
 # 5) Promote winners into your main watchlist (or ignore junk)
 node src/promote_discovery.js promote <coingecko-id>
@@ -321,6 +326,7 @@ COINGECKO_API_KEY_HEADER=x_cg_demo_api_key
 - Responses are cached under `reports/cache/` for **6 hours** by default
 - If you hit 429 errors:
   - Wait a minute and re-run, or
+  - Set `MARKET_CHART_DAYS=30` to pull less price history (faster, fewer chart points), or
   - Set `SKIP_MARKET_CHART=1` to skip per-coin chart calls
 
 ## Current Features

@@ -37,6 +37,21 @@ if errorlevel 1 (
 )
 
 echo.
+echo Running technical sanity check...
+echo.
+node scripts\\verify_technical_signals.js
+
+if errorlevel 1 (
+  echo.
+  echo ========================================
+  echo   Sanity Check Failed! See errors above.
+  echo ========================================
+  echo.
+  pause
+  exit /b 1
+)
+
+echo.
 echo ========================================
 echo   Scan Complete!
 echo ========================================

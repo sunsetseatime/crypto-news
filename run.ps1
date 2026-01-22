@@ -19,6 +19,10 @@ Write-Host "Running watchlist scan..." -ForegroundColor Yellow
 node src/index.js
 if ($LASTEXITCODE -ne 0) { throw "Watchlist scan failed." }
 
+Write-Host "Running technical sanity check..." -ForegroundColor Yellow
+node scripts/verify_technical_signals.js
+if ($LASTEXITCODE -ne 0) { throw "Technical sanity check failed." }
+
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "  Scan Complete!" -ForegroundColor Green

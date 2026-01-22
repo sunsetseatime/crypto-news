@@ -8,17 +8,20 @@
 ## 🎯 Major Features Added
 
 ### 1. Technical Entry Signals
-- **RSI-based entry signals**: Added RSI calculation and distance from 30-day high/low metrics
-- **Entry signal classification**: 
-  - `strong_buy`: RSI < 35 and >15% from 30d high
-  - `momentum`: RSI 35-50 and >10% from 30d high
-  - `overbought`: RSI > 70
-- **Integration**: Entry signals now used in hygiene gates and displayed in dashboard Entry column
+- **Entry timing score**: Uses RSI, pullback size (30d high/low), relative strength vs BTC, volume confirmation, and moving averages (MA20/50/200) when available
+- **Entry signal labels** (from `entry_score`, 0–100):
+  - `strong_buy`: score ≥ 75
+  - `buy`: score ≥ 60
+  - `wait`: score ≥ 40
+  - `overbought`: score < 40
+- **Integration**: Entry signals are used in hygiene gates and displayed in the dashboard Entry column
+- **Config**: `MARKET_CHART_DAYS` controls how much daily price history is fetched (default 200)
+- **Sanity check**: `npm run verify:ta` validates TA outputs; `npm run scan:watchlist` runs it automatically after the scan
 
 ### 2. Blue Chip Scanner
 - **Top 50 coins**: Expanded from top 25 to top 50 cryptocurrencies
 - **Dip threshold**: Lowered from 15% to 10% for dip detection
-- **RSI filter**: Added RSI oversold filter (RSI < 35) for blue chip opportunities
+- **RSI filter**: Added RSI oversold filter (RSI < 35), using a smoothed RSI from the 7d sparkline to reduce noise
 - **Stablecoin filtering**: Automatically excludes stablecoins from blue chip scanning
 - **Alert generation**: Creates `blue_chip_dip` alerts for safer investment plays
 

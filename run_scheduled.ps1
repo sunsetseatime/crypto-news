@@ -73,6 +73,7 @@ try {
 
   if (-not $SkipWatchlist) {
     Run-Node "src\\index.js"
+    Run-Node "scripts\\verify_technical_signals.js"
   } else {
     Write-LogLine $logPath "Skipping watchlist scan (SkipWatchlist=1)"
   }

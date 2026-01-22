@@ -1642,7 +1642,7 @@ function buildBestEntriesHtml(bestEntriesData) {
       ${buildHowThisWorks([
         "Only KEEP coins are eligible; KEEP uses project health and dev activity gates.",
         "Dev activity uses GitHub commit recency/repo status or CoinGecko dev data.",
-        "Timing score uses RSI and distance from 30-day high/low.",
+        "Timing score uses RSI, pullback size (30d high/low), trend, volume, and moving averages (average price over X days).",
         "Downtrend coins are excluded unless a strong catalyst and volume spike exist.",
         "High-risk flags remove a coin from this list.",
         "Why it matters: it avoids good coins at bad timing.",
@@ -1798,7 +1798,7 @@ function buildBlueChipOpportunitiesHtml(blueChipData) {
       <p class="small muted" style="margin-top: 12px;">If something is still falling fast today, waiting can be safer than trying to catch the exact bottom.</p>
       ${buildHowThisWorks([
         "Scans top market-cap coins for dips and stabilization.",
-        "Signals use RSI oversold, dip from 7-day high, and weekly loss.",
+        "Signals use RSI (smoothed), dip from 7-day high, and weekly loss.",
         "Moves to Wait list if still falling fast today.",
         "Each coin also gets a quick headline check; negative headlines show as a warning.",
         "Adds a BCH-style history note when a coin has known structural headwinds.",
@@ -2473,7 +2473,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
       ${buildHowThisWorks([
         "Verdict uses gates: liquidity, unlock transparency, traction (TVL + dev activity), ownership, trend, health.",
         "Developer activity uses GitHub commit recency/repo status or CoinGecko dev data.",
-        "Entry uses timing score from RSI and distance from 30-day high/low.",
+        "Entry uses a timing score from RSI, pullback size (30d high/low), trend, volume, and moving averages (average price over X days).",
         "Details show reasons, risks, sizing, news pressure, and manual paper trading.",
         "Why it matters: it separates coin quality from entry timing.",
       ])}

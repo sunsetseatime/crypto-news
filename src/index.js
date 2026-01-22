@@ -152,6 +152,9 @@ const CACHE_TTL_MS =
     ? CACHE_TTL_MINUTES * 60 * 1000
     : 360 * 60 * 1000;
 const SKIP_MARKET_CHART = process.env.SKIP_MARKET_CHART === "1";
+// How far back we pull daily price history (used for RSI + moving averages).
+// - 200 days allows MA50/MA200 while still being reasonably fast.
+const MARKET_CHART_DAYS = clamp(envNumber("MARKET_CHART_DAYS", 200), 30, 365);
 
 // DeFi scan freshness handling (always auto-run on stale)
 const AUTO_RUN_DEFI = true;
@@ -1280,13 +1283,13 @@ function computeRelativeStrength(coinChange, btcChange) {
 }
 
 async function fetchMarketChart(id) {
-  const cachePath = path.join(CACHE_DIR, `market_chart_${id}.json`);
+  const cachePath = path.join(CACHE_DIR, `market_chart_${id}_${MARKET_CHART_DAYS}d.json`);
   const cached = readCache(cachePath);
   if (cached) {
     return cached;
   }
   const url = `${BASE_URL}/coins/${id}/market_chart?vs_currency=${VS_CURRENCY}` +
-    `&days=30&interval=daily`;
+    `&days=${MARKET_CHART_DAYS}&interval=daily`;
   const data = await fetchJson(url);
   writeCache(cachePath, data);
   return data;
@@ -1314,9 +1317,13 @@ function buildPriceSparkline30d(marketChart, maxPoints = 30) {
   if (!marketChart || !Array.isArray(marketChart.prices)) {
     return null;
   }
-  const values = marketChart.prices
+  const valuesAll = marketChart.prices
     .map((entry) => num(entry?.[1]))
     .filter((value) => Number.isFinite(value) && value > 0);
+  if (valuesAll.length < 2) return null;
+
+  // Keep this sparkline truly "30 days" even if we fetched a longer history (e.g., 200d for moving averages).
+  const values = valuesAll.slice(-30);
   if (values.length < 2) return null;
 
   const target = Math.max(2, Math.min(60, Math.round(maxPoints)));
@@ -1378,10 +1385,25 @@ function calculateRSI(prices, period = 14) {
   return Math.round(rsi * 10) / 10; // Round to 1 decimal
 }
 
+function calculateSMA(prices, period) {
+  const window = Math.max(1, Math.round(Number(period) || 0));
+  if (!Array.isArray(prices) || prices.length < window) {
+    return null;
+  }
+  const slice = prices.slice(-window);
+  const sum = slice.reduce((total, value) => total + value, 0);
+  return sum / window;
+}
+
+function pctFrom(a, b) {
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return null;
+  return ((a - b) / b) * 100;
+}
+
 /**
  * Get technical entry signals from market chart data
  */
-function getTechnicalSignals(marketChart, currentPrice) {
+function getTechnicalSignals(marketChart, currentPrice, context = {}) {
   const result = {
     rsi_14d: null,
     rsi_signal: null, // "oversold", "overbought", "neutral"
@@ -1389,6 +1411,12 @@ function getTechnicalSignals(marketChart, currentPrice) {
     low_30d: null,
     distance_from_high: null, // Percentage below 30d high
     distance_from_low: null, // Percentage above 30d low
+    ma_20d: null,
+    ma_50d: null,
+    ma_200d: null,
+    price_vs_ma_20_pct: null,
+    price_vs_ma_50_pct: null,
+    price_vs_ma_200_pct: null,
     entry_signal: null, // "strong_buy", "buy", "wait", "overbought"
     entry_score: null, // 0-100 score for entry quality
   };
@@ -1424,16 +1452,30 @@ function getTechnicalSignals(marketChart, currentPrice) {
   result.low_30d = Math.min(...last30Prices);
   
   // Calculate distance from high/low
-  const price = currentPrice || prices[prices.length - 1];
-  if (price && result.high_30d) {
+  const price = Number.isFinite(currentPrice) ? currentPrice : prices[prices.length - 1];
+  if (Number.isFinite(price) && Number.isFinite(result.high_30d) && result.high_30d > 0) {
     result.distance_from_high = ((result.high_30d - price) / result.high_30d) * 100;
   }
-  if (price && result.low_30d) {
+  if (Number.isFinite(price) && Number.isFinite(result.low_30d) && result.low_30d > 0) {
     result.distance_from_low = ((price - result.low_30d) / result.low_30d) * 100;
+  }
+
+  // Moving averages (simple averages of the last N daily closes)
+  result.ma_20d = calculateSMA(prices, 20);
+  result.ma_50d = calculateSMA(prices, 50);
+  result.ma_200d = calculateSMA(prices, 200);
+  if (Number.isFinite(price) && Number.isFinite(result.ma_20d)) {
+    result.price_vs_ma_20_pct = pctFrom(price, result.ma_20d);
+  }
+  if (Number.isFinite(price) && Number.isFinite(result.ma_50d)) {
+    result.price_vs_ma_50_pct = pctFrom(price, result.ma_50d);
+  }
+  if (Number.isFinite(price) && Number.isFinite(result.ma_200d)) {
+    result.price_vs_ma_200_pct = pctFrom(price, result.ma_200d);
   }
   
   // Calculate entry score (0-100, higher = better entry)
-  // Factors: RSI weight (40%), distance from high weight (40%), distance from low (20%)
+  // This is intentionally simple: it rewards "good dip timing" but avoids calling a falling knife a "buy".
   let entryScore = 50; // Start neutral
   
   if (result.rsi_14d !== null) {
@@ -1459,6 +1501,63 @@ function getTechnicalSignals(marketChart, currentPrice) {
     } else if (result.distance_from_high < 5) {
       entryScore -= 10; // Near all-time high
     }
+  }
+
+  // Distance from low contribution: "near a recent low" can be a decent entry zone
+  if (result.distance_from_low !== null) {
+    if (result.distance_from_low < 5) {
+      entryScore += 8;
+    } else if (result.distance_from_low < 10) {
+      entryScore += 4;
+    } else if (result.distance_from_low > 40) {
+      entryScore -= 4;
+    }
+  }
+
+  // Trend regime contribution (from 7d/30d change)
+  const trendLabel = String(context?.trend_regime || context?.trendRegime?.label || "").trim();
+  if (trendLabel === "Uptrend") {
+    entryScore += 5;
+  } else if (trendLabel === "Downtrend") {
+    entryScore -= 10;
+  }
+
+  // Relative strength vs BTC (7d)
+  const rs7d = num(context?.relative_strength_7d ?? context?.relativeStrength7d);
+  if (rs7d !== null) {
+    if (rs7d >= 10) entryScore += 6;
+    else if (rs7d > 0) entryScore += 3;
+    else if (rs7d <= -10) entryScore -= 6;
+    else if (rs7d < 0) entryScore -= 3;
+  }
+
+  // Volume confirmation (24h vs baseline)
+  const volumeRatio = num(context?.volume_ratio ?? context?.volumeRatio);
+  if (volumeRatio !== null) {
+    if (volumeRatio >= 2) entryScore += 6;
+    else if (volumeRatio >= 1.3) entryScore += 3;
+    else if (volumeRatio <= 0.7) entryScore -= 4;
+  }
+
+  // Moving average trend (longer-term)
+  if (Number.isFinite(result.ma_50d) && Number.isFinite(result.ma_200d)) {
+    if (result.ma_50d >= result.ma_200d) entryScore += 4;
+    else entryScore -= 6;
+  }
+  if (Number.isFinite(price) && Number.isFinite(result.ma_50d)) {
+    if (price >= result.ma_50d) entryScore += 2;
+    else entryScore -= 4;
+  }
+  // "Pullback in a healthy trend" bonus
+  if (
+    Number.isFinite(price) &&
+    Number.isFinite(result.ma_20d) &&
+    Number.isFinite(result.ma_50d) &&
+    Number.isFinite(result.ma_200d) &&
+    result.ma_50d >= result.ma_200d &&
+    price <= result.ma_20d
+  ) {
+    entryScore += 3;
   }
   
   // Clamp score to 0-100
@@ -1618,31 +1717,35 @@ async function fetchBlueChips(count = BLUE_CHIP_COUNT) {
 /**
  * Calculate RSI from sparkline price data
  */
-function calculateRSIFromSparkline(sparkline) {
+function calculateRSIFromSparkline(
+  sparkline,
+  { period = 14, sampleEvery = 6 } = {}
+) {
   if (!sparkline || !Array.isArray(sparkline.price) || sparkline.price.length < 14) {
     return null;
   }
-  
-  const prices = sparkline.price;
-  const changes = [];
-  for (let i = 1; i < prices.length; i++) {
-    changes.push(prices[i] - prices[i - 1]);
+
+  // CoinGecko sparkline is typically hourly points across 7 days (≈168 points).
+  // To make RSI less noisy, we downsample (default: every 6 hours), then run RSI(period=14)
+  // which roughly reflects the last ~3.5 days of movement instead of the last 14 hours.
+  const rawPrices = sparkline.price
+    .map((p) => num(p))
+    .filter((p) => Number.isFinite(p) && p > 0);
+  if (rawPrices.length < period + 1) return null;
+
+  const step = Math.max(1, Math.round(Number(sampleEvery) || 1));
+  const sampled = [];
+  for (let i = 0; i < rawPrices.length; i += step) {
+    sampled.push(rawPrices[i]);
   }
-  
-  // Use last 14 periods
-  const recent = changes.slice(-14);
-  let gains = 0, losses = 0;
-  for (const change of recent) {
-    if (change > 0) gains += change;
-    else losses += Math.abs(change);
+  if (sampled.length >= 2 && sampled[sampled.length - 1] !== rawPrices[rawPrices.length - 1]) {
+    sampled.push(rawPrices[rawPrices.length - 1]);
   }
-  
-  const avgGain = gains / 14;
-  const avgLoss = losses / 14;
-  
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
+
+  if (sampled.length >= period + 1) {
+    return calculateRSI(sampled, period);
+  }
+  return calculateRSI(rawPrices, period);
 }
 
 function sparklinePctChange(sparkline, pointsBack) {
@@ -2312,6 +2415,12 @@ function generateBestEntries(coins, marketCondition) {
     }
     if (coin.trend_regime) {
       reasons.push(`Trend: ${coin.trend_regime.toLowerCase()}`);
+    }
+    const vsMa20 = num(coin.price_vs_ma_20_pct);
+    const ma50 = num(coin.ma_50d);
+    const ma200 = num(coin.ma_200d);
+    if (vsMa20 !== null && vsMa20 < 0 && ma50 !== null && ma200 !== null && ma50 >= ma200) {
+      reasons.push("Pullback below 20d average");
     }
     if (coin.news_activity && coin.news_activity !== "quiet") {
       const tone =
@@ -10850,10 +10959,8 @@ async function main() {
         marketChart = null;
       }
     }
-
+ 
     const volumeStats = getVolumeStats(marketChart);
-    const technicalSignals = getTechnicalSignals(marketChart, num(market?.current_price));
-    const priceSparkline30d = buildPriceSparkline30d(marketChart, 30);
     const volume24h = num(market?.total_volume);
     const volumeBaseline = volumeStats.avg7d ?? volumeStats.avg30d;
     const volumeBaselineWindow = volumeStats.avg7d ? "7d" : volumeStats.avg30d ? "30d" : null;
@@ -11034,6 +11141,13 @@ async function main() {
     const rs30d = computeRelativeStrength(priceChange30d, btc.price_change_30d);
     const outperformingBtc = rs7d !== null && rs7d > 0;
 
+    const technicalSignals = getTechnicalSignals(marketChart, num(market?.current_price), {
+      volume_ratio: volumeRatio,
+      trend_regime: trendRegime?.label || null,
+      relative_strength_7d: rs7d,
+    });
+    const priceSparkline30d = buildPriceSparkline30d(marketChart, 30);
+
     const entryConfirmations = evaluateEntryConfirmations({
       volumeRatio,
       distanceFromLow: technicalSignals.distance_from_low,
@@ -11155,6 +11269,12 @@ async function main() {
       rsi_signal: technicalSignals.rsi_signal,
       high_30d: technicalSignals.high_30d,
       low_30d: technicalSignals.low_30d,
+      ma_20d: technicalSignals.ma_20d,
+      ma_50d: technicalSignals.ma_50d,
+      ma_200d: technicalSignals.ma_200d,
+      price_vs_ma_20_pct: technicalSignals.price_vs_ma_20_pct,
+      price_vs_ma_50_pct: technicalSignals.price_vs_ma_50_pct,
+      price_vs_ma_200_pct: technicalSignals.price_vs_ma_200_pct,
       distance_from_high: technicalSignals.distance_from_high,
       distance_from_low: technicalSignals.distance_from_low,
       entry_signal: technicalSignals.entry_signal,
