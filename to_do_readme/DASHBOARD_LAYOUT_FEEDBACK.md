@@ -6,7 +6,7 @@ Make the dashboard scannable in under 10 seconds, with clear action first and re
 ## High-Level Issues
 1) Actionable sections are buried below context and data-heavy blocks.
 2) Watchlist table is too dense for first-pass scanning.
-3) Key terms (Entry, Beat BTC, liquidity, risk flags) are unclear without inline help.
+3) Key terms (Action, Beat BTC, liquidity, risk flags) are unclear without inline help.
 4) Mobile layout is table-heavy and hard to parse.
 
 ## Recommended Layout Order (Desktop)
@@ -29,13 +29,13 @@ Make the dashboard scannable in under 10 seconds, with clear action first and re
 - Add a **"Today's Focus"** section that summarizes the top 3 actions.
 - Make **Best Entries** and **What to Play** visually dominant.
 - Default **Watchlist** to a condensed view; expand for details.
-- Add inline help or tooltips for: Entry, Beat BTC, Liquidity, News Pressure.
+- Add inline help or tooltips for: Action (timing), Beat BTC, Liquidity, News Pressure.
 - Add a visible expand indicator on rows (chevron + "Details").
-- Add a small **Key** for Entry signals (Great/Good/Wait/Overbought).
+- Add a small **Key** for Action labels (Buy now / Wait for dip / Watch only / Skip).
 
 ## Watchlist Density Fix
 Default row should show:
-- Coin, Verdict, Price, Week %, Entry, Notes (short)
+- Coin, Action, Price, Week %, Notes (short)
 Hide by default:
 - 30d trend, Beat BTC, score breakdown, detailed why/risk
 

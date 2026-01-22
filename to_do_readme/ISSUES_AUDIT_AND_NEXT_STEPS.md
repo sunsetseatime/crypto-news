@@ -150,6 +150,8 @@ Step-by-step (recommended):
 - Keep deep-dive sections below for when you want details.
 - Make the wording consistent and easy for non-coders (and friends) to understand.
 
+**Status update (2026-01-22):** The Watchlist table now uses a single **Action** column (replaces Verdict + Entry) to prevent mixed messages, and Discovery is now labeled as a research list (not recommendations).
+
 ---
 
 ### A) Rename confusing words (so labels match what we mean)

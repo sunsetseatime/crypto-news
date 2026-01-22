@@ -21,7 +21,7 @@ Status legend: [ ] pending, [~] in progress, [x] complete.
 - [~] Discovery funnel visuals: discovered -> staged -> promoted counts (partially shown; needs links).
 
 ## Dashboard & UX
-- [ ] Make hidden notes visible; ensure Entry column legend is clear.
+- [ ] Make hidden notes visible; ensure Action legend is clear.
 - [ ] Show GitHub activity (last commit, stars, archived/stale) prominently on watchlists.
 - [ ] Highlight best entries today and blue-chip opportunities with filters (phase-aware).
 - [ ] Market context block: Fear & Greed, BTC MAs, phase banner (some present; needs clearer layout).

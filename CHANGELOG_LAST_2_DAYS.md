@@ -14,7 +14,7 @@
   - `buy`: score ≥ 60
   - `wait`: score ≥ 40
   - `overbought`: score < 40
-- **Integration**: Entry signals are used in hygiene gates and displayed in the dashboard Entry column
+- **Integration**: Entry signals are used in hygiene gates and shown on the dashboard as plain-English Action labels (Buy now / Wait for dip)
 - **Config**: `MARKET_CHART_DAYS` controls how much daily price history is fetched (default 200)
 - **Sanity check**: `npm run verify:ta` validates TA outputs; `npm run scan:watchlist` runs it automatically after the scan
 
@@ -101,6 +101,12 @@
 
 ---
 
+### 12. Dashboard Clarity (Action + Discovery Labels)
+- Watchlist table now uses a single **Action** column (replaces Verdict + Entry) to avoid mixed messages.
+- Discovery is now labeled as a research list (not recommendations).
+
+---
+
 ## 📁 Files Modified
 
 ### `src/index.js`
@@ -132,8 +138,8 @@
 - `buildPlayRecommendationsHtml()`: "What to play" section
 - `buildBestEntriesHtml()`: Best entry opportunities display
 - `buildBlueChipOpportunitiesHtml()`: Blue chip dip opportunities
-- Entry column: New column showing entry signal, RSI, and distance from high
-- Entry legend: Explanation of entry column icons
+- Action column: One plain-English summary (Buy now / Wait for dip / Watch only / Skip)
+- Action legend: Plain-English guide to the Action labels
 - Market condition display: Fear & Greed Index, BTC momentum, market phase banner
 
 **Key modifications:**
@@ -215,7 +221,7 @@
 
 ### Updated Documentation
 - Dashboard now includes legends and explanations for new features
-- Entry column has clear icon legend
+- Action column has a clear legend (what each label means)
 - Market condition indicators explained
 
 ---
@@ -223,7 +229,7 @@
 ## 🎨 UX Improvements
 
 1. **Hidden Notes Made Visible**: All notes now displayed in dashboard
-2. **Clear Labeling**: Entry column icons explained with legend
+2. **Clear Labeling**: Action labels explained with legend
 3. **Phase-Aware UI**: Recommendations and alerts adapt to market phase
 4. **Visual Hierarchy**: Best entries and blue chip opportunities prominently displayed
 5. **Context Blocks**: Market condition always visible at top of dashboard

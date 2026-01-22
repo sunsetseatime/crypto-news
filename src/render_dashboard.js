@@ -730,7 +730,8 @@ function buildDiscoverySectionHtml(discoveryReport) {
   if (!discoveryReport) {
     return `
       <div class="card">
-        <h2>Discovery</h2>
+        <h2>New coins to research (not recommendations)</h2>
+        <p class="muted small">This is a research list. It is not a buy list.</p>
         <p class="muted">No discovery report yet. Run the discovery scan to populate this section.</p>
         ${buildHowThisWorks([
           "Scans the wider market for coins outside your watchlist.",
@@ -754,7 +755,8 @@ function buildDiscoverySectionHtml(discoveryReport) {
   if (top.length === 0) {
     return `
       <div class="card">
-        <h2>Discovery</h2>
+        <h2>New coins to research (not recommendations)</h2>
+        <p class="muted small">This is a research list. It is not a buy list.</p>
         <p class="muted">No discovery candidates in the latest report.</p>
         ${buildHowThisWorks([
           "Scans the wider market for coins outside your watchlist.",
@@ -808,10 +810,10 @@ function buildDiscoverySectionHtml(discoveryReport) {
   return `
     <div class="card">
       <div class="row space-between">
-        <h2>Discovery</h2>
+        <h2>New coins to research (not recommendations)</h2>
         <div class="muted small">${escapeHtml(total)} candidates | ${escapeHtml(generatedAt)}</div>
       </div>
-      <p class="muted small">Fresh coins that match discovery filters. Use as research ideas, not trade signals.</p>
+      <p class="muted small">This is a research list. It is not a buy list.</p>
       <div class="play-section">
         ${rows}
       </div>
@@ -2222,7 +2224,40 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
     .map((coin, idx) => {
       const label = coin.hygiene_label || "UNKNOWN";
       const entrySignal = coin.entry_signal;
-      const labelBadge = badge(friendlyLabel(label, entrySignal), labelClass(label));
+
+      const eligibleForAction =
+        label === "KEEP" &&
+        coin.holder_concentration_level !== "HIGH" &&
+        coin.high_dilution_risk !== true &&
+        coin.unlock_risk_flag !== true &&
+        coin.low_liquidity !== true &&
+        !(Number.isFinite(num(coin.health_score)) && num(coin.health_score) < 40);
+
+      let timingText = null;
+      if (entrySignal === "strong_buy") timingText = "Great";
+      else if (entrySignal === "buy") timingText = "Good";
+      else if (entrySignal === "overbought" || entrySignal === "wait") timingText = "Wait";
+      else if (entrySignal) timingText = "Okay";
+
+      let actionText = "Research";
+      let actionClass = "badge-muted";
+      if (label === "DROP") {
+        actionText = "Skip";
+        actionClass = "badge-drop";
+      } else if (!eligibleForAction) {
+        actionText = "Watch only";
+        actionClass = "badge-watch";
+      } else if (entrySignal === "strong_buy" || entrySignal === "buy") {
+        actionText = "Buy now";
+        actionClass = "badge-keep";
+      } else {
+        actionText = "Wait for dip";
+        actionClass = "badge-warning";
+      }
+
+      const actionHtml =
+        badge(actionText, actionClass) +
+        (eligibleForAction && timingText ? `<div class="muted small">Timing: ${escapeHtml(timingText)}</div>` : "");
       const price = formatUsd(num(coin.price));
       const ch7d = num(coin.price_change_7d);
       const ch7dDisplay = ch7d !== null 
@@ -2235,45 +2270,6 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
       const notesHtml = notes.length === 0
         ? `<span class="muted">All clear</span>`
         : notes.map((n) => badge(n, "badge-muted")).join(" ");
-
-      const rsi = coin.rsi_14d;
-      const distFromHigh = num(coin.distance_from_high);
-      let entryHtml = `<span class="muted">-</span>`;
-      if (entrySignal) {
-        let entryText = "Okay";
-        let entryColor = "var(--muted)";
-        if (entrySignal === "strong_buy") { entryText = "Great"; entryColor = "var(--keep)"; }
-        else if (entrySignal === "buy") { entryText = "Good"; entryColor = "var(--keep)"; }
-        else if (entrySignal === "overbought") { entryText = "Wait for entry"; entryColor = "var(--drop)"; }
-        else if (entrySignal === "wait") { entryText = "Wait for entry"; entryColor = "var(--watch)"; }
-
-        const entryBlocked =
-          coin.hygiene_label !== "KEEP" ||
-          coin.holder_concentration_level === "HIGH" ||
-          coin.high_dilution_risk === true ||
-          coin.unlock_risk_flag === true ||
-          coin.low_liquidity === true ||
-          (Number.isFinite(num(coin.health_score)) && coin.health_score < 40);
-
-        let rsiNote = "";
-        if (rsi !== null) {
-          if (rsi < 30) rsiNote = "oversold";
-          else if (rsi > 70) rsiNote = "overbought";
-        }
-        let dipNote = "";
-        if (distFromHigh !== null && distFromHigh > 15) { dipNote = `${Math.round(distFromHigh)}% off high`; }
-        const flagNote = entryBlocked ? "quality flags" : "";
-
-        if (entryBlocked && (entrySignal === "strong_buy" || entrySignal === "buy")) {
-          entryText = "Wait (risk)";
-          entryColor = "var(--warning)";
-        }
-
-        const subNote = [rsiNote, dipNote, flagNote].filter(Boolean).join(", ");
-
-        entryHtml = `<span style="color: ${entryColor}; font-weight: 600;">${entryText}</span>` +
-          (subNote ? `<div class="muted small">${escapeHtml(subNote)}</div>` : "");
-      }
 
       const sparkValues = Array.isArray(coin.price_sparkline_30d) ? coin.price_sparkline_30d : null;
       const sparkHtml = sparkValues ? buildSparkline(sparkValues, 140, 28, "30 day price trend") : "";
@@ -2422,12 +2418,11 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
             <button class="paper-trade-btn paper-trade-mini" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}" title="Optional: adds a manual paper trade idea (copies text).">Manual paper trade</button>
           </td>
           <td class="col-symbol" data-label="Coin">${symbolHtml}<div class="muted small">${escapeHtml(coin.name || "")}</div></td>
-          <td data-label="Verdict">${labelBadge}</td>
+          <td data-label="Action">${actionHtml}</td>
           <td class="num" data-label="Price">${escapeHtml(price)}</td>
           <td class="num" data-label="30d">${sparkCell}</td>
           <td class="num" data-label="Week">${ch7dDisplay}</td>
           <td class="num" data-label="Beat BTC?">${rsDisplay}</td>
-          <td class="num" data-label="Entry">${entryHtml}</td>
           <td data-label="Notes">${notesHtml}</td>
         </tr>
       `;
@@ -2436,12 +2431,13 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
     })
     .join("");
 
-  const entryLegend = `
+  const actionLegend = `
     <div class="entry-legend muted small" style="margin-top: 10px; padding: 8px 12px; background: rgba(255,255,255,0.03); border-radius: 8px;">
-      <strong>Entry guide:</strong>
-      <span style="color: var(--keep); margin-left: 8px;">Great</span> = pulled back, better risk/reward
-      <span style="color: var(--keep); margin-left: 8px;">Good</span> = reasonable entry point
-      <span style="color: var(--watch); margin-left: 8px;">Wait for entry</span> = timing not favorable or quality flags
+      <strong>Action guide:</strong>
+      <span style="color: var(--keep); margin-left: 8px;">Buy now</span> = passed checks + timing looks good
+      <span style="color: var(--warning); margin-left: 8px;">Wait for dip</span> = passed checks, but timing is not ideal
+      <span style="color: var(--watch); margin-left: 8px;">Watch only</span> = not ready (failed checks or warning flags)
+      <span style="color: var(--drop); margin-left: 8px;">Skip</span> = avoid (serious red flags)
     </div>
   `;
 
@@ -2454,12 +2450,11 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
             <tr>
               <th></th>
               <th>Coin</th>
-              <th>Verdict</th>
+              <th title="One-line summary: quality first, then timing">Action</th>
               <th class="num">Price</th>
               <th class="num">30d</th>
               <th class="num">Week</th>
               <th class="num" title="Outperformed Bitcoin this week">Beat BTC?</th>
-              <th class="num" title="Timing signal for entry quality">Entry</th>
               <th>Notes</th>
             </tr>
           </thead>
@@ -2468,14 +2463,15 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
           </tbody>
         </table>
       </div>
-      ${entryLegend}
-      <div class="muted small" style="margin-top: 6px;">Verdict = coin quality. Entry = timing signal. Manual paper trade (optional) is in the first column.</div>
+      ${actionLegend}
+      <div class="muted small" style="margin-top: 6px;">Action is the single summary. Manual paper trade (optional) is in the first column.</div>
       ${buildHowThisWorks([
-        "Verdict uses gates: liquidity, unlock transparency, traction (TVL + dev activity), ownership, trend, health.",
+        "Action combines two ideas: coin quality (passes checks) and entry timing (how the chart looks today).",
+        "Coin quality checks: liquidity, unlock transparency, traction (TVL + dev activity), ownership, trend, health.",
         "Developer activity uses GitHub commit recency/repo status or CoinGecko dev data.",
-        "Entry uses a timing score from RSI, pullback size (30d high/low), trend, volume, and moving averages (average price over X days).",
+        "Entry timing uses a score from RSI, pullback size (30d high/low), trend, volume, and moving averages (average price over X days).",
         "Details show reasons, risks, sizing, news pressure, and manual paper trading.",
-        "Why it matters: it separates coin quality from entry timing.",
+        "Why it matters: it prevents mixed messages (good timing on a coin that is not ready).",
       ])}
     </div>
   `;
@@ -3792,7 +3788,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
           </div>
         </div>
         <div class="muted small" style="margin-top: 10px;">
-          Entry setup = timing signal (see the "Entry" column). Strong entry = best timing today. Ready (KEEP) is quality, Entry is timing.
+          Action = the one-line summary. If a coin is not Ready (KEEP), Action says Watch only or Skip. If it is Ready, Action says Buy now or Wait for dip based on timing.
         </div>
         ${buildHowThisWorks([
           "This is a quick glossary for the labels used on the page.",

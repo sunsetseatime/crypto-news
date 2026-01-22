@@ -125,7 +125,7 @@ building a structured news pressure model, and then improving dashboard layout f
    - Blue chip scanner snooze/decay.
    - Discovery funnel visuals with links.
 6) Dashboard UX backlog:
-   - Make hidden notes visible; clarify Entry column legend.
+   - Make hidden notes visible; clarify Action legend.
    - Show GitHub activity on watchlists.
    - Highlight best entries & blue-chip opportunities with filters.
    - Market context block layout cleanup.
