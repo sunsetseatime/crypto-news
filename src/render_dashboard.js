@@ -2599,6 +2599,32 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
           ${contextSourceText ? `<div><strong>Context source:</strong> ${escapeHtml(contextSourceText)}</div>` : ""}
         `
         : "";
+
+      const taRegime = coin?.ta_regime ? String(coin.ta_regime) : "n/a";
+      const taRegimeReason = coin?.ta_regime_reason ? String(coin.ta_regime_reason).replace(/\.$/, "") : "";
+      const taRvol = num(coin?.ta_rvol_20);
+      const taInterest = num(coin?.ta_interest_score);
+      const taInterestConf = coin?.ta_interest_confidence ? String(coin.ta_interest_confidence) : "n/a";
+      const taInterestReason = coin?.ta_interest_confidence_reason
+        ? String(coin.ta_interest_confidence_reason)
+        : "";
+      const taTagsRaw = Array.isArray(coin?.ta_event_tags) ? coin.ta_event_tags : [];
+      const taTags = taTagsRaw
+        .map((t) => String(t || "").trim())
+        .filter(Boolean)
+        .map((t) => t.replace(/_/g, " "));
+      const taTagsText = taTags.length > 0 ? taTags.join(", ") : "none";
+      const taRangeWindow = num(coin?.ta_range_window);
+      const taRangeLow = num(coin?.ta_range_low);
+      const taRangeHigh = num(coin?.ta_range_high);
+      const taRangeLowStatus = coin?.ta_range_low_status ? String(coin.ta_range_low_status).replace(/_/g, " ") : "n/a";
+      const taRangeHighStatus = coin?.ta_range_high_status ? String(coin.ta_range_high_status).replace(/_/g, " ") : "n/a";
+
+      const taMeta = `
+        <div><strong>TA:</strong> ${escapeHtml(taRegime)}${taRegimeReason ? ` <span class="muted small">(${escapeHtml(taRegimeReason)})</span>` : ""} | RVOL ${escapeHtml(Number.isFinite(taRvol) ? taRvol.toFixed(2) : "n/a")} | Interest ${escapeHtml(Number.isFinite(taInterest) ? `${Math.round(taInterest)}/100 (${taInterestConf})` : "n/a")}</div>
+        <div><strong>Key levels:</strong> low ${escapeHtml(taRangeLow !== null ? formatUsd(taRangeLow) : "n/a")} (${escapeHtml(taRangeLowStatus)}), high ${escapeHtml(taRangeHigh !== null ? formatUsd(taRangeHigh) : "n/a")} (${escapeHtml(taRangeHighStatus)})${taRangeWindow !== null ? ` <span class="muted small">(window ${escapeHtml(String(taRangeWindow))})</span>` : ""}</div>
+        <div><strong>Recent TA tags:</strong> ${escapeHtml(taTagsText)}${taInterestReason ? ` <span class="muted small">(${escapeHtml(taInterestReason)})</span>` : ""}</div>
+      `;
       const scoreBreakdown = coin?.score_breakdown || null;
       const paperTags = [
         coin?.trend_regime ? `trend:${String(coin.trend_regime).toLowerCase()}` : null,
@@ -2665,6 +2691,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
                   <div><strong>Invalidation:</strong> ${escapeHtml(invalidation)}</div>
                   <div><strong>Confidence:</strong> ${escapeHtml(confidenceLevel)}${confidenceReason ? ` <span class="muted small">(${escapeHtml(confidenceReason)})</span>` : ""}</div>
                   <div><strong>Data confidence:</strong> ${escapeHtml(dataConfidence)}</div>
+                  ${taMeta}
                   ${contextMeta}
                 </div>
                 <div style="margin-top: 10px;">
@@ -4064,11 +4091,11 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 12px;">
           <div>
             <h3 style="color: var(--keep);">Ready (KEEP)</h3>
-            <p class="small muted">These coins passed safety and quality checks. They have decent trading volume, aren't overly controlled by a few wallets, and show signs of real project activity.</p>
+            <p class="small muted">These coins passed safety and quality checks, so they’re on your short list. KEEP does not mean “buy now” â€” it means “okay to consider” if timing is right.</p>
           </div>
           <div>
-            <h3 style="color: var(--watch);">Keep Watching (WATCH)</h3>
-            <p class="small muted">Interesting but not ready yet. Maybe missing data, or has some warning signs. Keep an eye on them but don't act without more research.</p>
+            <h3 style="color: var(--watch);">Watch-only (WATCH-ONLY)</h3>
+            <p class="small muted">Interesting, but something blocks action right now (example: unlock risk, dilution risk, negative news pressure, or weak price/volume structure). Keep an eye on them, but donâ€™t act without more proof.</p>
           </div>
           <div>
             <h3 style="color: var(--drop);">Avoid (DROP)</h3>
@@ -4080,7 +4107,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
           </div>
         </div>
         <div class="muted small" style="margin-top: 10px;">
-          Action = the one-line summary. If a coin is not Ready (KEEP), Action says Watch only or Skip. If it is Ready, Action says Buy now or Wait for dip based on timing.
+          Action = the one-line summary. If a coin is not Ready (KEEP), Action says Watch only or Skip. If it is Ready, Action says Buy now or Wait for dip based on timing (price/volume + recent events).
         </div>
         ${buildHowThisWorks([
           "This is a quick glossary for the labels used on the page.",

@@ -2,6 +2,10 @@
 
 Full documentation: `readme/README.md`.
 
+## Highlights
+
+- Better TA (volume + price structure): RVOL (today's volume vs 20-day average), trend regime (uptrend/downtrend/range), key range levels, event tags (breakout / reclaim / capitulation / distribution), and an Interest Score (0-100).
+
 ## Docs map (so you don’t have to search)
 
 - `readme/README.md` - Full setup + usage guide

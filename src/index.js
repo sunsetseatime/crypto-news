@@ -168,9 +168,17 @@ const CACHE_TTL_MS =
     ? CACHE_TTL_MINUTES * 60 * 1000
     : 360 * 60 * 1000;
 const SKIP_MARKET_CHART = process.env.SKIP_MARKET_CHART === "1";
+const SKIP_MARKET_OHLC = process.env.SKIP_MARKET_OHLC === "1";
+const ENABLE_TA_CROSS_VENUE = process.env.ENABLE_TA_CROSS_VENUE === "1";
 // How far back we pull daily price history (used for RSI + moving averages).
 // - 200 days allows MA50/MA200 while still being reasonably fast.
 const MARKET_CHART_DAYS = clamp(envNumber("MARKET_CHART_DAYS", 200), 30, 365);
+// CoinGecko OHLC supports only specific day windows. We use 180d so we can detect 20-60 candle structure reliably.
+const MARKET_OHLC_DAYS = (() => {
+  const n = Math.round(envNumber("MARKET_OHLC_DAYS", 180));
+  const allowed = new Set([1, 7, 14, 30, 90, 180, 365]);
+  return allowed.has(n) ? n : 180;
+})();
 
 // DeFi scan freshness handling (always auto-run on stale)
 const AUTO_RUN_DEFI = true;
@@ -1384,6 +1392,18 @@ async function fetchMarketChart(id) {
   return data;
 }
 
+async function fetchMarketOhlc(id) {
+  const cachePath = path.join(CACHE_DIR, `market_ohlc_${id}_${MARKET_OHLC_DAYS}d.json`);
+  const cached = readCache(cachePath);
+  if (cached) {
+    return cached;
+  }
+  const url = `${BASE_URL}/coins/${id}/ohlc?vs_currency=${VS_CURRENCY}&days=${MARKET_OHLC_DAYS}`;
+  const data = await fetchJson(url);
+  writeCache(cachePath, data);
+  return data;
+}
+
 function getVolumeStats(marketChart) {
   if (!marketChart || !Array.isArray(marketChart.total_volumes)) {
     return { avg7d: null, avg30d: null };
@@ -1664,6 +1684,768 @@ function getTechnicalSignals(marketChart, currentPrice, context = {}) {
   }
   
   return result;
+}
+
+// ============================================================================
+// TECHNICAL ANALYSIS - Volume + Price Structure (simple, robust)
+// ============================================================================
+
+function extractAlignedMarketChartSeries(marketChart) {
+  const priceRows = Array.isArray(marketChart?.prices) ? marketChart.prices : [];
+  const volumeRows = Array.isArray(marketChart?.total_volumes) ? marketChart.total_volumes : [];
+  const closesAll = priceRows
+    .map((entry) => num(entry?.[1]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const volumesAll = volumeRows
+    .map((entry) => num(entry?.[1]))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+
+  const len = Math.min(closesAll.length, volumesAll.length);
+  if (len <= 0) {
+    return { closes: [], volumes_quote: [] };
+  }
+  return {
+    closes: closesAll.slice(-len),
+    volumes_quote: volumesAll.slice(-len),
+  };
+}
+
+function smaTail(values, period) {
+  const window = Math.max(1, Math.round(Number(period) || 0));
+  const list = Array.isArray(values) ? values : [];
+  if (list.length < window) return null;
+  const slice = list.slice(-window).filter((v) => Number.isFinite(v));
+  if (slice.length === 0) return null;
+  return average(slice);
+}
+
+function computeMaTrendPct(values, period = 20, offset = 10) {
+  const list = Array.isArray(values) ? values : [];
+  const window = Math.max(1, Math.round(Number(period) || 0));
+  const shift = Math.max(1, Math.round(Number(offset) || 0));
+  if (list.length < window + shift) {
+    return { ma: smaTail(list, window), prev_ma: null, change_pct: null, trend: null };
+  }
+  const maNow = smaTail(list, window);
+  const prevSlice = list.slice(-(window + shift), -shift);
+  const maPrev = smaTail(prevSlice, window);
+  const changePct =
+    Number.isFinite(maNow) && Number.isFinite(maPrev) && maPrev !== 0
+      ? ((maNow - maPrev) / maPrev) * 100
+      : null;
+
+  let trend = null;
+  if (Number.isFinite(changePct)) {
+    if (changePct >= 3) trend = "rising";
+    else if (changePct <= -3) trend = "falling";
+    else trend = "flat";
+  }
+
+  return { ma: maNow, prev_ma: maPrev, change_pct: changePct, trend };
+}
+
+function buildOhlcCandles(ohlcRaw) {
+  const rows = Array.isArray(ohlcRaw) ? ohlcRaw : [];
+  const candles = rows
+    .map((row) => {
+      const t = Number(row?.[0]);
+      const open = num(row?.[1]);
+      const high = num(row?.[2]);
+      const low = num(row?.[3]);
+      const close = num(row?.[4]);
+      if (!Number.isFinite(t) || open === null || high === null || low === null || close === null) {
+        return null;
+      }
+      if (high < low) {
+        return null;
+      }
+      return { t, open, high, low, close };
+    })
+    .filter(Boolean);
+
+  candles.sort((a, b) => a.t - b.t);
+  return candles;
+}
+
+function computeFractalSwings(candles, window = 2) {
+  const w = Math.max(1, Math.round(Number(window) || 2));
+  const list = Array.isArray(candles) ? candles : [];
+  if (list.length < w * 2 + 3) {
+    return { swing_highs: [], swing_lows: [] };
+  }
+
+  const swingHighs = [];
+  const swingLows = [];
+
+  for (let i = w; i < list.length - w; i += 1) {
+    const c = list[i];
+    const high = c.high;
+    const low = c.low;
+
+    let isHigh = true;
+    let isLow = true;
+    for (let j = 1; j <= w; j += 1) {
+      if (!(high > list[i - j].high && high > list[i + j].high)) {
+        isHigh = false;
+      }
+      if (!(low < list[i - j].low && low < list[i + j].low)) {
+        isLow = false;
+      }
+      if (!isHigh && !isLow) break;
+    }
+
+    if (isHigh) swingHighs.push({ t: c.t, price: high, idx: i });
+    if (isLow) swingLows.push({ t: c.t, price: low, idx: i });
+  }
+
+  return { swing_highs: swingHighs, swing_lows: swingLows };
+}
+
+function computePriceStructureRegime(candles, { fractalWindow = 2, epsilonPct = 0.002 } = {}) {
+  const list = Array.isArray(candles) ? candles : [];
+  const swings = computeFractalSwings(list, fractalWindow);
+  const highs = swings.swing_highs;
+  const lows = swings.swing_lows;
+
+  const lastHigh = highs.length >= 1 ? highs[highs.length - 1] : null;
+  const prevHigh = highs.length >= 2 ? highs[highs.length - 2] : null;
+  const lastLow = lows.length >= 1 ? lows[lows.length - 1] : null;
+  const prevLow = lows.length >= 2 ? lows[lows.length - 2] : null;
+
+  if (!lastHigh || !prevHigh || !lastLow || !prevLow) {
+    return {
+      regime: "Unknown",
+      reason: "Not enough swing points yet.",
+      last_swing_high: lastHigh?.price ?? null,
+      last_swing_low: lastLow?.price ?? null,
+    };
+  }
+
+  const eps = Math.max(0, Number(epsilonPct) || 0);
+  const hh = lastHigh.price > prevHigh.price * (1 + eps);
+  const hl = lastLow.price > prevLow.price * (1 + eps);
+  const lh = lastHigh.price < prevHigh.price * (1 - eps);
+  const ll = lastLow.price < prevLow.price * (1 - eps);
+
+  if (hh && hl) {
+    return {
+      regime: "Uptrend",
+      reason: "Higher highs + higher lows (HH/HL).",
+      last_swing_high: lastHigh.price,
+      last_swing_low: lastLow.price,
+    };
+  }
+  if (lh && ll) {
+    return {
+      regime: "Downtrend",
+      reason: "Lower highs + lower lows (LH/LL).",
+      last_swing_high: lastHigh.price,
+      last_swing_low: lastLow.price,
+    };
+  }
+
+  return {
+    regime: "Range",
+    reason: "No clear HH/HL or LH/LL structure.",
+    last_swing_high: lastHigh.price,
+    last_swing_low: lastLow.price,
+  };
+}
+
+function computeAtr(candles, period = 14) {
+  const list = Array.isArray(candles) ? candles : [];
+  const p = Math.max(1, Math.round(Number(period) || 14));
+  if (list.length < p + 1) return null;
+
+  const trs = [];
+  for (let i = 1; i < list.length; i += 1) {
+    const c = list[i];
+    const prevClose = list[i - 1].close;
+    const tr = Math.max(
+      c.high - c.low,
+      Math.abs(c.high - prevClose),
+      Math.abs(c.low - prevClose)
+    );
+    if (Number.isFinite(tr)) {
+      trs.push(tr);
+    }
+  }
+
+  const tail = trs.slice(-p);
+  return tail.length === p ? average(tail) : null;
+}
+
+function computeRvolSeries(volumesQuote, period = 20) {
+  const vols = Array.isArray(volumesQuote) ? volumesQuote : [];
+  const p = Math.max(1, Math.round(Number(period) || 20));
+  const out = new Array(vols.length).fill(null);
+  for (let i = p; i < vols.length; i += 1) {
+    const baseline = average(vols.slice(i - p, i).filter((v) => Number.isFinite(v)));
+    const v = vols[i];
+    if (Number.isFinite(baseline) && baseline > 0 && Number.isFinite(v)) {
+      out[i] = v / baseline;
+    }
+  }
+  return out;
+}
+
+function computeCrossVenueSanity(coinDetails) {
+  const tickers = Array.isArray(coinDetails?.tickers) ? coinDetails.tickers : [];
+  if (tickers.length === 0) {
+    return null;
+  }
+
+  const byVenue = new Map();
+  let total = 0;
+
+  for (const t of tickers) {
+    const venue = String(t?.market?.name || t?.market?.identifier || "").trim();
+    if (!venue) continue;
+    const converted = t?.converted_volume || null;
+    const v =
+      num(converted?.usd) ??
+      num(converted?.[String(VS_CURRENCY || "usd").toLowerCase()]) ??
+      null;
+    if (!Number.isFinite(v) || v <= 0) continue;
+    total += v;
+    byVenue.set(venue, (byVenue.get(venue) || 0) + v);
+  }
+
+  if (!Number.isFinite(total) || total <= 0 || byVenue.size === 0) {
+    return null;
+  }
+
+  const sorted = Array.from(byVenue.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([venue, volume]) => ({ venue, volume, share: volume / total }));
+
+  const top = sorted[0];
+  const venuesOver10pct = sorted.filter((x) => x.share >= 0.1).length;
+
+  let confidence = "medium";
+  if (top.share >= 0.85) confidence = "low";
+  else if (top.share <= 0.65 && venuesOver10pct >= 2) confidence = "high";
+
+  const reason = `Top venue ${top.venue} is ${(top.share * 100).toFixed(0)}% of reported volume; ${venuesOver10pct} venue(s) >= 10%.`;
+
+  return {
+    confidence,
+    reason,
+    top_venue: top.venue,
+    top_share: top.share,
+    venues_over_10pct: venuesOver10pct,
+  };
+}
+
+function getVolumePriceStructureTa({
+  marketChart,
+  marketOhlc,
+  volumeQuote24h,
+  currentPrice,
+  venueSanity = null,
+  crossVenueEnabled = false,
+}) {
+  const out = {
+    volume_base_24h_est: null,
+    volume_quote_ma_5: null,
+    volume_quote_ma_10: null,
+    volume_quote_ma_20: null,
+    volume_base_ma_20_est: null,
+    rvol_20: null,
+    volume_ma20_trend: null,
+    volume_ma20_change_pct: null,
+    regime: null,
+    regime_reason: null,
+    last_swing_high: null,
+    last_swing_low: null,
+    range_window: null,
+    range_high: null,
+    range_low: null,
+    range_high_status: null,
+    range_low_status: null,
+    atr_14: null,
+    event_tags: [],
+    rvol_spike_count_20: null,
+    upday_volume_ratio_20: null,
+    interest_score: null,
+    interest_notes: [],
+    interest_confidence: null,
+    interest_confidence_reason: null,
+  };
+
+  const price = num(currentPrice);
+  const { closes, volumes_quote } = extractAlignedMarketChartSeries(marketChart);
+  const volLatestFromSeries =
+    volumes_quote.length > 0 ? volumes_quote[volumes_quote.length - 1] : null;
+  const volQuote = num(volumeQuote24h) ?? volLatestFromSeries;
+
+  out.volume_quote_ma_5 = smaTail(volumes_quote, 5);
+  out.volume_quote_ma_10 = smaTail(volumes_quote, 10);
+  const ma20Baseline = (() => {
+    if (volumes_quote.length >= 21) {
+      const baseline = average(volumes_quote.slice(-21, -1).filter((v) => Number.isFinite(v)));
+      return Number.isFinite(baseline) ? baseline : null;
+    }
+    return smaTail(volumes_quote, 20);
+  })();
+  out.volume_quote_ma_20 = ma20Baseline;
+  if (Number.isFinite(ma20Baseline) && Number.isFinite(volQuote) && ma20Baseline > 0) {
+    out.rvol_20 = volQuote / ma20Baseline;
+  }
+
+  if (Number.isFinite(price) && price > 0 && Number.isFinite(volQuote)) {
+    out.volume_base_24h_est = volQuote / price;
+  }
+
+  // Base volume series (estimate) = quote volume / close.
+  const baseSeries = closes.map((c, idx) => {
+    const vq = volumes_quote[idx];
+    if (!Number.isFinite(c) || c <= 0 || !Number.isFinite(vq)) return null;
+    return vq / c;
+  });
+  out.volume_base_ma_20_est = smaTail(baseSeries, 20);
+
+  const maTrend = computeMaTrendPct(volumes_quote, 20, 10);
+  out.volume_ma20_trend = maTrend.trend;
+  out.volume_ma20_change_pct = maTrend.change_pct;
+
+  const ma20Price = smaTail(closes, 20);
+  const ma50Price = smaTail(closes, 50);
+
+  const candles = buildOhlcCandles(marketOhlc);
+  if (candles.length > 0) {
+    const structure = computePriceStructureRegime(candles.slice(-240), {
+      fractalWindow: 2,
+      epsilonPct: 0.002,
+    });
+    out.regime = structure.regime;
+    out.regime_reason = structure.reason;
+    out.last_swing_high = structure.last_swing_high;
+    out.last_swing_low = structure.last_swing_low;
+
+    const last = candles[candles.length - 1];
+    const rangeDesired = 60;
+    const rangeMin = 20;
+    const priorCount = candles.length - 1;
+    const rangeWindow =
+      priorCount >= rangeDesired ? rangeDesired : priorCount >= rangeMin ? priorCount : priorCount;
+    if (rangeWindow >= 5) {
+      const prior = candles.slice(-(rangeWindow + 1), -1);
+      const rangeHigh = Math.max(...prior.map((c) => c.high));
+      const rangeLow = Math.min(...prior.map((c) => c.low));
+      out.range_window = rangeWindow;
+      out.range_high = Number.isFinite(rangeHigh) ? rangeHigh : null;
+      out.range_low = Number.isFinite(rangeLow) ? rangeLow : null;
+    }
+
+    const atr14 = computeAtr(candles, 14);
+    out.atr_14 = atr14;
+
+    const candleRange = last.high - last.low;
+    const lowerWick = Math.min(last.open, last.close) - last.low;
+    const lowerWickRatio =
+      Number.isFinite(candleRange) && candleRange > 0 && Number.isFinite(lowerWick)
+        ? lowerWick / candleRange
+        : null;
+    const largeRange =
+      Number.isFinite(atr14) && atr14 > 0 && Number.isFinite(candleRange)
+        ? candleRange > 2.0 * atr14
+        : false;
+    const longLowerWick = Number.isFinite(lowerWickRatio) ? lowerWickRatio > 0.35 : false;
+
+    const rvolNow = num(out.rvol_20);
+    const rvolSeries = computeRvolSeries(volumes_quote, 20);
+    const rvolByCandle = (() => {
+      // Best-effort alignment: use the last N RVOL values for the last N candles.
+      const n = Math.min(rvolSeries.length, candles.length);
+      if (n <= 0) return new Array(candles.length).fill(null);
+      const aligned = rvolSeries.slice(-n);
+      const pad = new Array(candles.length - n).fill(null);
+      return pad.concat(aligned);
+    })();
+    const volumeByCandle = (() => {
+      const n = Math.min(volumes_quote.length, candles.length);
+      if (n <= 0) return new Array(candles.length).fill(null);
+      const aligned = volumes_quote.slice(-n);
+      const pad = new Array(candles.length - n).fill(null);
+      return pad.concat(aligned);
+    })();
+
+    // Breakout / reclaim / hold
+    const breakoutRvolMin = 1.7;
+    const holdCandles = 5;
+    const holdRvolMax = 1.2;
+    const lastClose = last.close;
+
+    const breakoutNow =
+      Number.isFinite(out.range_high) &&
+      Number.isFinite(lastClose) &&
+      lastClose > out.range_high &&
+      Number.isFinite(rvolNow) &&
+      rvolNow >= breakoutRvolMin;
+
+    const dippedBelow =
+      Number.isFinite(out.range_low) &&
+      candles.slice(-11, -1).some((c) => c.low < out.range_low || c.close < out.range_low);
+    const reclaimNow =
+      dippedBelow &&
+      Number.isFinite(out.range_low) &&
+      Number.isFinite(lastClose) &&
+      lastClose > out.range_low &&
+      Number.isFinite(rvolNow) &&
+      rvolNow >= breakoutRvolMin;
+
+    const findRecentEventIndex = (predicate, lookback = 20) => {
+      const start = Math.max(0, candles.length - lookback);
+      for (let i = candles.length - 1; i >= start; i -= 1) {
+        if (predicate(i)) return i;
+      }
+      return null;
+    };
+
+    const breakoutIdx =
+      Number.isFinite(out.range_high)
+        ? findRecentEventIndex(
+            (i) =>
+              Number.isFinite(rvolByCandle[i]) &&
+              rvolByCandle[i] >= breakoutRvolMin &&
+              candles[i].close > out.range_high,
+            20
+          )
+        : null;
+
+    const avgRvolAfterBreakout = breakoutIdx !== null
+      ? average(
+          rvolByCandle
+            .slice(breakoutIdx + 1)
+            .filter((v) => Number.isFinite(v))
+        )
+      : null;
+    const holdAboveHigh =
+      breakoutIdx !== null &&
+      Number.isFinite(out.range_high) &&
+      candles.length - 1 - breakoutIdx >= holdCandles &&
+      candles.slice(breakoutIdx + 1).every((c) => c.close >= out.range_high) &&
+      Number.isFinite(avgRvolAfterBreakout) &&
+      avgRvolAfterBreakout <= holdRvolMax;
+
+    const failedBreakout =
+      breakoutIdx !== null &&
+      Number.isFinite(out.range_high) &&
+      Number.isFinite(lastClose) &&
+      lastClose < out.range_high;
+
+    const lastDipIdx =
+      Number.isFinite(out.range_low)
+        ? findRecentEventIndex((i) => candles[i].close < out.range_low, 20)
+        : null;
+    const reclaimIdx =
+      lastDipIdx !== null && Number.isFinite(out.range_low)
+        ? (() => {
+            const start = lastDipIdx + 1;
+            for (let i = start; i < candles.length; i += 1) {
+              if (
+                Number.isFinite(rvolByCandle[i]) &&
+                rvolByCandle[i] >= breakoutRvolMin &&
+                candles[i].close > out.range_low
+              ) {
+                return i;
+              }
+            }
+            return null;
+          })()
+        : null;
+
+    const avgRvolAfterReclaim = reclaimIdx !== null
+      ? average(
+          rvolByCandle
+            .slice(reclaimIdx + 1)
+            .filter((v) => Number.isFinite(v))
+        )
+      : null;
+    const holdAboveLow =
+      reclaimIdx !== null &&
+      Number.isFinite(out.range_low) &&
+      candles.length - 1 - reclaimIdx >= holdCandles &&
+      candles.slice(reclaimIdx + 1).every((c) => c.close >= out.range_low) &&
+      Number.isFinite(avgRvolAfterReclaim) &&
+      avgRvolAfterReclaim <= holdRvolMax;
+
+    // Capitulation / relief logic
+    const capitulationRvolMin = 2.0;
+    const afterDowntrendOrBreakdown =
+      structure.regime === "Downtrend" ||
+      (Number.isFinite(out.range_low) && Number.isFinite(lastClose) && lastClose < out.range_low);
+    const capitulation =
+      Number.isFinite(rvolNow) &&
+      rvolNow >= capitulationRvolMin &&
+      afterDowntrendOrBreakdown &&
+      ((largeRange && last.close < last.open) || longLowerWick);
+
+    const strongUp =
+      last.close > last.open &&
+      Number.isFinite(rvolNow) &&
+      rvolNow >= 1.5 &&
+      (candleRange > 0 ? (last.close - last.open) / candleRange >= 0.6 : false);
+
+    const hadRecentCapitulation = (() => {
+      const lookback = 10;
+      const start = Math.max(1, candles.length - 1 - lookback);
+      for (let i = candles.length - 2; i >= start; i -= 1) {
+        const c = candles[i];
+        const range = c.high - c.low;
+        const lw = Math.min(c.open, c.close) - c.low;
+        const lwRatio = range > 0 ? lw / range : null;
+        const atrAt = computeAtr(candles.slice(0, i + 1), 14);
+        const large = Number.isFinite(atrAt) && atrAt > 0 ? range > 2.0 * atrAt : false;
+        const wick = Number.isFinite(lwRatio) ? lwRatio > 0.35 : false;
+        const rvol = rvolByCandle[i];
+        if (
+          Number.isFinite(rvol) &&
+          rvol >= capitulationRvolMin &&
+          ((large && c.close < c.open) || wick)
+        ) {
+          return true;
+        }
+      }
+      return false;
+    })();
+
+    const reliefRally =
+      hadRecentCapitulation &&
+      strongUp &&
+      Number.isFinite(out.range_low) &&
+      Number.isFinite(lastClose) &&
+      lastClose > out.range_low;
+
+    // "High volume, no progress" (distribution warning)
+    const distribution = (() => {
+      if (!Number.isFinite(rvolNow) || rvolNow < 1.8) return false;
+      if (!Number.isFinite(candleRange) || candleRange <= 0) return false;
+      const closePos = (last.close - last.low) / candleRange; // 0 = closes at low
+      if (!(closePos <= 0.25)) return false;
+      const n = 5;
+      const lookback = candles.slice(-n);
+      if (lookback.length < n) return false;
+      const first = lookback[0]?.close;
+      const netPct =
+        Number.isFinite(first) && first !== 0 ? ((last.close - first) / first) * 100 : null;
+      const noProgress = Number.isFinite(netPct) ? Math.abs(netPct) < 1.0 : false;
+      const underResistance =
+        Number.isFinite(out.range_high) && Number.isFinite(last.close) ? last.close <= out.range_high : true;
+      return noProgress && underResistance;
+    })();
+
+    const tags = [];
+    if (capitulation) tags.push("capitulation");
+    if (reliefRally) tags.push("relief_rally");
+    if (breakoutNow) tags.push("breakout");
+    if (failedBreakout) tags.push("failed_breakout");
+    if (reclaimNow) tags.push("reclaim");
+    if (holdAboveHigh || holdAboveLow) tags.push("hold");
+    if (distribution) tags.push("distribution");
+    out.event_tags = tags;
+
+    // Key level status strings for user-facing UI.
+    if (Number.isFinite(out.range_high) && Number.isFinite(lastClose)) {
+      out.range_high_status = holdAboveHigh
+        ? "held"
+        : failedBreakout
+          ? "failed_breakout"
+          : breakoutNow
+            ? "breakout"
+            : lastClose > out.range_high
+              ? "above"
+              : "below";
+    }
+    if (Number.isFinite(out.range_low) && Number.isFinite(lastClose)) {
+      out.range_low_status = holdAboveLow
+        ? "held"
+        : reclaimNow
+          ? "reclaim"
+          : lastClose < out.range_low
+            ? "breakdown"
+            : "above";
+    }
+
+    // Interest Score (0-100): simple scoring model for "real demand" vs noise.
+    let interest = 50;
+    const notes = [];
+
+    // Sustained volume uplift
+    if (out.volume_ma20_trend === "rising") {
+      interest += 10;
+      notes.push("Volume baseline (MA20) is rising.");
+    } else if (out.volume_ma20_trend === "falling") {
+      interest -= 10;
+      notes.push("Volume baseline (MA20) is falling.");
+    }
+
+    // RVOL frequency (last 20 candles)
+    const last20Rvol = rvolByCandle.slice(-20).filter((v) => Number.isFinite(v));
+    const rvolSpikes = last20Rvol.filter((v) => v > 1.5).length;
+    out.rvol_spike_count_20 = rvolSpikes;
+    if (rvolSpikes >= 6) {
+      interest += 12;
+      notes.push(`RVOL > 1.5 happened ${rvolSpikes}/20 candles.`);
+    } else if (rvolSpikes >= 3) {
+      interest += 6;
+      notes.push(`Some RVOL spikes (${rvolSpikes}/20 candles).`);
+    } else if (rvolSpikes === 0) {
+      interest -= 4;
+      notes.push("No recent RVOL spikes.");
+    }
+
+    // Up-day dominance (last 20 candles): volume on green candles vs red candles.
+    let greenVol = 0;
+    let redVol = 0;
+    const start = Math.max(0, candles.length - 20);
+    for (let i = start; i < candles.length; i += 1) {
+      const vol = volumeByCandle[i];
+      if (!Number.isFinite(vol) || vol <= 0) continue;
+      if (candles[i].close > candles[i].open) greenVol += vol;
+      else if (candles[i].close < candles[i].open) redVol += vol;
+    }
+    const updayRatio = redVol > 0 ? greenVol / redVol : greenVol > 0 ? Infinity : null;
+    out.upday_volume_ratio_20 = updayRatio;
+    if (Number.isFinite(updayRatio)) {
+      if (updayRatio >= 1.3) {
+        interest += 10;
+        notes.push("More volume on up-days than down-days.");
+      } else if (updayRatio >= 1.0) {
+        interest += 5;
+      } else if (updayRatio <= 0.7) {
+        interest -= 10;
+        notes.push("More volume on down-days than up-days.");
+      } else if (updayRatio < 0.9) {
+        interest -= 5;
+      }
+    } else if (updayRatio === Infinity) {
+      interest += 10;
+      notes.push("Up-days dominate volume (no red-volume in window).");
+    }
+
+    // Structure + MA positioning
+    if (structure.regime === "Uptrend") {
+      interest += 10;
+      notes.push("Price structure is improving (HH/HL).");
+    } else if (structure.regime === "Downtrend") {
+      interest -= 12;
+      notes.push("Price structure is still down (LH/LL).");
+    }
+    if (Number.isFinite(price) && Number.isFinite(ma20Price)) {
+      interest += price >= ma20Price ? 3 : -3;
+    }
+    if (Number.isFinite(price) && Number.isFinite(ma50Price)) {
+      interest += price >= ma50Price ? 3 : -3;
+    }
+
+    // Event-based adjustments
+    if (tags.includes("hold")) {
+      interest += 8;
+      notes.push("Breakout/reclaim held with cooling volume.");
+    }
+    if (tags.includes("reclaim")) {
+      interest += 6;
+    }
+    if (tags.includes("breakout")) {
+      interest += 4;
+    }
+    if (tags.includes("relief_rally")) {
+      interest += 4;
+    }
+    if (tags.includes("failed_breakout")) {
+      interest -= 12;
+      notes.push("Failed breakout (bull-trap risk).");
+    }
+    if (tags.includes("distribution")) {
+      interest -= 10;
+      notes.push("High volume, little progress (distribution risk).");
+    }
+
+    // Penalty: high-volume selloff candle (today)
+    if (Number.isFinite(rvolNow) && rvolNow >= 2.0 && last.close < last.open) {
+      interest -= 6;
+      notes.push("High-volume selloff candle today.");
+    }
+
+    out.interest_score = Math.max(0, Math.min(100, Math.round(interest)));
+    out.interest_notes = notes.slice(0, 3);
+
+    // Confidence (higher if cross-venue sanity confirms)
+    const hasCoreInputs =
+      Number.isFinite(out.rvol_20) &&
+      Number.isFinite(out.range_high) &&
+      Number.isFinite(out.range_low) &&
+      Number.isFinite(out.atr_14) &&
+      candles.length >= 30;
+
+    let confidence = hasCoreInputs ? "medium" : "low";
+    let confidenceReason = hasCoreInputs
+      ? "Based on CoinGecko volume + OHLC structure."
+      : "Missing enough candle/volume history for a strong read.";
+
+    if (venueSanity && hasCoreInputs) {
+      confidence = venueSanity.confidence;
+      confidenceReason = venueSanity.reason;
+    } else if (crossVenueEnabled && hasCoreInputs) {
+      confidenceReason = "Cross-venue check is on, but ticker data was unavailable.";
+    } else if (!crossVenueEnabled && hasCoreInputs) {
+      confidenceReason = "Cross-venue check is off (set ENABLE_TA_CROSS_VENUE=1 to enable).";
+    }
+
+    if (tags.includes("failed_breakout") || tags.includes("distribution")) {
+      if (confidence === "high") confidence = "medium";
+      confidenceReason = `${confidenceReason} Recent warning signals are present.`;
+    }
+
+    out.interest_confidence = confidence;
+    out.interest_confidence_reason = confidenceReason;
+  }
+
+  // Fallback: if OHLC candles are missing, still provide a rough Interest Score from volume + MAs.
+  if (out.interest_score === null) {
+    let interest = 50;
+    const notes = [];
+
+    if (out.volume_ma20_trend === "rising") {
+      interest += 10;
+      notes.push("Volume baseline (MA20) is rising.");
+    } else if (out.volume_ma20_trend === "falling") {
+      interest -= 10;
+      notes.push("Volume baseline (MA20) is falling.");
+    }
+
+    const rvolSeries = computeRvolSeries(volumes_quote, 20);
+    const last20Rvol = rvolSeries.slice(-20).filter((v) => Number.isFinite(v));
+    const rvolSpikes = last20Rvol.filter((v) => v > 1.5).length;
+    out.rvol_spike_count_20 = rvolSpikes;
+    if (rvolSpikes >= 6) {
+      interest += 12;
+      notes.push(`RVOL > 1.5 happened ${rvolSpikes}/20 candles.`);
+    } else if (rvolSpikes >= 3) {
+      interest += 6;
+      notes.push(`Some RVOL spikes (${rvolSpikes}/20 candles).`);
+    } else if (rvolSpikes === 0) {
+      interest -= 4;
+      notes.push("No recent RVOL spikes.");
+    }
+
+    if (Number.isFinite(price) && Number.isFinite(ma20Price)) {
+      interest += price >= ma20Price ? 3 : -3;
+    }
+    if (Number.isFinite(price) && Number.isFinite(ma50Price)) {
+      interest += price >= ma50Price ? 3 : -3;
+    }
+
+    out.interest_score = Math.max(0, Math.min(100, Math.round(interest)));
+    out.interest_notes = notes.slice(0, 3);
+    out.interest_confidence = "low";
+    out.interest_confidence_reason =
+      "OHLC candle data missing; using volume + moving averages only.";
+  }
+
+  return out;
 }
 
 function computeTrendRegime({ priceChange7d, priceChange30d }) {
@@ -3126,6 +3908,13 @@ function evaluateGates(coin) {
       ? true
       : coin.health_score >= 40;
 
+  const taConfidence = String(coin?.ta_interest_confidence || "").trim().toLowerCase();
+  const taConfidenceOk = taConfidence === "high" || taConfidence === "medium";
+  const taTags = Array.isArray(coin?.ta_event_tags) ? coin.ta_event_tags : [];
+  const taWarning = taTags.includes("failed_breakout") || taTags.includes("distribution");
+  // Only enforce TA warnings when confidence is not "low".
+  const taStructure = !taConfidenceOk || !taWarning;
+
   return {
     trackable_data: trackableData,
     liquidity,
@@ -3138,11 +3927,12 @@ function evaluateGates(coin) {
     unlock_risk: unlockRisk,
     portfolio_guardrail: portfolioGuardrail,
     health_gate: healthGate,
+    ta_structure: taStructure,
   };
 }
 
 function decideLabel(coin, gates, ruleConfidence = {}) {
-  // Score based on core gates; timing/news can still downgrade a KEEP.
+  // Score based on core gates; timing/news/TA can still downgrade a KEEP.
   const score =
     (gates.trackable_data ? 1 : 0) +
     (gates.liquidity ? 1 : 0) +
@@ -3215,12 +4005,53 @@ function decideLabel(coin, gates, ruleConfidence = {}) {
   if (label === "KEEP" && !gates.health_gate) {
     label = "WATCH-ONLY";
   }
+  if (label === "KEEP" && !gates.ta_structure) {
+    label = "WATCH-ONLY";
+  }
   const downtrendConfirmation =
     coin?.has_clean_catalyst &&
     coin?.entry_signal === "strong_buy" &&
     coin?.volume_trend === "spike";
   if (label === "KEEP" && coin?.trend_regime === "Downtrend" && !downtrendConfirmation) {
     label = "WATCH-ONLY";
+  }
+
+  // TA can also upgrade a "near-KEEP" coin when it's a clean setup:
+  // - We only do this when TA confidence is medium/high, and a "hold" tag is present.
+  // - We never override major hard-risk blockers.
+  const taTags = Array.isArray(coin?.ta_event_tags) ? coin.ta_event_tags : [];
+  const taInterest = num(coin?.ta_interest_score);
+  const taConfidence = String(coin?.ta_interest_confidence || "").trim().toLowerCase();
+  const taConfidenceOk = taConfidence === "high" || taConfidence === "medium";
+  const taHasWarning = taTags.includes("failed_breakout") || taTags.includes("distribution");
+  const taHasHold = taTags.includes("hold");
+  const taStrong =
+    taHasHold && Number.isFinite(taInterest) && taInterest >= 70 && !taHasWarning;
+
+  const chasingBlocker = coin?.chasing === true && !coin?.has_clean_catalyst;
+  const hardRiskBlocker =
+    !gates.trackable_data ||
+    !gates.liquidity ||
+    !gates.unlock_transparency ||
+    !gates.unlock_risk ||
+    !gates.concentration_risk ||
+    !gates.portfolio_guardrail ||
+    !gates.health_gate ||
+    effectiveConcentrationRisk ||
+    effectiveDilutionRisk ||
+    severeLiquidity ||
+    chasingBlocker;
+
+  if (
+    label === "WATCH-ONLY" &&
+    taConfidenceOk &&
+    taStrong &&
+    !hardRiskBlocker &&
+    gates.entry_timing &&
+    gates.news_flow &&
+    score >= 5
+  ) {
+    label = "KEEP";
   }
 
   return label;
@@ -3361,6 +4192,8 @@ function explainGateFailure(key, coin) {
       return "Portfolio already has similar BTC/ETH exposure; avoid doubling up.";
     case "health_gate":
       return "Project health looks weak (dev activity, liquidity, or ownership risks).";
+    case "ta_structure":
+      return "Price/volume structure looks risky right now (example: failed breakout or heavy selling pressure).";
     default:
       return String(key || "unknown").replace(/_/g, " ");
   }
@@ -3450,6 +4283,16 @@ function buildCoinChecklist(coin) {
     coin?.trend_regime ? `Trend: ${coin.trend_regime}` : "Trend data missing"
   );
 
+  const taInterest = num(coin?.ta_interest_score);
+  const taConf = coin?.ta_interest_confidence ? String(coin.ta_interest_confidence) : "n/a";
+  const taTags = Array.isArray(coin?.ta_event_tags) ? coin.ta_event_tags : [];
+  const taTagsText = taTags.length > 0 ? taTags.map((t) => String(t).replace(/_/g, " ")).join(", ") : "none";
+  add(
+    "Price/volume structure not flashing warnings",
+    Boolean(gates.ta_structure),
+    `TA: Interest ${taInterest !== null ? `${Math.round(taInterest)}/100` : "n/a"} (${taConf}), tags: ${taTagsText}`
+  );
+
   const activity = coin?.news_activity || "quiet";
   const sentiment = coin?.news_sentiment || "unknown";
   add(
@@ -3495,6 +4338,15 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
   if (coin?.trend_regime === "Sideways") positives.push("Trend is sideways (not accelerating lower).");
   if (coin?.entry_signal === "strong_buy") positives.push("Entry timing looks very good right now.");
   else if (coin?.entry_signal === "buy") positives.push("Entry timing looks good right now.");
+  const taInterest = num(coin?.ta_interest_score);
+  const taConf = String(coin?.ta_interest_confidence || "").trim().toLowerCase();
+  const taTags = Array.isArray(coin?.ta_event_tags) ? coin.ta_event_tags : [];
+  if (Number.isFinite(taInterest) && taInterest >= 70 && (taConf === "high" || taConf === "medium")) {
+    positives.push(`Interest Score is high (${Math.round(taInterest)}/100).`);
+  }
+  if (taTags.includes("hold")) {
+    positives.push("Price held a key level after a breakout/reclaim (a stronger demand sign).");
+  }
   if (coin?.news_pressure_label === "positive") {
     positives.push("News pressure looks positive recently.");
   } else if (coin?.news_sentiment === "bullish" && coin?.news_activity && coin.news_activity !== "quiet") {
@@ -3516,6 +4368,9 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
   if (coin?.defi_audit_status === "NO") risks.push("No audit found; smart contract risk is higher.");
   if (coin?.trend_regime === "Downtrend") risks.push("Trend is still down; falling knives can bounce and fail.");
   if (coin?.unlock_risk_flag) risks.push("Upcoming unlock could add near-term sell pressure.");
+  if (taTags.includes("failed_breakout") || taTags.includes("distribution")) {
+    risks.push("Price/volume action looks risky right now (failed breakout or heavy selling pressure).");
+  }
   if (coin?.correlation_guardrail?.blocked) {
     risks.push("Portfolio already has similar BTC/ETH exposure; avoid doubling up without a unique catalyst.");
   }
@@ -11054,6 +11909,16 @@ async function main() {
         marketChart = null;
       }
     }
+
+    let marketOhlc = null;
+    if (coin.coinGeckoId && !SKIP_MARKET_OHLC) {
+      try {
+        marketOhlc = await fetchMarketOhlc(coin.coinGeckoId);
+        await sleep(250);
+      } catch (err) {
+        marketOhlc = null;
+      }
+    }
  
     const volumeStats = getVolumeStats(marketChart);
     const volume24h = num(market?.total_volume);
@@ -11104,7 +11969,7 @@ async function main() {
       }
     }
     
-    // Fetch coin details for contract address (needed for on-chain analysis)
+    // Fetch coin details (contract address for on-chain analysis, plus tickers for optional cross-venue sanity)
     let coinDetails = null;
     let holdersData = null;
     let contractInfo = null;
@@ -11113,18 +11978,21 @@ async function main() {
                           ARBISCAN_API_KEY || OPTIMISM_API_KEY || BASESCAN_API_KEY || 
                           ETHPLORER_API_KEY || COVALENT_API_KEY;
     
-    if (coin.coinGeckoId && hasOnChainKeys) {
+    const needsCoinDetails = coin.coinGeckoId && (hasOnChainKeys || ENABLE_TA_CROSS_VENUE);
+    if (needsCoinDetails) {
       try {
         coinDetails = await fetchCoinGeckoFullDetails(coin.coinGeckoId);
-        contractInfo = extractPrimaryContractAddress(coinDetails);
-        if (contractInfo) {
+        if (hasOnChainKeys) {
+          contractInfo = extractPrimaryContractAddress(coinDetails);
+        }
+        if (hasOnChainKeys && contractInfo) {
           // Try free explorers first, then Covalent as fallback
           holdersData = await fetchTokenHoldersMultiSource(contractInfo.chain, contractInfo.address);
           await sleep(300); // Rate limit protection
         }
       } catch (err) {
-        // Fail gracefully if on-chain fetch fails
-        console.warn(`On-chain fetch failed for ${coin.symbol}: ${err.message}`);
+        // Fail gracefully if this fetch fails
+        console.warn(`Coin details fetch failed for ${coin.symbol}: ${err.message}`);
       }
     }
     
@@ -11241,6 +12109,15 @@ async function main() {
       trend_regime: trendRegime?.label || null,
       relative_strength_7d: rs7d,
     });
+    const venueSanity = ENABLE_TA_CROSS_VENUE ? computeCrossVenueSanity(coinDetails) : null;
+    const taVolumeStructure = getVolumePriceStructureTa({
+      marketChart,
+      marketOhlc,
+      volumeQuote24h: volume24h,
+      currentPrice: num(market?.current_price),
+      venueSanity,
+      crossVenueEnabled: ENABLE_TA_CROSS_VENUE,
+    });
     const priceSparkline30d = buildPriceSparkline30d(marketChart, 30);
 
     const entryConfirmations = evaluateEntryConfirmations({
@@ -11288,6 +12165,32 @@ async function main() {
       trend_score: trendRegime.score,
       trend_reason: trendRegime.reason,
       volume_note: "Total volume used; spot/perps split unknown.",
+      // TA (volume + price structure)
+      ta_volume_base_24h_est: taVolumeStructure.volume_base_24h_est,
+      ta_volume_quote_ma_5: taVolumeStructure.volume_quote_ma_5,
+      ta_volume_quote_ma_10: taVolumeStructure.volume_quote_ma_10,
+      ta_volume_quote_ma_20: taVolumeStructure.volume_quote_ma_20,
+      ta_volume_base_ma_20_est: taVolumeStructure.volume_base_ma_20_est,
+      ta_rvol_20: taVolumeStructure.rvol_20,
+      ta_volume_ma20_trend: taVolumeStructure.volume_ma20_trend,
+      ta_volume_ma20_change_pct: taVolumeStructure.volume_ma20_change_pct,
+      ta_regime: taVolumeStructure.regime,
+      ta_regime_reason: taVolumeStructure.regime_reason,
+      ta_last_swing_high: taVolumeStructure.last_swing_high,
+      ta_last_swing_low: taVolumeStructure.last_swing_low,
+      ta_range_window: taVolumeStructure.range_window,
+      ta_range_high: taVolumeStructure.range_high,
+      ta_range_low: taVolumeStructure.range_low,
+      ta_range_high_status: taVolumeStructure.range_high_status,
+      ta_range_low_status: taVolumeStructure.range_low_status,
+      ta_atr_14: taVolumeStructure.atr_14,
+      ta_event_tags: taVolumeStructure.event_tags,
+      ta_rvol_spike_count_20: taVolumeStructure.rvol_spike_count_20,
+      ta_upday_volume_ratio_20: taVolumeStructure.upday_volume_ratio_20,
+      ta_interest_score: taVolumeStructure.interest_score,
+      ta_interest_notes: taVolumeStructure.interest_notes,
+      ta_interest_confidence: taVolumeStructure.interest_confidence,
+      ta_interest_confidence_reason: taVolumeStructure.interest_confidence_reason,
       clean_catalyst: catalystInfo.clean_catalyst,
       catalyst_sources: catalystInfo.catalyst_sources,
       catalyst_checked: catalystInfo.catalyst_checked,

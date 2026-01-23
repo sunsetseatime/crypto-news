@@ -18,6 +18,14 @@
 - **Config**: `MARKET_CHART_DAYS` controls how much daily price history is fetched (default 200)
 - **Sanity check**: `npm run verify:ta` validates TA outputs; `npm run scan:watchlist` runs it automatically after the scan
 
+### 1b. Volume + Price Structure TA (RVOL + levels + events)
+- **Volume basics**: RVOL (today vs 20-day average), rolling volume MAs (5/10/20), and base-volume estimate (coin units)
+- **Regime + levels**: price-structure regime (Uptrend/Downtrend/Range) + recent range high/low with breakout/reclaim/hold status
+- **Event tags**: `capitulation`, `relief_rally`, `breakout`, `failed_breakout`, `distribution`
+- **Interest Score**: simple 0-100 score + confidence (optional cross-venue sanity via `ENABLE_TA_CROSS_VENUE=1`)
+- **Label integration**: confident TA warning tags can downgrade a KEEP to WATCH-ONLY; strong “hold” setups can upgrade a near-KEEP coin
+- **Config**: `SKIP_MARKET_OHLC=1` disables OHLC candles; `MARKET_OHLC_DAYS` controls candle history (allowed: 1, 7, 14, 30, 90, 180, 365)
+
 ### 2. Blue Chip Scanner
 - **Top 50 coins**: Expanded from top 25 to top 50 cryptocurrencies
 - **Dip threshold**: Lowered from 15% to 10% for dip detection

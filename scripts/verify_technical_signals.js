@@ -138,6 +138,68 @@ function main() {
     if (distLow !== null && distLow !== undefined && !isFiniteNumber(distLow)) {
       pushIssue(symbol, `distance_from_low is not a number (${String(distLow)})`);
     }
+
+    // === TA (volume + price structure) sanity checks ===
+    const rvol = coin?.ta_rvol_20;
+    if (rvol !== null && rvol !== undefined) {
+      if (!isFiniteNumber(rvol)) {
+        pushIssue(symbol, `ta_rvol_20 is not a number (${String(rvol)})`);
+      } else if (rvol < 0) {
+        pushIssue(symbol, `ta_rvol_20 is negative (${rvol})`);
+      }
+    }
+
+    const interest = coin?.ta_interest_score;
+    if (interest !== null && interest !== undefined) {
+      if (!isFiniteNumber(interest)) {
+        pushIssue(symbol, `ta_interest_score is not a number (${String(interest)})`);
+      } else if (interest < 0 || interest > 100) {
+        pushIssue(symbol, `ta_interest_score is out of range (0-100): ${interest}`);
+      }
+    }
+
+    const interestConf = coin?.ta_interest_confidence;
+    if (interestConf !== null && interestConf !== undefined) {
+      const conf = String(interestConf || "").trim().toLowerCase();
+      if (conf && !["high", "medium", "low"].includes(conf)) {
+        pushIssue(symbol, `ta_interest_confidence is not high/medium/low ("${String(interestConf)}")`);
+      }
+    }
+
+    const rangeHigh = coin?.ta_range_high;
+    const rangeLow = coin?.ta_range_low;
+    if (rangeHigh !== null && rangeHigh !== undefined && !isFiniteNumber(rangeHigh)) {
+      pushIssue(symbol, `ta_range_high is not a number (${String(rangeHigh)})`);
+    }
+    if (rangeLow !== null && rangeLow !== undefined && !isFiniteNumber(rangeLow)) {
+      pushIssue(symbol, `ta_range_low is not a number (${String(rangeLow)})`);
+    }
+    if (isFiniteNumber(rangeHigh) && isFiniteNumber(rangeLow) && rangeHigh < rangeLow) {
+      pushIssue(symbol, `ta_range_high (${rangeHigh}) is below ta_range_low (${rangeLow})`);
+    }
+
+    const taTags = coin?.ta_event_tags;
+    if (taTags !== null && taTags !== undefined) {
+      if (!Array.isArray(taTags)) {
+        pushIssue(symbol, `ta_event_tags is not an array (${String(taTags)})`);
+      } else {
+        for (const tag of taTags) {
+          if (typeof tag !== "string") {
+            pushIssue(symbol, `ta_event_tags contains a non-string value (${String(tag)})`);
+            break;
+          }
+        }
+      }
+    }
+
+    const vma20 = coin?.ta_volume_quote_ma_20;
+    if (vma20 !== null && vma20 !== undefined) {
+      if (!isFiniteNumber(vma20)) {
+        pushIssue(symbol, `ta_volume_quote_ma_20 is not a number (${String(vma20)})`);
+      } else if (vma20 < 0) {
+        pushIssue(symbol, `ta_volume_quote_ma_20 is negative (${vma20})`);
+      }
+    }
   }
 
   const blue = report?.blue_chip_opportunities || null;
@@ -191,4 +253,3 @@ function main() {
 }
 
 main();
-

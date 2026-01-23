@@ -22,15 +22,36 @@ For each coin on your watchlist, the scanner:
 | Check | What It Detects |
 |-------|-----------------|
 | **Volume Confirmation** | Is 24h volume above 7-day average? Price moves without volume are traps. |
+| **TA: Volume + Price Structure** | RVOL (today vs 20-day average), trend regime (uptrend/downtrend/range), key levels, and event tags (breakout / reclaim / capitulation / distribution). |
 | **Chasing Detection** | Is the coin up >40% (7d) or >20% (24h) without a real catalyst? |
 | **Dilution Risk** | Is float <20%? Is FDV >> Market Cap? Are unlocks imminent? |
 | **Liquidity Check** | Is there enough volume ($5M+) to actually trade without slippage? |
 | **Catalyst Validation** | Is there a real, verifiable event within 14 days with a source link? |
 
 Each coin receives a hygiene label:
-- **KEEP**: Passes 3-4 gates, no severe warnings
-- **WATCH-ONLY**: Interesting but blocked by unlock risk, dilution, or weak signals
-- **DROP**: Fails trackability, liquidity, or credibility checks
+- **KEEP (Ready)**: Passed the safety + quality checks, so it’s on your short list. This is **not** an automatic “buy” signal — use **Action** (Buy now / Wait for dip) for timing.
+- **WATCH-ONLY**: Interesting, but **something blocks action** right now (example: unlock risk, dilution risk, high ownership concentration, negative news pressure, or weak price/volume structure).
+- **DROP (Avoid)**: Fails basic checks (too hard to trade, missing critical data, or serious red flags). Best to skip/remove.
+
+## TA outputs (volume + price structure)
+
+In the dashboard, click a coin row to see these TA (technical analysis) items:
+
+- **Regime**: Uptrend / Downtrend / Range (based on higher highs/lows)
+- **RVOL**: today's volume compared to its 20-day average ("relative volume")
+- **Key levels**: range high/low (recent candles) + breakout/reclaim/hold status
+- **Recent tags**: capitulation, relief rally, breakout, failed breakout, distribution
+- **Interest Score (0-100)** + **confidence** (higher if cross-venue sanity is enabled)
+- **How it affects labels**: confident warning tags (like failed breakout / distribution) can move a coin from KEEP to WATCH-ONLY; strong “hold” setups can help upgrade a near-KEEP coin.
+
+Definitions (1 line each):
+- **Candle**: one time period of price action (open/high/low/close)
+- **OHLC**: open/high/low/close
+
+Optional settings:
+- `SKIP_MARKET_OHLC=1` disables OHLC candles (less TA detail)
+- `MARKET_OHLC_DAYS=180` controls how far back candle history goes (allowed: 1, 7, 14, 30, 90, 180, 365)
+- `ENABLE_TA_CROSS_VENUE=1` enables a cross-venue sanity check (uses CoinGecko tickers; helps spot venue-specific spikes)
 
 ## Quick Start
 
