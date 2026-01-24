@@ -329,4 +329,9 @@
 ## 2026-01-22 Signal Engine Suggestions
 - Added a candidate suggestion layer (data coverage + evidence scoring) with a dashboard panel and a pending approval file.
 
+## 2026-01-24 Paper Trading + Signal Engine Clarity
+- Paper Trading dashboard + report now include a clear **Recent activity (last 14 days)** section (opened + closed).
+- `reports/paper/PaperReport.json` now includes `recent_14d` (window + counts + lists) so the dashboard can show the last 2 weeks.
+- Signal Engine dashboard now shows **not tracked** (with a hover explanation) instead of confusing `n/a` when a data source is not available.
+
 **End of Changelog**

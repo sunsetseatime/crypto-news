@@ -894,38 +894,84 @@ function buildSignalEngineHtml(signalEngineReport) {
         const name = c?.name ? String(c.name) : "";
         const label = symbol ? `${symbol} - ${name}` : name;
 
-        const scores = c?.scores || {};
-        const growth = Number.isFinite(scores?.growth?.value) ? scores.growth.value : null;
-        const quality = Number.isFinite(scores?.quality?.value) ? scores.quality.value : null;
-        const surviv = Number.isFinite(scores?.survivability?.value) ? scores.survivability.value : null;
+        const sources = c?.sources && typeof c.sources === "object" ? c.sources : {};
+        const hasDefillama =
+          typeof sources.defillama_slug === "string" && sources.defillama_slug.trim().length > 0;
 
-        const metrics = c?.metrics || {};
-        const fees30d = Number.isFinite(num(metrics?.fees_total30d_usd)) ? formatUsdCompact(metrics.fees_total30d_usd) : "n/a";
-        const feesMoM = Number.isFinite(num(metrics?.fees_change_30dover30d_pct))
-          ? formatSignedPct(metrics.fees_change_30dover30d_pct, 1)
-          : "n/a";
-        const tvl = Number.isFinite(num(metrics?.tvl_usd)) ? formatUsdCompact(metrics.tvl_usd) : "n/a";
+        const scores = c?.scores && typeof c.scores === "object" ? c.scores : {};
+        const growthValue = Number.isFinite(scores?.growth?.value) ? scores.growth.value : null;
+        const qualityValue = Number.isFinite(scores?.quality?.value) ? scores.quality.value : null;
+        const survivValue = Number.isFinite(scores?.survivability?.value)
+          ? scores.survivability.value
+          : null;
+
+        const missingSourceTitle =
+          "Not tracked yet: we do not have a data source for this metric for this project.";
+
+        const scoreCell = (value, note) => {
+          if (typeof value === "number" && Number.isFinite(value)) return escapeHtml(value);
+          const noteText = typeof note === "string" ? note.trim() : "";
+          const title = !hasDefillama ? missingSourceTitle : noteText || "Not enough data yet.";
+          const label = !hasDefillama ? "not tracked" : "n/a";
+          return `<span class="muted" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+        };
+
+        const metrics = c?.metrics && typeof c.metrics === "object" ? c.metrics : {};
+        const fees30dValue = num(metrics?.fees_total30d_usd);
+        const feesMoMValue = num(metrics?.fees_change_30dover30d_pct);
+        const tvlValue = num(metrics?.tvl_usd);
+
+        const metricCell = (value, formatted) => {
+          if (typeof value === "number" && Number.isFinite(value)) return escapeHtml(formatted);
+          const title = !hasDefillama ? missingSourceTitle : "Not enough data yet.";
+          const label = !hasDefillama ? "not tracked" : "n/a";
+          return `<span class="muted" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+        };
+
+        const fees30dCell = metricCell(
+          fees30dValue,
+          Number.isFinite(fees30dValue) ? formatUsdCompact(fees30dValue) : "n/a"
+        );
+        const feesMoMCell = metricCell(
+          feesMoMValue,
+          Number.isFinite(feesMoMValue) ? formatSignedPct(feesMoMValue, 1) : "n/a"
+        );
+        const tvlCell = metricCell(
+          tvlValue,
+          Number.isFinite(tvlValue) ? formatUsdCompact(tvlValue) : "n/a"
+        );
 
         const signals = Array.isArray(c?.signals) ? c.signals : [];
-        const improving = signals.filter((s) => s?.state === "improving").map((s) => s?.code).filter(Boolean);
-        const worsening = signals.filter((s) => s?.state === "worsening").map((s) => s?.code).filter(Boolean);
+        const improving = signals
+          .filter((s) => s?.state === "improving")
+          .map((s) => s?.code)
+          .filter(Boolean);
+        const worsening = signals
+          .filter((s) => s?.state === "worsening")
+          .map((s) => s?.code)
+          .filter(Boolean);
+        const unknownCount = signals.filter((s) => s?.state === "unknown").length;
         const signalNote =
           improving.length > 0
             ? `Improving: ${improving.join(", ")}`
             : worsening.length > 0
               ? `Worsening: ${worsening.join(", ")}`
-              : "No strong signals yet";
+              : unknownCount > 0 && !hasDefillama
+                ? "Not tracked yet (missing data source)"
+                : unknownCount > 0
+                  ? "Waiting for more data"
+                  : "No strong signals yet";
 
         return `
           <tr data-symbol="${escapeHtml(symbol)}" data-name="${escapeHtml(name)}">
             <td style="font-weight:700;">${escapeHtml(label)}</td>
             <td>${statusBadge(c?.status)}</td>
-            <td class="mono">${escapeHtml(growth ?? "n/a")}</td>
-            <td class="mono">${escapeHtml(quality ?? "n/a")}</td>
-            <td class="mono">${escapeHtml(surviv ?? "n/a")}</td>
-            <td class="mono">${escapeHtml(fees30d)}</td>
-            <td class="mono">${escapeHtml(feesMoM)}</td>
-            <td class="mono">${escapeHtml(tvl)}</td>
+            <td class="mono">${scoreCell(growthValue, scores?.growth?.note)}</td>
+            <td class="mono">${scoreCell(qualityValue, scores?.quality?.note)}</td>
+            <td class="mono">${scoreCell(survivValue, scores?.survivability?.note)}</td>
+            <td class="mono">${fees30dCell}</td>
+            <td class="mono">${feesMoMCell}</td>
+            <td class="mono">${tvlCell}</td>
             <td class="small muted">${escapeHtml(signalNote)}</td>
           </tr>
         `;
@@ -999,7 +1045,7 @@ function buildSignalEngineHtml(signalEngineReport) {
       ${sections}
       ${buildHowThisWorks([
         "Discovery is for new ideas; Signal Engine is for long-term conviction tracking.",
-        "Some signals will show n/a until we add the best data source for that metric.",
+        "If you see 'not tracked', it means we do not have a data source for that metric for that project yet.",
         "Why it matters: it helps you watch fundamentals without watching charts all day.",
       ])}
     </div>
@@ -3096,6 +3142,19 @@ function buildPaperTradingHtml(paperReport) {
   const overview = paperReport.overview || {};
   const open = Array.isArray(paperReport.open_positions) ? paperReport.open_positions : [];
   const closed = Array.isArray(paperReport.closed_positions) ? paperReport.closed_positions : [];
+  const recent =
+    paperReport.recent_14d && typeof paperReport.recent_14d === "object"
+      ? paperReport.recent_14d
+      : null;
+  const recentOpened = Array.isArray(recent?.opened) ? recent.opened : [];
+  const recentClosed = Array.isArray(recent?.closed) ? recent.closed : [];
+  const recentWindowDays = typeof recent?.window_days === "number" ? recent.window_days : 14;
+  const recentOpenedCount =
+    typeof recent?.opened_count === "number" ? recent.opened_count : recentOpened.length;
+  const recentClosedCount =
+    typeof recent?.closed_count === "number" ? recent.closed_count : recentClosed.length;
+  const recentWindowText =
+    recent?.from && recent?.to ? `${formatUtc(recent.from)} to ${formatUtc(recent.to)}` : "";
   const winRate =
     typeof overview.win_rate_pct === "number" ? `${overview.win_rate_pct.toFixed(1)}%` : "n/a";
   const avgReturn = formatSignedPct(num(overview.avg_return_pct), 1);
@@ -3287,6 +3346,91 @@ function buildPaperTradingHtml(paperReport) {
     `;
   }).join("");
 
+  const recentClosedRows = recentClosed.map((trade) => {
+    const symbol = trade?.symbol || "n/a";
+    const style = trade?.style ? paperStyleLabel(trade.style) : "n/a";
+    const exitDate = trade?.exit_date ? formatUtc(trade.exit_date) : "n/a";
+    const pnl = formatSignedPct(num(trade?.pnl_pct), 1);
+    const reason = exitReasonLabel(trade?.exit_reason || "n/a");
+    return `
+      <tr>
+        <td>${escapeHtml(exitDate)}</td>
+        <td>${escapeHtml(symbol)}</td>
+        <td>${escapeHtml(style)}</td>
+        <td class="num">${escapeHtml(pnl)}</td>
+        <td>${escapeHtml(reason)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  const recentOpenedRows = recentOpened.map((trade) => {
+    const symbol = trade?.symbol || "n/a";
+    const style = trade?.style ? paperStyleLabel(trade.style) : "n/a";
+    const entryDate = trade?.entry_date ? formatUtc(trade.entry_date) : "n/a";
+    const source = trade?.source || "n/a";
+    const signal = trade?.entry_signal ? String(trade.entry_signal).replace(/_/g, " ") : "n/a";
+    const score =
+      typeof trade?.entry_score === "number" ? trade.entry_score.toFixed(0) : "n/a";
+    return `
+      <tr>
+        <td>${escapeHtml(entryDate)}</td>
+        <td>${escapeHtml(symbol)}</td>
+        <td>${escapeHtml(style)}</td>
+        <td>${escapeHtml(source)}</td>
+        <td>${escapeHtml(signal)}</td>
+        <td class="num">${escapeHtml(score)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  const recentSectionHtml =
+    recentOpened.length === 0 && recentClosed.length === 0
+      ? ""
+      : `
+        <details class="details" style="margin-top: 10px;" open>
+          <summary><span class="summary-title">Recent activity (last ${escapeHtml(recentWindowDays)} days)</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
+          <div class="details-body">
+            <div class="muted small">Last ${escapeHtml(recentWindowDays)} days: opened ${escapeHtml(recentOpenedCount)} | closed ${escapeHtml(recentClosedCount)}${recentWindowText ? ` | ${escapeHtml(recentWindowText)}` : ""}</div>
+            <div class="table-wrap" style="margin-top: 10px;">
+              <div class="muted small" style="font-weight:700; margin-bottom: 6px;">Closed (recent)</div>
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Exit date</th>
+                    <th>Symbol</th>
+                    <th>Style</th>
+                    <th class="num">Profit/Loss</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${recentClosedRows || `<tr><td colspan="5" class="muted">None closed in the last ${escapeHtml(recentWindowDays)} days.</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+            <div class="table-wrap" style="margin-top: 10px;">
+              <div class="muted small" style="font-weight:700; margin-bottom: 6px;">Opened (recent)</div>
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Entry date</th>
+                    <th>Symbol</th>
+                    <th>Style</th>
+                    <th>Source</th>
+                    <th>Signal</th>
+                    <th class="num">Score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${recentOpenedRows || `<tr><td colspan="6" class="muted">None opened in the last ${escapeHtml(recentWindowDays)} days.</td></tr>`}
+                </tbody>
+              </table>
+            </div>
+            <div class="muted small" style="margin-top: 6px;">Tip: the summary tables below are "top by profit/loss" to spotlight winners/losers. Open the report for full history.</div>
+          </div>
+        </details>
+      `;
+
   return `
     <div class="card">
       <div class="row space-between">
@@ -3312,8 +3456,12 @@ function buildPaperTradingHtml(paperReport) {
       </div>
       ${openedThisRunHtml}
       ${closedThisRunHtml}
+      ${recentSectionHtml}
       <div class="muted small" style="margin-top: 6px;">
         Win rate: ${escapeHtml(winRate)} | Avg return: ${escapeHtml(avgReturn)} | Risk-adjusted score: ${escapeHtml(riskAdjusted)} | Avg hold: ${escapeHtml(avgDays)}
+      </div>
+      <div class="muted small">
+        Win rate = % of closed trades that ended green. Avg return = average % profit/loss across closed trades.
       </div>
       <div class="muted small">
         Risk-adjusted score = average profit compared to the stop size (the % drop that would close a trade). Higher is better.
@@ -3321,6 +3469,7 @@ function buildPaperTradingHtml(paperReport) {
       <div class="muted small" style="margin-top: 6px;">
         Tip: to add your own manual ideas, click "Manual paper trade" on a coin, then paste into <code>reports/paper/PaperTradeIntents.json</code> before the next run.
       </div>
+      <div class="muted small" style="margin-top: 10px; font-weight:700;">Open trades (top by current profit/loss)</div>
       <div class="table-wrap" style="margin-top: 10px;">
         <table class="table">
           <thead>
@@ -3345,6 +3494,7 @@ function buildPaperTradingHtml(paperReport) {
           </tbody>
         </table>
       </div>
+      <div class="muted small" style="margin-top: 12px; font-weight:700;">Closed trades (top by profit/loss)</div>
       <div class="table-wrap" style="margin-top: 12px;">
         <table class="table">
           <thead>

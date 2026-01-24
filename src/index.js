@@ -10838,6 +10838,57 @@ function computePaperReport({
       primary_driver: trade?.post_mortem?.primary_driver || null,
     }));
 
+  const recentWindowDays = 14;
+  const nowMs = Date.parse(nowIso || "");
+  const recentFromMs = Number.isFinite(nowMs)
+    ? nowMs - recentWindowDays * 24 * 60 * 60 * 1000
+    : null;
+  const recentFromIso =
+    typeof recentFromMs === "number" ? new Date(recentFromMs).toISOString() : null;
+
+  const openedRecentTrades =
+    typeof recentFromMs === "number"
+      ? trades.filter((trade) => {
+          const entryMs = Date.parse(trade?.entry_date || "");
+          return Number.isFinite(entryMs) && entryMs >= recentFromMs;
+        })
+      : [];
+  const closedRecentTrades =
+    typeof recentFromMs === "number"
+      ? closedTrades.filter((trade) => {
+          const exitMs = Date.parse(trade?.exit_date || "");
+          return Number.isFinite(exitMs) && exitMs >= recentFromMs;
+        })
+      : [];
+
+  const recentOpened = [...openedRecentTrades]
+    .sort(
+      (a, b) => Date.parse(b?.entry_date || "") - Date.parse(a?.entry_date || "")
+    )
+    .map((trade) => ({
+      symbol: trade.symbol || null,
+      source: trade.signal_source || null,
+      style: trade.trade_style || null,
+      entry_date: trade.entry_date || null,
+      entry_signal: trade.entry_signal || null,
+      entry_score: trade.entry_score ?? null,
+    }));
+
+  const recentClosed = [...closedRecentTrades]
+    .sort((a, b) => Date.parse(b?.exit_date || "") - Date.parse(a?.exit_date || ""))
+    .map((trade) => ({
+      symbol: trade.symbol || null,
+      source: trade.signal_source || null,
+      style: trade.trade_style || null,
+      entry_date: trade.entry_date || null,
+      exit_date: trade.exit_date || null,
+      days_held: trade.days_held ?? null,
+      pnl_pct: tradeReturnPct(trade),
+      exit_reason: trade.exit_reason || null,
+      entry_signal: trade.entry_signal || null,
+      entry_score: trade.entry_score ?? null,
+    }));
+
   const openedThisRunTrades = trades.filter((trade) => trade?.entry_date === nowIso);
   const closedThisRunTrades = closedTrades.filter((trade) => trade?.exit_date === nowIso);
   const closedThisRunByReason = {};
@@ -10871,6 +10922,15 @@ function computePaperReport({
     trades_added: tradesAdded,
     open_count: openTrades.length,
     closed_count: closedTrades.length,
+    recent_14d: {
+      window_days: recentWindowDays,
+      from: recentFromIso,
+      to: nowIso,
+      opened_count: recentOpened.length,
+      closed_count: recentClosed.length,
+      opened: recentOpened,
+      closed: recentClosed,
+    },
     this_run: {
       opened_count: openedThisRunTrades.length,
       closed_count: closedThisRunTrades.length,
@@ -11051,6 +11111,65 @@ function renderPaperReportMarkdown(report) {
     )}`
   );
   lines.push("");
+
+  const recent = report?.recent_14d && typeof report.recent_14d === "object" ? report.recent_14d : null;
+  const recentOpened = Array.isArray(recent?.opened) ? recent.opened : [];
+  const recentClosed = Array.isArray(recent?.closed) ? recent.closed : [];
+  const shortDate = (iso) => {
+    const raw = typeof iso === "string" ? iso.trim() : "";
+    if (!raw) return "n/a";
+    const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    return match ? match[1] : raw;
+  };
+
+  if (recent && (recentOpened.length > 0 || recentClosed.length > 0)) {
+    const openedCount =
+      typeof recent.opened_count === "number" ? recent.opened_count : recentOpened.length;
+    const closedCount =
+      typeof recent.closed_count === "number" ? recent.closed_count : recentClosed.length;
+    lines.push(`## Recent activity (last ${recent.window_days || 14} days)`);
+    if (recent.from || recent.to) {
+      lines.push(`Window: ${shortDate(recent.from)} to ${shortDate(recent.to)}`);
+    }
+    lines.push(`Opened: ${openedCount} | Closed: ${closedCount}`);
+    lines.push("");
+
+    lines.push("### Closed (recent)");
+    if (recentClosed.length === 0) {
+      lines.push("- None");
+      lines.push("");
+    } else {
+      lines.push("| Exit date | Symbol | Style | PnL | Reason |");
+      lines.push("| --- | --- | --- | --- | --- |");
+      for (const trade of recentClosed) {
+        lines.push(
+          `| ${shortDate(trade?.exit_date)} | ${trade?.symbol || "n/a"} | ${styleLabel(
+            trade?.style
+          )} | ${formatSignedPct(num(trade?.pnl_pct), 1)} | ${trade?.exit_reason || "n/a"} |`
+        );
+      }
+      lines.push("");
+    }
+
+    lines.push("### Opened (recent)");
+    if (recentOpened.length === 0) {
+      lines.push("- None");
+      lines.push("");
+    } else {
+      lines.push("| Entry date | Symbol | Style | Source | Signal | Score |");
+      lines.push("| --- | --- | --- | --- | --- | --- |");
+      for (const trade of recentOpened) {
+        lines.push(
+          `| ${shortDate(trade?.entry_date)} | ${trade?.symbol || "n/a"} | ${styleLabel(
+            trade?.style
+          )} | ${trade?.source || "n/a"} | ${trade?.entry_signal || "n/a"} | ${
+            Number.isFinite(trade?.entry_score) ? trade.entry_score.toFixed(0) : "n/a"
+          } |`
+        );
+      }
+      lines.push("");
+    }
+  }
 
   const openPositions = Array.isArray(report?.open_positions)
     ? report.open_positions

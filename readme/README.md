@@ -215,7 +215,7 @@ Notes:
 | `reports/backtest/BacktestReport.md` | Backtest stats report |
 | `reports/backtest/predictions.json` | Prediction history used for backtesting |
 | `reports/paper/PaperReport.md` | Paper trading stats (open/closed trades, performance) |
-| `reports/paper/PaperReport.json` | Paper trading stats (structured JSON) |
+| `reports/paper/PaperReport.json` | Paper trading stats (structured JSON, includes a recent 14-day activity window) |
 | `reports/paper/SignalEvents.json` | Logged signal events used for paper trading |
 | `reports/paper/PaperTrades.json` | Paper trade ledger (open + closed positions) |
 | `reports/defi/Latest.md` | Latest DeFi protocol scan report |
@@ -237,6 +237,9 @@ Optional: add known data sources per project in `config/signal_engine_metric_reg
 - `emissionsSource`
 - `assetValueSource`
 - `issuerSource`
+
+If the dashboard shows **not tracked** for a project, it usually means we do not have a data source for that metric yet (common if DefiLlama does not cover the project).  
+`defillama_slug` = the short name in the DefiLlama URL (example: `the-graph`). If you know it, set it in `config/signal_engine_projects.json`.
 
 Promote a suggested candidate into the tracked 7 (with confirmation):
 ```powershell

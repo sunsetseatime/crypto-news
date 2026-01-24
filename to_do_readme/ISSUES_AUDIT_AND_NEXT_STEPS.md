@@ -361,6 +361,7 @@ Implementation notes (for dev)
 - Renamed the button from **Paper trade** to **Manual paper trade** so it is clear it is optional and manual.
 - Added **Paper trading in 30 seconds** at the top of the Paper Trading section.
 - Added **This run: opened X | closed Y** plus a short list of trades that closed this run (with reason).
+- Added **Recent activity (last 14 days)** (opened + closed) so you can see the past 2 weeks without opening the full ledger.
 
 ### Why
 - Friends should understand paper trading without guessing or reading code.
@@ -372,6 +373,7 @@ Implementation notes (for dev)
    - It explains "auto paper trades run every scan"
    - The button says **Manual paper trade**
    - It shows **opened/closed this run** and closed reasons
+   - It shows **Recent activity (last 14 days)** (opened + closed)
 
 ---
 
