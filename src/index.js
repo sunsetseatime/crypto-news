@@ -272,6 +272,29 @@ const PAPER_TRADE_DISCOVERY_BUY = clamp(
   0,
   100
 );
+const PAPER_TRADE_COOLDOWN_DAYS_DEFAULT =
+  Number.isFinite(Number(PAPER_TRADING_CONFIG?.cooldown_days)) &&
+  Number(PAPER_TRADING_CONFIG.cooldown_days) >= 0
+    ? Number(PAPER_TRADING_CONFIG.cooldown_days)
+    : 5;
+const PAPER_TRADE_COOLDOWN_DAYS = clamp(
+  envNumber("PAPER_TRADE_COOLDOWN_DAYS", PAPER_TRADE_COOLDOWN_DAYS_DEFAULT),
+  0,
+  30
+);
+const PAPER_TRADE_RULESET_MODE = String(
+  process.env.PAPER_TRADE_RULESET_MODE || PAPER_TRADING_CONFIG?.ruleset_mode || "ab"
+).toLowerCase();
+const PAPER_TRADE_ACCOUNT_START_USD_DEFAULT =
+  Number.isFinite(Number(PAPER_TRADING_CONFIG?.account_start_usd)) &&
+  Number(PAPER_TRADING_CONFIG.account_start_usd) >= 0
+    ? Number(PAPER_TRADING_CONFIG.account_start_usd)
+    : 10_000;
+const PAPER_TRADE_ACCOUNT_START_USD = clamp(
+  envNumber("PAPER_TRADE_ACCOUNT_START_USD", PAPER_TRADE_ACCOUNT_START_USD_DEFAULT),
+  0,
+  1_000_000_000
+);
 const PAPER_TRADE_MIN_SAMPLE = clamp(envNumber("PAPER_TRADE_MIN_SAMPLE", 10), 3, 200);
 const PAPER_TRADE_STRATEGY_ID = "base_long_v1";
 const PAPER_TRADE_EXIT_STRATEGY_ID = "tp_trailing_v1";
@@ -523,6 +546,21 @@ function median(values) {
   return (nums[mid - 1] + nums[mid]) / 2;
 }
 
+function percentile(values, pct) {
+  const p = Number(pct);
+  const nums = (Array.isArray(values) ? values : []).filter((v) => Number.isFinite(v));
+  if (nums.length === 0) return null;
+  if (!Number.isFinite(p)) return null;
+  const clamped = Math.min(1, Math.max(0, p));
+  nums.sort((a, b) => a - b);
+  const index = (nums.length - 1) * clamped;
+  const lo = Math.floor(index);
+  const hi = Math.ceil(index);
+  if (lo === hi) return nums[lo];
+  const weight = index - lo;
+  return nums[lo] * (1 - weight) + nums[hi] * weight;
+}
+
 function num(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -569,6 +607,12 @@ function formatUsdCompact(value) {
     return `$${(value / 1_000).toFixed(2)}K`;
   }
   return formatUsd(value);
+}
+
+function formatSignedUsdCompact(value) {
+  if (!Number.isFinite(value)) return "n/a";
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${formatUsdCompact(Math.abs(value))}`;
 }
 
 function roundUsd(value) {
@@ -9634,6 +9678,24 @@ function buildSignalTags({ coin, entry, marketPhase }) {
   if (marketPhase) tags.push(`phase:${marketPhase}`);
   const trend = coin?.trend_regime || entry?.trend_regime;
   if (trend) tags.push(`trend:${String(trend).toLowerCase()}`);
+  const taRegime = coin?.ta_regime || entry?.ta_regime;
+  if (taRegime) tags.push(`ta_regime:${String(taRegime).toLowerCase()}`);
+  const taInterestScore = num(coin?.ta_interest_score) ?? num(entry?.ta_interest_score);
+  if (taInterestScore !== null) tags.push(`ta_interest:${interestScoreRange(taInterestScore)}`);
+  const taRvol20 = num(coin?.ta_rvol_20) ?? num(entry?.ta_rvol_20);
+  if (taRvol20 !== null) tags.push(`ta_rvol:${rvolRange(taRvol20)}`);
+  const taRangeLowStatus = coin?.ta_range_low_status || entry?.ta_range_low_status;
+  if (taRangeLowStatus) tags.push(`ta_range_low:${String(taRangeLowStatus).toLowerCase()}`);
+  const taRangeHighStatus = coin?.ta_range_high_status || entry?.ta_range_high_status;
+  if (taRangeHighStatus) tags.push(`ta_range_high:${String(taRangeHighStatus).toLowerCase()}`);
+  const taEventsRaw =
+    (Array.isArray(coin?.ta_event_tags) ? coin.ta_event_tags : null) ||
+    (Array.isArray(entry?.ta_event_tags) ? entry.ta_event_tags : null) ||
+    [];
+  for (const tag of taEventsRaw) {
+    if (typeof tag !== "string" || !tag.trim()) continue;
+    tags.push(`ta_event:${tag.trim().toLowerCase()}`);
+  }
   const catalystType = coin?.catalyst_type || entry?.catalyst_type;
   if (catalystType) tags.push(`catalyst:${String(catalystType).toLowerCase()}`);
   const sentiment = coin?.news_sentiment || entry?.news_sentiment;
@@ -9759,6 +9821,17 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
         reasons,
         risks,
         trend_regime: coin?.trend_regime || null,
+        ta_regime: coin?.ta_regime || null,
+        ta_rvol_20: num(coin?.ta_rvol_20),
+        ta_interest_score: num(coin?.ta_interest_score),
+        ta_interest_confidence: coin?.ta_interest_confidence || null,
+        ta_interest_confidence_reason: coin?.ta_interest_confidence_reason || null,
+        ta_event_tags: Array.isArray(coin?.ta_event_tags)
+          ? coin.ta_event_tags.filter((t) => typeof t === "string" && t.trim())
+          : [],
+        ta_range_high_status: coin?.ta_range_high_status || null,
+        ta_range_low_status: coin?.ta_range_low_status || null,
+        ta_volume_ma20_trend: coin?.ta_volume_ma20_trend || null,
         catalyst_type: coin?.catalyst_type || null,
         news_sentiment: coin?.news_sentiment || null,
         time_horizon: coin?.explain?.time_horizon || null,
@@ -9794,7 +9867,8 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
       const price = num(opp?.price);
       const volume24h = num(opp?.volume_24h);
 
-      const tags = buildSignalTags({ coin: null, entry: opp, marketPhase });
+      const coin = coinId ? coinById.get(coinId) : null;
+      const tags = buildSignalTags({ coin, entry: opp, marketPhase });
 
       pushEvent({
         signal_event_id: buildSignalEventId({
@@ -9828,7 +9902,19 @@ function buildPaperSignalEvents({ layer1Report, discoveryReport, discoveryQueue 
           change_7d: num(opp?.change_7d),
           change_24h: num(opp?.change_24h),
           market_in_fear: Boolean(blueData?.market_in_fear),
-          stabilizing: Boolean(opp?.stabilizing),
+          stabilizing: opp?.stabilizing === undefined ? null : Boolean(opp?.stabilizing),
+          ta_regime: coin?.ta_regime || null,
+          ta_rvol_20: num(coin?.ta_rvol_20),
+          ta_interest_score: num(coin?.ta_interest_score),
+          ta_interest_confidence: coin?.ta_interest_confidence || null,
+          ta_interest_confidence_reason: coin?.ta_interest_confidence_reason || null,
+          ta_event_tags: Array.isArray(coin?.ta_event_tags)
+            ? coin.ta_event_tags.filter((t) => typeof t === "string" && t.trim())
+            : [],
+          ta_range_high_status: coin?.ta_range_high_status || null,
+          ta_range_low_status: coin?.ta_range_low_status || null,
+          ta_volume_ma20_trend: coin?.ta_volume_ma20_trend || null,
+          in_watchlist: Boolean(coin),
           time_horizon: "days to weeks",
           tags,
         },
@@ -9988,8 +10074,20 @@ function mergePaperSignalEvents(existing, incoming) {
 
 function shouldExecuteSignal(event) {
   if (!event) return false;
-  if (event.signal_source === "best_entries" || event.signal_source === "blue_chip_dip") {
+  if (event.signal_source === "best_entries") {
     return event.signal_type === "strong_buy" || event.signal_type === "buy";
+  }
+  if (event.signal_source === "blue_chip_dip") {
+    if (!(event.signal_type === "strong_buy" || event.signal_type === "buy")) return false;
+    // Tighten blue-chip dips: avoid obvious falling knives.
+    const stabilizing = event?.meta?.stabilizing;
+    if (stabilizing === false) return false;
+    const rangeLowStatus =
+      typeof event?.meta?.ta_range_low_status === "string"
+        ? event.meta.ta_range_low_status.toLowerCase()
+        : "";
+    if (rangeLowStatus === "below") return false;
+    return true;
   }
   if (event.signal_source === "discovery") {
     if (event?.meta?.status === "IGNORED") return false;
@@ -10079,12 +10177,18 @@ function normalizePaperTradeMeta(trade) {
 
   const styleId = inferPaperTradeStyleIdFromTrade(trade);
   trade.trade_style = styleId;
+  const ruleset =
+    typeof trade.paper_ruleset === "string" && trade.paper_ruleset.trim()
+      ? trade.paper_ruleset.trim().toUpperCase()
+      : "LEGACY";
+  trade.paper_ruleset = ruleset;
   if (!trade.exchange) {
     trade.exchange = PAPER_TRADE_EXCHANGE;
   }
 
   const existingTags = Array.isArray(trade.signal_tags) ? trade.signal_tags : [];
   const merged = new Set(existingTags.filter((tag) => typeof tag === "string" && tag));
+  merged.add(`ruleset:${ruleset.toLowerCase()}`);
   merged.add(`style:${styleId}`);
   merged.add(buildCostModelTag(trade.exchange, trade.fee_pct ?? PAPER_TRADE_FEE_PCT));
   trade.signal_tags = Array.from(merged);
@@ -10120,7 +10224,7 @@ function buildCostModelTag(exchange, feePct) {
   return `cost:${buildCostModelKey(exchange, feePct)}`;
 }
 
-function createPaperTradeFromSignal(event, nowIso, btcPrice) {
+function createPaperTradeFromSignal(event, nowIso, btcPrice, ruleset) {
   if (!event || !event.coin_gecko_id) return null;
   const entryPriceRaw = num(event.signal_price);
   if (entryPriceRaw === null || entryPriceRaw <= 0) return null;
@@ -10164,10 +10268,13 @@ function createPaperTradeFromSignal(event, nowIso, btcPrice) {
   };
 
   const baseSignalTags = Array.isArray(event?.meta?.tags) ? event.meta.tags : [];
+  const paperRuleset =
+    typeof ruleset === "string" && ruleset.trim() ? ruleset.trim().toUpperCase() : "LEGACY";
   const signalTags = Array.from(
     new Set(
       [
         ...baseSignalTags,
+        paperRuleset ? `ruleset:${paperRuleset.toLowerCase()}` : null,
         tradeStyleId ? `style:${tradeStyleId}` : null,
         costModelTag,
       ].filter(Boolean)
@@ -10180,6 +10287,7 @@ function createPaperTradeFromSignal(event, nowIso, btcPrice) {
     symbol: event.symbol || null,
     coin_gecko_id: event.coin_gecko_id,
     signal_source: event.signal_source,
+    paper_ruleset: paperRuleset,
     trade_style: tradeStyleId,
     exchange,
     entry_date: nowIso,
@@ -10250,8 +10358,80 @@ function createPaperTradeFromSignal(event, nowIso, btcPrice) {
   return trade;
 }
 
+function hashStringToInt(value) {
+  const text = typeof value === "string" ? value : String(value ?? "");
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function pickPaperRuleset(event) {
+  const mode = String(PAPER_TRADE_RULESET_MODE || "ab").toLowerCase();
+  if (mode === "a") return "A";
+  if (mode === "b") return "B";
+  const key =
+    event?.signal_event_id ||
+    `${event?.coin_gecko_id || ""}|${event?.timestamp || ""}|${event?.signal_source || ""}`;
+  return hashStringToInt(key) % 2 === 0 ? "A" : "B";
+}
+
+function passesPaperTaConfirmation(event) {
+  const meta = event?.meta && typeof event.meta === "object" ? event.meta : {};
+  const taRegime = typeof meta.ta_regime === "string" ? meta.ta_regime.toLowerCase() : "";
+  const taEvents = Array.isArray(meta.ta_event_tags) ? meta.ta_event_tags : [];
+  const taEventsLower = taEvents
+    .map((t) => (typeof t === "string" ? t.trim().toLowerCase() : ""))
+    .filter(Boolean);
+  const rvol = num(meta.ta_rvol_20);
+  const interest = num(meta.ta_interest_score);
+  const rangeLowStatus =
+    typeof meta.ta_range_low_status === "string" ? meta.ta_range_low_status.toLowerCase() : "";
+
+  // "High volume, no progress" type warnings should not be auto-entered.
+  if (taEventsLower.includes("distribution") || taEventsLower.includes("failed_breakout")) {
+    return false;
+  }
+
+  if (event?.signal_source === "blue_chip_dip") {
+    // "Catch the knife" protection: require signs of stabilization + volume.
+    if (meta.stabilizing === false) return false;
+    if (taRegime.includes("downtrend")) return false;
+    if (rangeLowStatus === "below") return false;
+    if (rvol !== null && rvol < 1.0) return false;
+    if (interest !== null && interest < 50) return false;
+    return true;
+  }
+
+  if (event?.signal_source === "best_entries") {
+    // Prefer strength or at least "capitulation" style reversals.
+    if (taRegime.includes("downtrend") && !taEventsLower.includes("capitulation")) {
+      return false;
+    }
+    if (interest !== null && interest < 40) return false;
+    return true;
+  }
+
+  return true;
+}
+
+function shouldExecuteSignalForRuleset(event, ruleset) {
+  if (!shouldExecuteSignal(event)) return false;
+  if (!event) return false;
+  if (event.signal_source === "manual") return true;
+
+  const r = typeof ruleset === "string" ? ruleset.toUpperCase() : "A";
+  if (r === "B" && (event.signal_source === "best_entries" || event.signal_source === "blue_chip_dip")) {
+    return passesPaperTaConfirmation(event);
+  }
+  return true;
+}
+
 function createPaperTradesFromSignals({ signals, existingTrades, nowIso, btcPrice }) {
   const created = [];
+  const nowMs = Date.parse(nowIso || "");
+  const cooldownMs = PAPER_TRADE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
   const openById = new Set(
     existingTrades
       .filter((trade) => trade?.status === "open")
@@ -10261,6 +10441,18 @@ function createPaperTradesFromSignals({ signals, existingTrades, nowIso, btcPric
   const usedSignals = new Set(
     existingTrades.map((trade) => trade?.signal_event_id).filter(Boolean)
   );
+  const lastClosedById = new Map();
+  for (const trade of existingTrades) {
+    if (trade?.status !== "closed") continue;
+    const id = normalizeCoinGeckoId(trade?.coin_gecko_id || "");
+    if (!id) continue;
+    const exitMs = Date.parse(trade?.exit_date || "");
+    if (!Number.isFinite(exitMs)) continue;
+    const current = lastClosedById.get(id);
+    if (!current || exitMs > current) {
+      lastClosedById.set(id, exitMs);
+    }
+  }
 
   const sourcePriority = { best_entries: 3, blue_chip_dip: 2, discovery: 1 };
   const prioritized = [...signals].sort((a, b) => {
@@ -10274,13 +10466,25 @@ function createPaperTradesFromSignals({ signals, existingTrades, nowIso, btcPric
   });
 
   for (const event of prioritized) {
-    if (!shouldExecuteSignal(event)) continue;
+    const ruleset = pickPaperRuleset(event);
+    if (!shouldExecuteSignalForRuleset(event, ruleset)) continue;
     const id = event?.coin_gecko_id;
     if (!id) continue;
     if (openById.has(id)) continue;
     if (usedSignals.has(event.signal_event_id)) continue;
+    if (
+      PAPER_TRADE_COOLDOWN_DAYS > 0 &&
+      cooldownMs > 0 &&
+      event?.signal_source !== "manual" &&
+      Number.isFinite(nowMs)
+    ) {
+      const lastExit = lastClosedById.get(normalizeCoinGeckoId(id));
+      if (Number.isFinite(lastExit) && nowMs - lastExit < cooldownMs) {
+        continue;
+      }
+    }
 
-    const trade = createPaperTradeFromSignal(event, nowIso, btcPrice);
+    const trade = createPaperTradeFromSignal(event, nowIso, btcPrice, ruleset);
     if (!trade) continue;
     created.push(trade);
     openById.add(id);
@@ -10491,6 +10695,26 @@ function scoreRange(score) {
   return "<50";
 }
 
+function interestScoreRange(score) {
+  const s = num(score);
+  if (s === null) return "unknown";
+  if (s >= 80) return "80+";
+  if (s >= 60) return "60-79";
+  if (s >= 50) return "50-59";
+  if (s >= 40) return "40-49";
+  return "<40";
+}
+
+function rvolRange(rvol) {
+  const v = num(rvol);
+  if (v === null) return "unknown";
+  if (v >= 3) return "3.0+";
+  if (v >= 2) return "2.0-2.9";
+  if (v >= 1.5) return "1.5-1.9";
+  if (v >= 1.0) return "1.0-1.4";
+  return "<1.0";
+}
+
 function computePaperBreakdown(trades, keyFn, labelKey) {
   const buckets = new Map();
   for (const trade of trades) {
@@ -10548,6 +10772,62 @@ function computePaperTagBreakdown(trades, prefix, labelKey) {
     (trade) => readTagValue(trade?.signal_tags, prefix),
     labelKey
   );
+}
+
+function computePaperMultiTagBreakdown(trades, tagsFn, labelKey) {
+  const buckets = new Map();
+  const list = Array.isArray(trades) ? trades : [];
+
+  for (const trade of list) {
+    const ret = tradeReturnPct(trade);
+    if (ret === null) continue;
+
+    const raw = tagsFn(trade);
+    const tags = Array.isArray(raw) ? raw : [];
+    const normalized = new Set();
+    for (const tag of tags) {
+      if (typeof tag !== "string") continue;
+      const trimmed = tag.trim();
+      if (!trimmed) continue;
+      normalized.add(trimmed);
+    }
+    if (normalized.size === 0) normalized.add("none");
+
+    for (const key of normalized) {
+      let entry = buckets.get(key);
+      if (!entry) {
+        entry = { key, sample_size: 0, wins: 0, returns: [], expectancy: [] };
+        buckets.set(key, entry);
+      }
+      entry.sample_size += 1;
+      if (ret > 0) entry.wins += 1;
+      entry.returns.push(ret);
+      const riskPct =
+        num(trade?.exit_strategy?.trailing_stop_pct) ?? PAPER_TRADE_TRAILING_STOP_PCT;
+      if (riskPct > 0) {
+        entry.expectancy.push(ret / riskPct);
+      }
+    }
+  }
+
+  const rows = [];
+  for (const entry of buckets.values()) {
+    const avgReturn = average(entry.returns);
+    const winRate =
+      entry.sample_size > 0 ? (entry.wins / entry.sample_size) * 100 : null;
+    const expectancy = average(entry.expectancy);
+    const row = {
+      sample_size: entry.sample_size,
+      win_rate_pct: winRate,
+      avg_return_pct: avgReturn,
+      expectancy_r: expectancy,
+    };
+    row[labelKey || "tag"] = entry.key;
+    rows.push(row);
+  }
+
+  rows.sort((a, b) => (b.sample_size || 0) - (a.sample_size || 0));
+  return rows;
 }
 
 function computePaperRecommendations({
@@ -10712,6 +10992,9 @@ function computePaperReport({
   const winRatePct =
     closedReturns.length > 0 ? (wins / closedReturns.length) * 100 : null;
   const avgReturn = average(closedReturns);
+  const medianReturn = median(closedReturns);
+  const p25Return = percentile(closedReturns, 0.25);
+  const p75Return = percentile(closedReturns, 0.75);
   const avgDaysHeld = average(
     closedTrades.map((trade) => num(trade?.days_held)).filter((v) => v !== null)
   );
@@ -10761,6 +11044,27 @@ function computePaperReport({
   const byHygiene = computePaperTagBreakdown(closedTrades, "hygiene:", "hygiene");
   const byCatalyst = computePaperTagBreakdown(closedTrades, "catalyst:", "catalyst");
   const bySentiment = computePaperTagBreakdown(closedTrades, "sentiment:", "sentiment");
+  const byRuleset = computePaperBreakdown(closedTrades, (t) => t.paper_ruleset, "ruleset");
+  const byTaRegime = computePaperBreakdown(
+    closedTrades,
+    (t) => t?.signal_meta?.ta_regime || "unknown",
+    "ta_regime"
+  );
+  const byTaInterest = computePaperBreakdown(
+    closedTrades,
+    (t) => interestScoreRange(t?.signal_meta?.ta_interest_score),
+    "ta_interest"
+  );
+  const byTaRvol = computePaperBreakdown(
+    closedTrades,
+    (t) => rvolRange(t?.signal_meta?.ta_rvol_20),
+    "ta_rvol"
+  );
+  const byTaEvent = computePaperMultiTagBreakdown(
+    closedTrades,
+    (t) => t?.signal_meta?.ta_event_tags,
+    "ta_event"
+  );
 
   const exitReasons = {};
   for (const trade of closedTrades) {
@@ -10779,6 +11083,195 @@ function computePaperReport({
     byCatalyst,
     bySentiment,
   });
+
+  const warnings = [];
+
+  const symbolStats = new Map();
+  let totalPnlUsd = 0;
+  for (const trade of closedTrades) {
+    const symbol = trade?.symbol || "unknown";
+    const ret = tradeReturnPct(trade);
+    if (ret === null) continue;
+    const position = num(trade?.position_size_usd) ?? PAPER_TRADE_POSITION_USD;
+    const pnlUsd = Number.isFinite(position) ? (position * ret) / 100 : 0;
+    totalPnlUsd += pnlUsd;
+
+    let entry = symbolStats.get(symbol);
+    if (!entry) {
+      entry = { symbol, closed_count: 0, wins: 0, returns: [], pnl_usd: 0 };
+      symbolStats.set(symbol, entry);
+    }
+    entry.closed_count += 1;
+    if (ret > 0) entry.wins += 1;
+    entry.returns.push(ret);
+    entry.pnl_usd += pnlUsd;
+  }
+
+  let topByCount = null;
+  let topByPnl = null;
+  for (const entry of symbolStats.values()) {
+    if (
+      !topByCount ||
+      entry.closed_count > topByCount.closed_count ||
+      (entry.closed_count === topByCount.closed_count && Math.abs(entry.pnl_usd) > Math.abs(topByCount.pnl_usd))
+    ) {
+      topByCount = entry;
+    }
+    if (!topByPnl || entry.pnl_usd > topByPnl.pnl_usd) {
+      topByPnl = entry;
+    }
+  }
+
+  const topSymbol = topByCount?.symbol && topByCount.symbol !== "unknown" ? topByCount.symbol : null;
+  const closedExcludingTop = topSymbol
+    ? closedTrades.filter((trade) => trade?.symbol !== topSymbol)
+    : [];
+  const returnsExcludingTop = topSymbol
+    ? closedExcludingTop
+        .map((trade) => tradeReturnPct(trade))
+        .filter((value) => value !== null)
+    : [];
+  const winsExcludingTop = returnsExcludingTop.filter((value) => value > 0).length;
+  const expectancyExcludingTop = topSymbol
+    ? closedExcludingTop
+        .map((trade) => {
+          const ret = tradeReturnPct(trade);
+          const riskPct =
+            num(trade?.exit_strategy?.trailing_stop_pct) ?? PAPER_TRADE_TRAILING_STOP_PCT;
+          if (ret === null || riskPct === null || riskPct <= 0) return null;
+          return ret / riskPct;
+        })
+        .filter((value) => value !== null)
+    : [];
+
+  const outliers = {
+    top_symbol_by_closed_count: topByCount
+      ? {
+          symbol: topByCount.symbol,
+          closed_count: topByCount.closed_count,
+          win_rate_pct:
+            topByCount.closed_count > 0 ? (topByCount.wins / topByCount.closed_count) * 100 : null,
+          avg_return_pct: average(topByCount.returns),
+          total_pnl_usd: topByCount.pnl_usd,
+        }
+      : null,
+    top_symbol_by_total_pnl_usd: topByPnl
+      ? {
+          symbol: topByPnl.symbol,
+          closed_count: topByPnl.closed_count,
+          win_rate_pct:
+            topByPnl.closed_count > 0 ? (topByPnl.wins / topByPnl.closed_count) * 100 : null,
+          avg_return_pct: average(topByPnl.returns),
+          total_pnl_usd: topByPnl.pnl_usd,
+        }
+      : null,
+    excluding_top_symbol_by_closed_count:
+      topSymbol && returnsExcludingTop.length > 0
+        ? {
+            excluded_symbol: topSymbol,
+            closed_count: returnsExcludingTop.length,
+            win_rate_pct:
+              returnsExcludingTop.length > 0
+                ? (winsExcludingTop / returnsExcludingTop.length) * 100
+                : null,
+            avg_return_pct: average(returnsExcludingTop),
+            median_return_pct: median(returnsExcludingTop),
+            expectancy_r: average(expectancyExcludingTop),
+          }
+        : null,
+  };
+
+  if (topByCount && closedReturns.length > 0) {
+    const sharePct = (topByCount.closed_count / closedReturns.length) * 100;
+    if (sharePct >= 25) {
+      warnings.push(
+        `Outlier: ${topByCount.symbol} accounts for ${topByCount.closed_count}/${closedReturns.length} closed trades (${sharePct.toFixed(1)}%). Averages may look better than a typical trade.`
+      );
+    }
+  }
+
+  if (topByPnl) {
+    const restPnlUsd = totalPnlUsd - topByPnl.pnl_usd;
+    if (topByPnl.pnl_usd > 0 && restPnlUsd < 0) {
+      warnings.push(
+        `Outlier: ${topByPnl.symbol} is carrying results. Without it, the rest of trades are net ${formatSignedUsdCompact(
+          restPnlUsd
+        )}.`
+      );
+    } else if (Number.isFinite(totalPnlUsd) && totalPnlUsd !== 0) {
+      const pnlSharePct = (topByPnl.pnl_usd / totalPnlUsd) * 100;
+      if (pnlSharePct >= 50) {
+        warnings.push(
+          `Outlier: ${topByPnl.symbol} contributes ${pnlSharePct.toFixed(1)}% of total profit/loss so far.`
+        );
+      }
+    }
+  }
+
+  const warnLowSample = (rows, keyField, labelFn) => {
+    const list = Array.isArray(rows) ? rows : [];
+    for (const row of list) {
+      const sample = Number(row?.sample_size ?? 0);
+      if (!Number.isFinite(sample) || sample <= 0) continue;
+      if (sample >= PAPER_TRADE_MIN_SAMPLE) continue;
+      const key = row?.[keyField] ?? row?.key ?? "unknown";
+      const label = labelFn ? labelFn(key) : key;
+      const tradeWord = sample === 1 ? "trade" : "trades";
+      warnings.push(
+        `Low sample: ${label} has only ${sample} closed ${tradeWord} (need ${PAPER_TRADE_MIN_SAMPLE}+ before trusting the stats).`
+      );
+    }
+  };
+
+  warnLowSample(byStyle, "style", (key) => {
+    const raw = typeof key === "string" ? key : "";
+    const label = raw && PAPER_TRADE_STYLES[raw] ? PAPER_TRADE_STYLES[raw].label : null;
+    return label ? `trade style ${label}` : `trade style ${raw || "unknown"}`;
+  });
+  warnLowSample(bySource, "source", (key) => `signal source ${key || "unknown"}`);
+  warnLowSample(byRuleset, "ruleset", (key) => `ruleset ${key || "unknown"}`);
+
+  const sortedWarnings = warnings
+    .map((w) => (typeof w === "string" ? w.trim() : ""))
+    .filter(Boolean)
+    .slice(0, 6);
+
+  const equityTrades = closedTrades
+    .map((trade) => {
+      const exitMs = Date.parse(trade?.exit_date || "");
+      const pnlPct = num(trade?.exit_pnl_pct);
+      const position = num(trade?.position_size_usd) ?? PAPER_TRADE_POSITION_USD;
+      if (!Number.isFinite(exitMs) || pnlPct === null || !Number.isFinite(position)) return null;
+      return {
+        exit_ms: exitMs,
+        exit_date: trade.exit_date || null,
+        symbol: trade.symbol || null,
+        pnl_pct: pnlPct,
+        pnl_usd: (position * pnlPct) / 100,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.exit_ms - b.exit_ms);
+
+  let balance = PAPER_TRADE_ACCOUNT_START_USD;
+  const balanceSeries = [];
+  for (const item of equityTrades) {
+    balance += item.pnl_usd;
+    balanceSeries.push({
+      date: item.exit_date,
+      symbol: item.symbol,
+      pnl_usd: item.pnl_usd,
+      balance_usd: balance,
+    });
+  }
+
+  const equityCurve = {
+    start_balance_usd: PAPER_TRADE_ACCOUNT_START_USD,
+    end_balance_usd: balance,
+    closed_trades_in_curve: balanceSeries.length,
+    balance_series: balanceSeries,
+    note: "Closed trades only. Assumes you could take every trade; not capital constrained.",
+  };
 
   const openPositions = [...openTrades]
     .sort(
@@ -10922,6 +11415,9 @@ function computePaperReport({
     trades_added: tradesAdded,
     open_count: openTrades.length,
     closed_count: closedTrades.length,
+    warnings: sortedWarnings,
+    outliers,
+    equity_curve: equityCurve,
     recent_14d: {
       window_days: recentWindowDays,
       from: recentFromIso,
@@ -10946,6 +11442,9 @@ function computePaperReport({
       take_profit_targets: [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3],
       exchange: PAPER_TRADE_EXCHANGE,
       default_style: PAPER_TRADE_DEFAULT_STYLE,
+      cooldown_days: PAPER_TRADE_COOLDOWN_DAYS,
+      ruleset_mode: PAPER_TRADE_RULESET_MODE,
+      account_start_usd: PAPER_TRADE_ACCOUNT_START_USD,
       styles: PAPER_TRADE_STYLES,
       discovery_thresholds: {
         strong_buy: PAPER_TRADE_DISCOVERY_STRONG_BUY,
@@ -10955,6 +11454,9 @@ function computePaperReport({
     overview: {
       win_rate_pct: winRatePct,
       avg_return_pct: avgReturn,
+      median_return_pct: medianReturn,
+      p25_return_pct: p25Return,
+      p75_return_pct: p75Return,
       expectancy_r: average(expectancyComponents),
       avg_days_held: avgDaysHeld,
       avg_mae_pct: avgMae,
@@ -10977,6 +11479,11 @@ function computePaperReport({
       by_hygiene: byHygiene,
       by_catalyst: byCatalyst,
       by_sentiment: bySentiment,
+      by_ruleset: byRuleset,
+      by_ta_regime: byTaRegime,
+      by_ta_interest: byTaInterest,
+      by_ta_rvol: byTaRvol,
+      by_ta_event: byTaEvent,
       exit_reasons: exitReasons,
     },
     recommendations,
@@ -11097,6 +11604,14 @@ function renderPaperReportMarkdown(report) {
         : "n/a"
     }`
   );
+  const medianRet = formatSignedPct(num(overview.median_return_pct), 1);
+  const p25Ret = formatSignedPct(num(overview.p25_return_pct), 1);
+  const p75Ret = formatSignedPct(num(overview.p75_return_pct), 1);
+  if (medianRet !== "n/a") {
+    lines.push(
+      `Median return (typical trade): ${medianRet} | Middle 50% range: ${p25Ret} to ${p75Ret}`
+    );
+  }
   lines.push(
     "Risk-adjusted score: average profit compared to the stop size (the % drop that would close a trade). Higher is better."
   );
@@ -11111,6 +11626,41 @@ function renderPaperReportMarkdown(report) {
     )}`
   );
   lines.push("");
+
+  const outliers = report?.outliers && typeof report.outliers === "object" ? report.outliers : null;
+  const excluding = outliers?.excluding_top_symbol_by_closed_count || null;
+  if (excluding?.excluded_symbol) {
+    lines.push(
+      `Outlier check: excluding ${excluding.excluded_symbol}, win rate ${typeof excluding.win_rate_pct === "number" ? `${excluding.win_rate_pct.toFixed(1)}%` : "n/a"} | avg return ${formatSignedPct(
+        num(excluding.avg_return_pct),
+        1
+      )} | median ${formatSignedPct(num(excluding.median_return_pct), 1)}`
+    );
+    lines.push("");
+  }
+
+  const equity = report?.equity_curve && typeof report.equity_curve === "object" ? report.equity_curve : null;
+  if (Number.isFinite(num(equity?.start_balance_usd)) && Number.isFinite(num(equity?.end_balance_usd))) {
+    const delta = num(equity.end_balance_usd) - num(equity.start_balance_usd);
+    lines.push(
+      `Pretend balance (closed trades only): start ${formatUsd(num(equity.start_balance_usd))} â†’ now ${formatUsd(
+        num(equity.end_balance_usd)
+      )} (${formatSignedUsdCompact(delta)})`
+    );
+    if (equity?.note) {
+      lines.push(`Note: ${equity.note}`);
+    }
+    lines.push("");
+  }
+
+  const warnings = Array.isArray(report?.warnings) ? report.warnings : [];
+  if (warnings.length > 0) {
+    lines.push("## Warnings");
+    for (const w of warnings.slice(0, 10)) {
+      lines.push(`- ${w}`);
+    }
+    lines.push("");
+  }
 
   const recent = report?.recent_14d && typeof report.recent_14d === "object" ? report.recent_14d : null;
   const recentOpened = Array.isArray(recent?.opened) ? recent.opened : [];
@@ -11265,6 +11815,11 @@ function renderPaperReportMarkdown(report) {
   renderPerfTable("Performance by Hygiene Label", breakdowns.by_hygiene, "hygiene", "Hygiene");
   renderPerfTable("Performance by Catalyst Type", breakdowns.by_catalyst, "catalyst", "Catalyst");
   renderPerfTable("Performance by News Sentiment", breakdowns.by_sentiment, "sentiment", "Sentiment");
+  renderPerfTable("Performance by Ruleset", breakdowns.by_ruleset, "ruleset", "Ruleset");
+  renderPerfTable("Performance by TA Regime", breakdowns.by_ta_regime, "ta_regime", "TA regime");
+  renderPerfTable("Performance by TA Interest Bucket", breakdowns.by_ta_interest, "ta_interest", "Interest");
+  renderPerfTable("Performance by TA RVOL Bucket", breakdowns.by_ta_rvol, "ta_rvol", "RVOL");
+  renderPerfTable("Performance by TA Event Tag", breakdowns.by_ta_event, "ta_event", "TA tag");
 
   lines.push("## Recommendations");
   if (Array.isArray(report?.recommendations) && report.recommendations.length > 0) {

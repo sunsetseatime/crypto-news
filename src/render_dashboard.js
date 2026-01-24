@@ -3158,10 +3158,36 @@ function buildPaperTradingHtml(paperReport) {
   const winRate =
     typeof overview.win_rate_pct === "number" ? `${overview.win_rate_pct.toFixed(1)}%` : "n/a";
   const avgReturn = formatSignedPct(num(overview.avg_return_pct), 1);
+  const medianReturn = formatSignedPct(num(overview.median_return_pct), 1);
+  const p25Return = formatSignedPct(num(overview.p25_return_pct), 1);
+  const p75Return = formatSignedPct(num(overview.p75_return_pct), 1);
   const riskAdjusted =
     typeof overview.expectancy_r === "number" ? `${overview.expectancy_r.toFixed(2)}` : "n/a";
   const avgDays =
     typeof overview.avg_days_held === "number" ? `${overview.avg_days_held.toFixed(1)}d` : "n/a";
+  const outliers =
+    paperReport.outliers && typeof paperReport.outliers === "object" ? paperReport.outliers : null;
+  const excluding = outliers?.excluding_top_symbol_by_closed_count || null;
+  const excludingSummary =
+    excluding?.excluded_symbol
+      ? `Excluding ${excluding.excluded_symbol}: win rate ${
+          typeof excluding.win_rate_pct === "number" ? `${excluding.win_rate_pct.toFixed(1)}%` : "n/a"
+        }, avg ${formatSignedPct(num(excluding.avg_return_pct), 1)}, median ${formatSignedPct(
+          num(excluding.median_return_pct),
+          1
+        )}`
+      : "";
+  const warnings = Array.isArray(paperReport.warnings) ? paperReport.warnings : [];
+  const equity =
+    paperReport.equity_curve && typeof paperReport.equity_curve === "object"
+      ? paperReport.equity_curve
+      : null;
+  const equitySeries = Array.isArray(equity?.balance_series) ? equity.balance_series : [];
+  const equityValues = equitySeries.map((p) => num(p?.balance_usd)).filter((v) => v !== null);
+  const equityStart = num(equity?.start_balance_usd);
+  const equityEnd = num(equity?.end_balance_usd);
+  const equityDelta =
+    equityStart !== null && equityEnd !== null ? equityEnd - equityStart : null;
   const strategy = paperReport.strategy && typeof paperReport.strategy === "object" ? paperReport.strategy : {};
   const styles = strategy.styles && typeof strategy.styles === "object" ? strategy.styles : {};
 
@@ -3199,6 +3225,11 @@ function buildPaperTradingHtml(paperReport) {
   const byNewsPressure = Array.isArray(breakdowns.by_news_pressure) ? breakdowns.by_news_pressure : [];
   const byUnlock = Array.isArray(breakdowns.by_unlock) ? breakdowns.by_unlock : [];
   const byHygiene = Array.isArray(breakdowns.by_hygiene) ? breakdowns.by_hygiene : [];
+  const byRuleset = Array.isArray(breakdowns.by_ruleset) ? breakdowns.by_ruleset : [];
+  const byTaRegime = Array.isArray(breakdowns.by_ta_regime) ? breakdowns.by_ta_regime : [];
+  const byTaInterest = Array.isArray(breakdowns.by_ta_interest) ? breakdowns.by_ta_interest : [];
+  const byTaRvol = Array.isArray(breakdowns.by_ta_rvol) ? breakdowns.by_ta_rvol : [];
+  const byTaEvent = Array.isArray(breakdowns.by_ta_event) ? breakdowns.by_ta_event : [];
   const thisRun = paperReport.this_run && typeof paperReport.this_run === "object" ? paperReport.this_run : {};
   const openedThisRunCount =
     Number.isFinite(num(thisRun.opened_count))
@@ -3431,6 +3462,36 @@ function buildPaperTradingHtml(paperReport) {
         </details>
       `;
 
+  const warningsHtml =
+    warnings.length === 0
+      ? ""
+      : `
+        <div style="margin-top: 10px;">
+          <div class="muted small" style="font-weight:700;">Watchouts</div>
+          <ul class="compact">
+            ${warnings
+              .slice(0, 6)
+              .map((w) => `<li>${escapeHtml(w)}</li>`)
+              .join("")}
+          </ul>
+        </div>
+      `;
+
+  const equitySpark =
+    equityValues.length >= 2 ? buildSparkline(equityValues.slice(-60), 220, 36, "Pretend balance") : "";
+  const equityHtml =
+    equityStart !== null && equityEnd !== null
+      ? `
+        <div class="muted small" style="margin-top: 10px;">
+          Pretend balance (closed trades only): start ${escapeHtml(formatUsdCompact(equityStart))} â†’ now ${escapeHtml(
+            formatUsdCompact(equityEnd)
+          )} (${escapeHtml(formatSignedUsdCompact(equityDelta))})
+        </div>
+        ${equitySpark ? `<div style=\"margin-top: 6px;\">${equitySpark}</div>` : ""}
+        <div class="muted small">Note: this assumes you could take every trade (not limited by cash).</div>
+      `
+      : "";
+
   return `
     <div class="card">
       <div class="row space-between">
@@ -3457,8 +3518,18 @@ function buildPaperTradingHtml(paperReport) {
       ${openedThisRunHtml}
       ${closedThisRunHtml}
       ${recentSectionHtml}
+      ${warningsHtml}
+      ${equityHtml}
+      ${
+        excludingSummary
+          ? `<div class="muted small" style="margin-top: 6px;">Outlier check: ${escapeHtml(excludingSummary)}</div>`
+          : ""
+      }
       <div class="muted small" style="margin-top: 6px;">
-        Win rate: ${escapeHtml(winRate)} | Avg return: ${escapeHtml(avgReturn)} | Risk-adjusted score: ${escapeHtml(riskAdjusted)} | Avg hold: ${escapeHtml(avgDays)}
+        Win rate: ${escapeHtml(winRate)} | Avg return: ${escapeHtml(avgReturn)} | Median: ${escapeHtml(medianReturn)} | Risk-adjusted score: ${escapeHtml(riskAdjusted)} | Avg hold: ${escapeHtml(avgDays)}
+      </div>
+      <div class="muted small">
+        Typical trade (median) ignores big outliers. Middle 50% range: ${escapeHtml(p25Return)} to ${escapeHtml(p75Return)}.
       </div>
       <div class="muted small">
         Win rate = % of closed trades that ended green. Avg return = average % profit/loss across closed trades.
@@ -3528,9 +3599,14 @@ function buildPaperTradingHtml(paperReport) {
         ${renderPerfTable("Score range", byScore, "range")}
         ${renderPerfTable("Signal source", bySource, "source")}
         ${renderPerfTable("Entry signal", bySignal, "signal")}
+        ${renderPerfTable("Ruleset (A/B)", byRuleset, "ruleset")}
         <details class="details" style="margin-top: 10px;">
           <summary><span class="summary-title">More learning breakdowns</span><span class="spacer"></span><span class="muted small">show/hide</span></summary>
           <div class="details-body">
+            ${renderPerfTable("TA regime", byTaRegime, "ta_regime")}
+            ${renderPerfTable("TA interest bucket", byTaInterest, "ta_interest")}
+            ${renderPerfTable("TA RVOL bucket", byTaRvol, "ta_rvol")}
+            ${renderPerfTable("TA event tags", byTaEvent, "ta_event")}
             ${renderPerfTable("Market phase", byMarketPhase, "market_phase")}
             ${renderPerfTable("Trend", byTrend, "trend")}
             ${renderPerfTable("Liquidity", byLiquidity, "liquidity")}
@@ -3553,7 +3629,8 @@ function buildPaperTradingHtml(paperReport) {
         "Every run refreshes price and profit/loss, and checks if a trade should close.",
         "Trades close if they hit a time limit, a trailing stop, a profit target, or the signal weakens.",
         "All trades and signals are saved in reports/paper/PaperTrades.json and reports/paper/SignalEvents.json.",
-        "The dashboard shows open/closed trades and your basic results, split by trade style. It does not auto-change the rules yet.",
+        "New trades use a cooldown (wait a few days before re-entering the same coin) so one coin can’t dominate the learning.",
+        "Ruleset A vs B = two versions of entry rules so we can learn which one performs better.",
       ])}
     </div>
   `;

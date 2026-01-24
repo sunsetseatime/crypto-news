@@ -246,6 +246,17 @@ Promote a suggested candidate into the tracked 7 (with confirmation):
 node src/signal_engine_promote.js promote <coingecko-id>
 ```
 
+### Paper Trading (learning mode)
+Paper trading runs automatically on each scan and logs pretend trades so we can learn what signals work.
+
+Edit `config/paper_trading.json`:
+- `cooldown_days`: how long to wait before re-entering the same coin after a trade closes (prevents one coin from dominating results).
+- `ruleset_mode`: `ab` to split new trades into **Ruleset A vs B** (A/B test), or `a` / `b` to force one ruleset.
+- `account_start_usd`: used for the **pretend balance** curve (closed trades only; not limited by cash).
+- `styles`: trade styles (targets/stops/time limits).
+
+Note: Ruleset **B** is stricter and uses the TA signals (volume + structure) to avoid obvious “bad entries” like distribution / failed breakouts when data is available.
+
 ### Watchlist
 Edit `config/watchlist.json` to manage your tracked coins:
 ```json

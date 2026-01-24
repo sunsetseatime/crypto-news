@@ -362,6 +362,8 @@ Implementation notes (for dev)
 - Added **Paper trading in 30 seconds** at the top of the Paper Trading section.
 - Added **This run: opened X | closed Y** plus a short list of trades that closed this run (with reason).
 - Added **Recent activity (last 14 days)** (opened + closed) so you can see the past 2 weeks without opening the full ledger.
+- Added **outlier + median stats** and a simple **pretend balance curve** (closed trades only) so one lucky winner can’t “fake” the averages.
+- Added a **cooldown** (wait a few days before re-entering the same coin) and **Ruleset A vs B** (two entry rule versions) to improve learning quality.
 
 ### Why
 - Friends should understand paper trading without guessing or reading code.

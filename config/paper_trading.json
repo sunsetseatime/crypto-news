@@ -2,6 +2,9 @@
   "version": 1,
   "exchange": "mexc",
   "fee_pct": 0,
+  "cooldown_days": 5,
+  "ruleset_mode": "ab",
+  "account_start_usd": 10000,
   "default_position_usd": 1000,
   "default_style": "scalp_2pct",
   "styles": {

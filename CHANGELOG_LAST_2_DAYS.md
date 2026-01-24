@@ -332,6 +332,10 @@
 ## 2026-01-24 Paper Trading + Signal Engine Clarity
 - Paper Trading dashboard + report now include a clear **Recent activity (last 14 days)** section (opened + closed).
 - `reports/paper/PaperReport.json` now includes `recent_14d` (window + counts + lists) so the dashboard can show the last 2 weeks.
+- Paper Trading now shows **median return**, **outlier checks** (excluding the top coin), and a simple **pretend balance curve** (closed trades only) so averages aren’t misleading.
+- Added a **cooldown** (wait a few days before re-entering the same coin) to prevent one coin from dominating learning.
+- Added **Ruleset A vs B** (A/B test) and TA-based confirmation for Ruleset B when TA data is available.
+- Added new learning breakdowns for **Ruleset** and **TA buckets** (regime / interest / RVOL / event tags).
 - Signal Engine dashboard now shows **not tracked** (with a hover explanation) instead of confusing `n/a` when a data source is not available.
 
 **End of Changelog**
