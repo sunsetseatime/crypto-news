@@ -6,7 +6,7 @@ Full documentation: `readme/README.md`.
 
 - Better TA (volume + price structure): RVOL (today's volume vs 20-day average), trend regime (uptrend/downtrend/range), key range levels, event tags (breakout / reclaim / capitulation / distribution), and an Interest Score (0-100).
 - Paper Trading: recent 14-day activity, outlier/median stats, a simple pretend balance curve, and Ruleset A vs B learning (A/B test).
-- Signal Engine: missing fundamentals now show as "not tracked" (instead of confusing n/a) when a data source is not available.
+- Signal Engine: shows a clear Usage proxy (fees when available, otherwise volume) + better niche suggestions; missing items show as "not tracked" when a data source is not available.
 
 ## Docs map (so you don't have to search)
 

@@ -265,6 +265,95 @@ async function fetchMarketData(ids) {
   return out;
 }
 
+async function fetchMarketChart(coinId, { days = 90 } = {}) {
+  const id = normalizeId(coinId);
+  if (!id) return null;
+  const daysNum = Number.isFinite(Number(days)) ? Math.max(1, Math.round(Number(days))) : 90;
+  const cachePath = path.join(SIGNAL_ENGINE_CACHE_DIR, `coingecko_market_chart_${id}_${daysNum}d.json`);
+  const cached = readCache(cachePath);
+  if (cached && typeof cached === "object") {
+    return cached;
+  }
+
+  const params = new URLSearchParams({
+    vs_currency: "usd",
+    days: String(daysNum),
+    interval: "daily",
+  });
+
+  const headers = { accept: "application/json" };
+  if (COINGECKO_API_KEY) {
+    if (COINGECKO_API_KEY_IN_QUERY) {
+      params.set(COINGECKO_API_KEY_HEADER, COINGECKO_API_KEY);
+    } else {
+      headers[COINGECKO_API_KEY_HEADER] = COINGECKO_API_KEY;
+    }
+  }
+
+  const url = `${COINGECKO_BASE_URL}/coins/${encodeURIComponent(id)}/market_chart?${params.toString()}`;
+  const data = await fetchJson(url, { timeoutMs: 25_000, headers });
+  const payload = data && typeof data === "object" ? data : null;
+  if (!payload) return null;
+  writeCache(cachePath, payload);
+  return payload;
+}
+
+function sum(values) {
+  let total = 0;
+  for (const v of Array.isArray(values) ? values : []) {
+    if (!Number.isFinite(v)) continue;
+    total += v;
+  }
+  return total;
+}
+
+function computeVolumeTotals(marketChart) {
+  const raw = Array.isArray(marketChart?.total_volumes) ? marketChart.total_volumes : [];
+  const volumes = raw
+    .map((entry) => num(entry?.[1]))
+    .filter((value) => Number.isFinite(value) && value >= 0);
+
+  if (volumes.length < 8) {
+    return {
+      total7d: null,
+      total7d_prev: null,
+      change_7dover7d: null,
+      total30d: null,
+      total30d_prev: null,
+      change_30dover30d: null,
+      points: volumes.length,
+    };
+  }
+
+  const last7 = volumes.slice(-7);
+  const prev7 = volumes.length >= 14 ? volumes.slice(-14, -7) : null;
+  const total7d = sum(last7);
+  const total7dPrev = prev7 ? sum(prev7) : null;
+  const change7 =
+    Number.isFinite(total7dPrev) && total7dPrev > 0
+      ? ((total7d - total7dPrev) / total7dPrev) * 100
+      : null;
+
+  const last30 = volumes.length >= 30 ? volumes.slice(-30) : null;
+  const prev30 = volumes.length >= 60 ? volumes.slice(-60, -30) : null;
+  const total30d = last30 ? sum(last30) : null;
+  const total30dPrev = prev30 ? sum(prev30) : null;
+  const change30 =
+    Number.isFinite(total30dPrev) && total30dPrev > 0
+      ? ((total30d - total30dPrev) / total30dPrev) * 100
+      : null;
+
+  return {
+    total7d: Number.isFinite(total7d) ? total7d : null,
+    total7d_prev: Number.isFinite(total7dPrev) ? total7dPrev : null,
+    change_7dover7d: Number.isFinite(change7) ? change7 : null,
+    total30d: Number.isFinite(total30d) ? total30d : null,
+    total30d_prev: Number.isFinite(total30dPrev) ? total30dPrev : null,
+    change_30dover30d: Number.isFinite(change30) ? change30 : null,
+    points: volumes.length,
+  };
+}
+
 function scoreFromPctChange(changePct, { mid = 0, width = 40 } = {}) {
   if (!Number.isFinite(changePct)) return { value: null, confidence: "low", note: "Missing data." };
   const normalized = clamp((changePct - mid) / width, -1, 1);
@@ -574,15 +663,25 @@ function renderMarkdown(report, suggestionsReport) {
       );
 
       const metrics = c?.metrics || {};
-      if (Number.isFinite(num(metrics?.fees_total30d_usd))) {
+      const usage30d = num(metrics?.usage_total30d_usd) ?? num(metrics?.fees_total30d_usd);
+      const usageMoM = num(metrics?.usage_change_30dover30d_pct) ?? num(metrics?.fees_change_30dover30d_pct);
+      const usageSource =
+        metrics?.usage_source === "defillama_fees"
+          ? "DefiLlama fees"
+          : metrics?.usage_source === "coingecko_volume"
+            ? "CoinGecko volume"
+            : "";
+
+      if (Number.isFinite(usage30d)) {
+        const sourceNote = usageSource ? ` (source: ${usageSource})` : "";
         lines.push(
-          `  - Fees (30d): ${formatUsdCompact(metrics.fees_total30d_usd)} (${formatPct(
-            metrics?.fees_change_30dover30d_pct,
+          `  - Usage (30d): ${formatUsdCompact(usage30d)} (${formatPct(
+            usageMoM,
             1
-          )} vs prior 30d)`
+          )} vs prior 30d)${sourceNote}`
         );
       } else {
-        lines.push("  - Fees (30d): n/a");
+        lines.push("  - Usage (30d): n/a");
       }
       if (Number.isFinite(num(metrics?.tvl_usd))) {
         lines.push(`  - TVL (proxy): ${formatUsdCompact(metrics.tvl_usd)}`);
@@ -664,9 +763,10 @@ async function buildSignalEngineReport() {
 
   const allIds = Array.from(new Set([...trackedIds, ...suggestionIds]));
   const allIdsKey = allIds.slice().sort().join(",");
+  const protocolMapKey = `v2|${allIdsKey}`;
 
   const protocolMapCachePath = path.join(SIGNAL_ENGINE_CACHE_DIR, "defillama_protocol_map.json");
-  let defillamaMap = readCache(protocolMapCachePath, allIdsKey);
+  let defillamaMap = readCache(protocolMapCachePath, protocolMapKey);
   if (!defillamaMap) {
     try {
       const protocols = await fetchJson(DEFILLAMA_PROTOCOLS_URL);
@@ -674,21 +774,32 @@ async function buildSignalEngineReport() {
       const want = new Set(allIds);
       for (const p of Array.isArray(protocols) ? protocols : []) {
         const gecko = normalizeId(p?.gecko_id);
+        const parentSlug = normalizeId(p?.parentProtocolSlug);
         const slug = p?.slug ? String(p.slug).trim() : null;
-        const tvl = num(p?.tvl) || 0;
-        if (!gecko || !slug) continue;
-        if (!want.has(gecko)) continue;
-        if (!byGeckoId[gecko] || tvl > (num(byGeckoId[gecko]?.tvl) || 0)) {
-          byGeckoId[gecko] = {
+        const slugKey = normalizeId(slug);
+        const tvl = num(p?.tvl);
+        const tvlValue = Number.isFinite(tvl) ? tvl : 0;
+        if (!slug) continue;
+
+        const matchKey = (() => {
+          if (gecko && want.has(gecko)) return gecko;
+          if (parentSlug && want.has(parentSlug)) return parentSlug;
+          if (slugKey && want.has(slugKey)) return slugKey;
+          return null;
+        })();
+        if (!matchKey) continue;
+
+        if (!byGeckoId[matchKey] || tvlValue > (num(byGeckoId[matchKey]?.tvl) || 0)) {
+          byGeckoId[matchKey] = {
             slug,
             name: p?.name || slug,
             category: p?.category || null,
-            tvl,
+            tvl: tvlValue,
           };
         }
       }
       defillamaMap = { generated_at: nowIso, by_gecko_id: byGeckoId };
-      writeCache(protocolMapCachePath, defillamaMap, allIdsKey);
+      writeCache(protocolMapCachePath, defillamaMap, protocolMapKey);
     } catch (err) {
       warnings.push(`DefiLlama protocol map unavailable: ${err.message}`);
       defillamaMap = { generated_at: nowIso, by_gecko_id: {} };
@@ -879,24 +990,60 @@ async function buildSignalEngineReport() {
     const feesWoW = num(fees?.change_7dover7d);
     const fees30d = num(fees?.total30d);
 
-    const growthScore = scoreFromPctChange(feesMoM, { mid: 0, width: 40 });
-    const qualityScore = Number.isFinite(feesWoW)
+    let usageSource = null;
+    let usage30d = null;
+    let usage30dPrev = null;
+    let usageMoM = null;
+    let usageWoW = null;
+    let usagePoints = null;
+
+    if (Number.isFinite(fees30d)) {
+      usageSource = "defillama_fees";
+      usage30d = fees30d;
+      usage30dPrev = num(fees?.total30DaysAgo);
+      usageMoM = feesMoM;
+      usageWoW = feesWoW;
+    } else {
+      try {
+        const marketChart = await fetchMarketChart(c.coin_gecko_id, { days: 90 });
+        const totals = computeVolumeTotals(marketChart);
+        if (Number.isFinite(num(totals?.total30d))) {
+          usageSource = "coingecko_volume";
+          usage30d = totals.total30d;
+          usage30dPrev = totals.total30d_prev;
+          usageMoM = totals.change_30dover30d;
+          usageWoW = totals.change_7dover7d;
+          usagePoints = totals.points;
+        }
+      } catch {
+        // ignore volume proxy failures
+      }
+    }
+
+    const growthScore = scoreFromPctChange(usageMoM, { mid: 0, width: 40 });
+    const qualityScore = Number.isFinite(usageWoW)
       ? {
-          value: clamp(100 - Math.round(Math.abs(feesWoW) * 2), 0, 100),
+          value: clamp(100 - Math.round(Math.abs(usageWoW) * 2), 0, 100),
           confidence: "medium",
-          note: `Based on weekly stability: ${formatPct(feesWoW, 1)} vs prior week.`,
+          note: `Based on weekly stability: ${formatPct(usageWoW, 1)} vs prior week.`,
         }
       : { value: null, confidence: "low", note: "Missing data." };
     const survivabilityScore = { value: null, confidence: "low", note: "Not enough survivability data yet." };
 
     const signals = [];
+    const usageSourceLabel =
+      usageSource === "defillama_fees"
+        ? "DefiLlama fees (proxy)"
+        : usageSource === "coingecko_volume"
+          ? "CoinGecko volume (proxy)"
+          : "n/a";
     if (c.niche === "ai_compute") {
-      const ai1 = signalFromPct(feesMoM, { up: 10, down: -10 });
+      const ai1 = signalFromPct(usageMoM, { up: 10, down: -10 });
       signals.push({
         code: "AI-1",
         name: "Paid Utilization Proxy (fees)",
         ...ai1,
-        source: slug ? "DefiLlama fees (proxy)" : "n/a",
+        source: usageSourceLabel,
       });
       signals.push({
         code: "AI-2",
@@ -932,12 +1079,12 @@ async function buildSignalEngineReport() {
         source: "manual",
       });
     } else if (c.niche === "picks_shovels") {
-      const ps1 = signalFromPct(feesMoM, { up: 5, down: -15 });
+      const ps1 = signalFromPct(usageMoM, { up: 5, down: -15 });
       signals.push({
         code: "PS-1",
         name: "Revenue Retention Proxy (fees stability)",
         ...ps1,
-        source: slug ? "DefiLlama fees (proxy)" : "n/a",
+        source: usageSourceLabel,
       });
       signals.push({
         code: "PS-2",
@@ -967,6 +1114,12 @@ async function buildSignalEngineReport() {
         fees_total30d_prev_usd: num(fees?.total30DaysAgo),
         fees_change_7dover7d_pct: feesWoW,
         fees_change_30dover30d_pct: feesMoM,
+        usage_total30d_usd: usage30d,
+        usage_total30d_prev_usd: usage30dPrev,
+        usage_change_7dover7d_pct: usageWoW,
+        usage_change_30dover30d_pct: usageMoM,
+        usage_source: usageSource,
+        usage_points: usagePoints,
         tvl_usd: tvlUsd,
       },
       signals,

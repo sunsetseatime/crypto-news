@@ -72,7 +72,19 @@
       "id": "rwa",
       "name": "RWA / Tokenization",
       "description": "Real-world asset tokenization and related infra.",
-      "coin_gecko_ids": ["ondo-finance", "centrifuge", "polymesh"]
+      "coin_gecko_ids": [
+        "ondo-finance",
+        "centrifuge",
+        "polymesh",
+        "pax-gold",
+        "tether-gold",
+        "goldfinch",
+        "maple",
+        "truefi",
+        "clearpool",
+        "propchain",
+        "realio-network"
+      ]
     },
     {
       "id": "perps",

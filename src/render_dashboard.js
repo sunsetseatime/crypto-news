@@ -908,38 +908,53 @@ function buildSignalEngineHtml(signalEngineReport) {
         const missingSourceTitle =
           "Not tracked yet: we do not have a data source for this metric for this project.";
 
+        const metrics = c?.metrics && typeof c.metrics === "object" ? c.metrics : {};
+        const usage30dValue = num(metrics?.usage_total30d_usd) ?? num(metrics?.fees_total30d_usd);
+        const usageMoMValue = num(metrics?.usage_change_30dover30d_pct) ?? num(metrics?.fees_change_30dover30d_pct);
+        const usageSource = metrics?.usage_source
+          ? String(metrics.usage_source)
+          : Number.isFinite(num(metrics?.fees_total30d_usd)) || Number.isFinite(num(metrics?.fees_change_30dover30d_pct))
+            ? "defillama_fees"
+            : "";
+        const hasUsageSource = Boolean(usageSource) || hasDefillama;
+
         const scoreCell = (value, note) => {
           if (typeof value === "number" && Number.isFinite(value)) return escapeHtml(value);
           const noteText = typeof note === "string" ? note.trim() : "";
-          const title = !hasDefillama ? missingSourceTitle : noteText || "Not enough data yet.";
-          const label = !hasDefillama ? "not tracked" : "n/a";
+          const title = !hasUsageSource ? missingSourceTitle : noteText || "Not enough data yet.";
+          const label = !hasUsageSource ? "not tracked" : "n/a";
           return `<span class="muted" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
         };
 
-        const metrics = c?.metrics && typeof c.metrics === "object" ? c.metrics : {};
-        const fees30dValue = num(metrics?.fees_total30d_usd);
-        const feesMoMValue = num(metrics?.fees_change_30dover30d_pct);
         const tvlValue = num(metrics?.tvl_usd);
 
-        const metricCell = (value, formatted) => {
+        const metricCell = (value, formatted, { hasSource, title } = {}) => {
           if (typeof value === "number" && Number.isFinite(value)) return escapeHtml(formatted);
-          const title = !hasDefillama ? missingSourceTitle : "Not enough data yet.";
-          const label = !hasDefillama ? "not tracked" : "n/a";
-          return `<span class="muted" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`;
+          const hasAnySource = typeof hasSource === "boolean" ? hasSource : true;
+          const cellTitle = !hasAnySource ? missingSourceTitle : title || "Not enough data yet.";
+          const label = !hasAnySource ? "not tracked" : "n/a";
+          return `<span class="muted" title="${escapeHtml(cellTitle)}">${escapeHtml(label)}</span>`;
         };
 
-        const fees30dCell = metricCell(
-          fees30dValue,
-          Number.isFinite(fees30dValue) ? formatUsdCompact(fees30dValue) : "n/a"
-        );
-        const feesMoMCell = metricCell(
-          feesMoMValue,
-          Number.isFinite(feesMoMValue) ? formatSignedPct(feesMoMValue, 1) : "n/a"
-        );
-        const tvlCell = metricCell(
-          tvlValue,
-          Number.isFinite(tvlValue) ? formatUsdCompact(tvlValue) : "n/a"
-        );
+        const usageSourceTitle =
+          usageSource === "coingecko_volume"
+            ? "Usage proxy: CoinGecko total trading volume (USD), summed over 30d."
+            : usageSource === "defillama_fees"
+              ? "Usage proxy: DefiLlama fees (USD), summed over 30d."
+              : "Usage proxy: n/a";
+
+        const usage30dCell = metricCell(usage30dValue, formatUsdCompact(usage30dValue), {
+          hasSource: hasUsageSource,
+          title: usageSourceTitle,
+        });
+        const usageMoMCell = metricCell(usageMoMValue, formatSignedPct(usageMoMValue, 1), {
+          hasSource: hasUsageSource,
+          title: usageSourceTitle,
+        });
+        const tvlCell = metricCell(tvlValue, formatUsdCompact(tvlValue), {
+          hasSource: hasDefillama,
+          title: "TVL proxy: DefiLlama.",
+        });
 
         const signals = Array.isArray(c?.signals) ? c.signals : [];
         const improving = signals
@@ -956,7 +971,7 @@ function buildSignalEngineHtml(signalEngineReport) {
             ? `Improving: ${improving.join(", ")}`
             : worsening.length > 0
               ? `Worsening: ${worsening.join(", ")}`
-              : unknownCount > 0 && !hasDefillama
+              : unknownCount > 0 && !hasUsageSource
                 ? "Not tracked yet (missing data source)"
                 : unknownCount > 0
                   ? "Waiting for more data"
@@ -969,8 +984,8 @@ function buildSignalEngineHtml(signalEngineReport) {
             <td class="mono">${scoreCell(growthValue, scores?.growth?.note)}</td>
             <td class="mono">${scoreCell(qualityValue, scores?.quality?.note)}</td>
             <td class="mono">${scoreCell(survivValue, scores?.survivability?.note)}</td>
-            <td class="mono">${fees30dCell}</td>
-            <td class="mono">${feesMoMCell}</td>
+            <td class="mono">${usage30dCell}</td>
+            <td class="mono">${usageMoMCell}</td>
             <td class="mono">${tvlCell}</td>
             <td class="small muted">${escapeHtml(signalNote)}</td>
           </tr>
@@ -987,8 +1002,8 @@ function buildSignalEngineHtml(signalEngineReport) {
             <th>Growth</th>
             <th>Quality</th>
             <th>Survive</th>
-            <th>Fees 30d</th>
-            <th>Fees MoM</th>
+            <th title="Fees (DefiLlama) or Volume (CoinGecko) depending on availability">Usage 30d</th>
+            <th title="Usage change vs the prior 30 days">Usage MoM</th>
             <th>TVL</th>
             <th>Signal note</th>
           </tr>

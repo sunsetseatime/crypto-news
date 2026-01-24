@@ -19,6 +19,9 @@ Date: 2026-01-22
   - `reports/signal_engine/signal_engine_projects.pending.json` (review-only)
 - It shows up on the dashboard as a new section: `reports/Dashboard.html`
 - The dashboard also shows **Suggested for Signal Engine** (top 5 per niche, needs approval).
+- It now shows a clearer **Usage** proxy:
+  - DefiLlama fees when available (best)
+  - Otherwise CoinGecko trading volume (fallback proxy)
 - Discovery items now show a small “Signal Engine: in-scope” hint when they match your niche category lists (AI Compute / RWA / Picks & Shovels).
 
 How to run it (local):

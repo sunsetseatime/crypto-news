@@ -240,8 +240,14 @@ Optional: add known data sources per project in `config/signal_engine_metric_reg
 - `assetValueSource`
 - `issuerSource`
 
-If the dashboard shows **not tracked** for a project, it usually means we do not have a data source for that metric yet (common if DefiLlama does not cover the project).  
-`defillama_slug` = the short name in the DefiLlama URL (example: `the-graph`). If you know it, set it in `config/signal_engine_projects.json`.
+The Signal Engine tries to use the best available **Usage** proxy:
+- **DefiLlama fees** (best, when available)
+- Otherwise **CoinGecko trading volume** (fallback proxy)
+
+If the dashboard shows **not tracked** for a metric, it usually means we do not have a data source for *that specific metric* yet (example: TVL for some non-DeFi projects).  
+`defillama_slug` = the short name in the DefiLlama URL (example: `the-graph`). The Signal Engine tries to auto-detect this, but if it is wrong/missing you can set it in `config/signal_engine_projects.json`.
+
+If you want **more “new projects” per niche**, expand the niche lists in `config/categories.json` (example: add more `coin_gecko_ids` under `rwa`).
 
 Promote a suggested candidate into the tracked 7 (with confirmation):
 ```powershell
@@ -403,7 +409,7 @@ The scanner now includes:
 | **On-chain holder analysis** | ✅ **NEW!** | Ethplorer (Ethereum) + explorers where supported; Covalent/GoldRush fallback. |
 | Progress logging | ✅ Implemented | Real-time scan progress |
 | Alerts | ✅ **NEW!** | Local thresholds + Dashboard card (`reports/Alerts.md`) |
-| Signal Engine (Fundamentals) | ✅ **NEW!** | DefiLlama fees + TVL (proxy) + manual config (`config/signal_engine_projects.json`) |
+| Signal Engine (Fundamentals) | ✅ **NEW!** | Usage proxy = DefiLlama fees (when available) or CoinGecko volume (fallback) + TVL (proxy) + manual config (`config/signal_engine_projects.json`) |
 | Signal Engine Candidate Suggestions | ✅ **NEW!** | Data-first suggestions + coverage scoring (`signal_engine_candidate_suggestions.json`) |
 
 **Notes**: 
