@@ -337,5 +337,6 @@
 - Added **Ruleset A vs B** (A/B test) and TA-based confirmation for Ruleset B when TA data is available.
 - Added new learning breakdowns for **Ruleset** and **TA buckets** (regime / interest / RVOL / event tags).
 - Signal Engine dashboard now shows **not tracked** (with a hover explanation) instead of confusing `n/a` when a data source is not available.
+- Watchlist rows now show a compact **TA summary** (regime / RVOL / interest / key levels / tags) directly in the **Notes** column so you can scan quickly.
 
 **End of Changelog**

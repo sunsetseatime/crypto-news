@@ -2547,6 +2547,47 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
     `;
   }
 
+  function taRegimeBadgeClass(regime) {
+    const norm = String(regime || "").toLowerCase();
+    if (norm === "uptrend") return "badge-keep";
+    if (norm === "downtrend") return "badge-drop";
+    if (norm === "range" || norm === "sideways") return "badge-watch";
+    return "badge-muted";
+  }
+
+  function taRvolBadgeClass(rvol) {
+    if (!Number.isFinite(rvol)) return "badge-muted";
+    if (rvol >= 2.0) return "badge-warning";
+    if (rvol >= 1.5) return "badge-watch";
+    return "badge-muted";
+  }
+
+  function taInterestBadgeClass(score) {
+    if (!Number.isFinite(score)) return "badge-muted";
+    if (score >= 70) return "badge-keep";
+    if (score >= 50) return "badge-watch";
+    return "badge-muted";
+  }
+
+  function taLevelBadgeClass(status) {
+    const norm = String(status || "").toLowerCase();
+    if (norm === "held" || norm === "breakout" || norm === "reclaim" || norm === "above") return "badge-keep";
+    if (norm === "below") return "badge-muted";
+    if (norm === "failed_breakout") return "badge-warning";
+    if (norm === "breakdown") return "badge-drop";
+    return "badge-muted";
+  }
+
+  function taTagBadgeClass(tag) {
+    const norm = String(tag || "").toLowerCase();
+    if (norm === "breakout" || norm === "reclaim" || norm === "hold" || norm === "relief_rally") {
+      return "badge-keep";
+    }
+    if (norm === "capitulation") return "badge-warning";
+    if (norm === "failed_breakout" || norm === "distribution") return "badge-drop";
+    return "badge-muted";
+  }
+
   const rows = sorted
     .map((coin, idx) => {
       const label = coin.hygiene_label || "UNKNOWN";
@@ -2666,6 +2707,78 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
       const taRangeLowStatus = coin?.ta_range_low_status ? String(coin.ta_range_low_status).replace(/_/g, " ") : "n/a";
       const taRangeHighStatus = coin?.ta_range_high_status ? String(coin.ta_range_high_status).replace(/_/g, " ") : "n/a";
 
+      const taQuickHtml = (() => {
+        const hasTa =
+          Boolean(coin?.ta_regime) ||
+          Number.isFinite(taRvol) ||
+          Number.isFinite(taInterest) ||
+          Boolean(coin?.ta_range_low_status) ||
+          Boolean(coin?.ta_range_high_status) ||
+          taTagsRaw.length > 0;
+
+        if (!hasTa) {
+          return `<div class="muted small" style="margin-top: 6px;">TA: n/a</div>`;
+        }
+
+        const tooltipParts = [];
+        if (taRegimeReason) tooltipParts.push(`Regime: ${taRegimeReason}`);
+        if (taInterestReason) tooltipParts.push(`Interest: ${taInterestReason}`);
+        if (Number.isFinite(taRangeLow) || Number.isFinite(taRangeHigh)) {
+          tooltipParts.push(
+            `Range: low ${taRangeLow !== null ? formatUsd(taRangeLow) : "n/a"} | high ${taRangeHigh !== null ? formatUsd(taRangeHigh) : "n/a"}${taRangeWindow !== null ? ` (window ${taRangeWindow})` : ""}`
+          );
+        }
+        if (taTags.length > 0) tooltipParts.push(`Tags: ${taTags.join(", ")}`);
+        const tooltip = tooltipParts.join(" | ");
+        const titleAttr = tooltip ? `title="${escapeHtml(tooltip)}"` : "";
+
+        const parts = [];
+        parts.push(badge(`Regime: ${taRegime}`, taRegimeBadgeClass(taRegime)));
+        parts.push(
+          badge(
+            `RVOL: ${Number.isFinite(taRvol) ? taRvol.toFixed(2) : "n/a"}`,
+            taRvolBadgeClass(taRvol)
+          )
+        );
+        parts.push(
+          badge(
+            `Interest: ${Number.isFinite(taInterest) ? `${Math.round(taInterest)}/100 (${taInterestConf})` : "n/a"}`,
+            taInterestBadgeClass(taInterest)
+          )
+        );
+
+        if (coin?.ta_range_low_status) {
+          parts.push(badge(`Low: ${taRangeLowStatus}`, taLevelBadgeClass(coin.ta_range_low_status)));
+        }
+        if (coin?.ta_range_high_status) {
+          parts.push(badge(`High: ${taRangeHighStatus}`, taLevelBadgeClass(coin.ta_range_high_status)));
+        }
+
+        const tagLimit = 3;
+        const tagBadges = taTagsRaw
+          .slice(0, tagLimit)
+          .map((t) => {
+            const raw = String(t || "").trim();
+            const label = raw ? raw.replace(/_/g, " ") : "";
+            if (!label) return null;
+            return badge(label, taTagBadgeClass(raw));
+          })
+          .filter(Boolean)
+          .join(" ");
+        const moreTagCount =
+          taTagsRaw.length > tagLimit ? badge(`+${taTagsRaw.length - tagLimit} more`, "badge-muted") : "";
+
+        const tagsHtml = tagBadges || moreTagCount ? `<span class="muted small">Tags:</span> ${tagBadges} ${moreTagCount}` : "";
+
+        return `
+          <div class="row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap; align-items: baseline;" ${titleAttr}>
+            <span class="muted small" style="font-weight: 700;">TA</span>
+            ${parts.join(" ")}
+            ${tagsHtml}
+          </div>
+        `;
+      })();
+
       const taMeta = `
         <div><strong>TA:</strong> ${escapeHtml(taRegime)}${taRegimeReason ? ` <span class="muted small">(${escapeHtml(taRegimeReason)})</span>` : ""} | RVOL ${escapeHtml(Number.isFinite(taRvol) ? taRvol.toFixed(2) : "n/a")} | Interest ${escapeHtml(Number.isFinite(taInterest) ? `${Math.round(taInterest)}/100 (${taInterestConf})` : "n/a")}</div>
         <div><strong>Key levels:</strong> low ${escapeHtml(taRangeLow !== null ? formatUsd(taRangeLow) : "n/a")} (${escapeHtml(taRangeLowStatus)}), high ${escapeHtml(taRangeHigh !== null ? formatUsd(taRangeHigh) : "n/a")} (${escapeHtml(taRangeHighStatus)})${taRangeWindow !== null ? ` <span class="muted small">(window ${escapeHtml(String(taRangeWindow))})</span>` : ""}</div>
@@ -2777,7 +2890,7 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
           <td class="num" data-label="30d">${sparkCell}</td>
           <td class="num" data-label="Week">${ch7dDisplay}</td>
           <td class="num" data-label="Beat BTC?">${rsDisplay}</td>
-          <td data-label="Notes">${notesHtml}</td>
+          <td data-label="Notes">${notesHtml}${taQuickHtml}</td>
         </tr>
       `;
 

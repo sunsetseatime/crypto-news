@@ -35,7 +35,9 @@ Each coin receives a hygiene label:
 
 ## TA outputs (volume + price structure)
 
-In the dashboard, click a coin row to see these TA (technical analysis) items:
+In the dashboard, each coin row shows a compact TA (technical analysis) summary under **Notes** (no click needed).
+
+Click a coin row to see the full TA details + reasons. You can also hover the TA line for a short explanation (a "tooltip" = a small pop-up text box).
 
 - **Regime**: Uptrend / Downtrend / Range (based on higher highs/lows)
 - **RVOL**: today's volume compared to its 20-day average ("relative volume")
