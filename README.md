@@ -13,6 +13,7 @@ Full documentation: `readme/README.md`.
 - `readme/README.md` - Full setup + usage guide
 - `readme/DEMO_GUIDE.md` - Quick demo script
 - `readme/CRYPTO_SIGNAL_ENGINE_IMPLEMENTATION_OUTLINE.md` - Signal Engine + candidate suggestion layer (implementation outline)
+- `readme/APP_CRITIQUE_AND_NEXT_STEPS.md` - Deep critique + concrete improvement ideas
 - `CHANGELOG_LAST_2_DAYS.md` - Recent changes (update record)
 - `to_do_readme/ISSUES_AUDIT_AND_NEXT_STEPS.md` - Known issues + next steps
 - `readme/FEATURES_ROADMAP.md` - Roadmap / future ideas
