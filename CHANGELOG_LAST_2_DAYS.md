@@ -218,6 +218,10 @@
 3. **Data Source Tracking**: All data sources properly tracked and displayed
 4. **News Freshness**: Only alerts on real-time news (CryptoPanic paid tier)
 5. **GitHub Priority**: GitHub activity now prioritized over CoinGecko dev data for traction
+6. **CoinGecko Rate Limits**: CoinGecko requests are now throttled by default to avoid 429 errors; optional `COINGECKO_RPM` setting added
+7. **Quality vs Timing (Clarity)**: Watchlist now shows Quality (KEEP/WATCH-ONLY/DROP) separate from Timing (Buy now/Wait for dip); Today’s Summary includes KEEP target guidance
+8. **Tokenomics + Tradeability surfaced**: Coin details now show Supply/FDV/Float, unlock info, tradeability, and a simple data-confidence tier
+9. **Paper trading tuned for weeks/months**: Added `position_weeks_months` style as default and made the recent activity window configurable via `PAPER_RECENT_WINDOW_DAYS`
 
 ---
 

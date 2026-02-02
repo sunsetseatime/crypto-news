@@ -150,16 +150,16 @@ Step-by-step (recommended):
 - Keep deep-dive sections below for when you want details.
 - Make the wording consistent and easy for non-coders (and friends) to understand.
 
-**Status update (2026-01-22):** The Watchlist table now uses a single **Action** column (replaces Verdict + Entry) to prevent mixed messages, and Discovery is now labeled as a research list (not recommendations).
+**Status update (2026-02-02):** The Watchlist table now shows **Quality** (KEEP/WATCH-ONLY/DROP) separately from **Timing** (Buy now / Wait for dip), and Today’s Summary includes KEEP target guidance (example: target 15–20 core holds).
 
 ---
 
 ### A) Rename confusing words (so labels match what we mean)
 
 **What we change**
-- Rename “Ready Setup” (top counter) to **“Ready (KEEP)”** or **“Passed Checks (KEEP)”**.
+- Rename “Ready Setup” (top counter) to **“Core list (KEEP)”**.
 - Define “setup” clearly wherever it’s used:
-  - **KEEP** = passed safety/quality checks (good enough to consider).
+  - **KEEP** = passed safety/quality checks (good enough to hold for weeks/months).
   - **Entry setup** = KEEP + timing looks good today.
   - **Strong setup** = the strongest “entry setup” signal.
 
@@ -169,7 +169,7 @@ Step-by-step (recommended):
 **How to verify**
 1) Run a scan: `node src/index.js`
 2) Open: `reports/Dashboard.html`
-3) Confirm the top counter says “Ready (KEEP)” (or “Passed Checks”), and the glossary explains each term in one sentence.
+3) Confirm the top counter says “Core list (KEEP)”, and the glossary explains each term in one sentence.
 
 Implementation notes (for dev)
 - Update wording in `buildDailySummaryHtml()` in `src/render_dashboard.js`.

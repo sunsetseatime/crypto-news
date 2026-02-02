@@ -186,6 +186,44 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ---------------------------------------------------------------------------
+// CoinGecko rate-limit protection
+// ---------------------------------------------------------------------------
+const COINGECKO_RPM = (() => {
+  const raw = process.env.COINGECKO_RPM;
+  if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n <= 0) return null; // allow disabling with 0/-1
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  if (COINGECKO_API_KEY && COINGECKO_API_KEY.startsWith("CG-")) return 25;
+  if (COINGECKO_API_KEY) return 80;
+  return 20;
+})();
+const COINGECKO_MIN_INTERVAL_MS = COINGECKO_RPM
+  ? Math.max(0, Math.ceil(60000 / COINGECKO_RPM))
+  : 0;
+let coingeckoQueue = Promise.resolve();
+let coingeckoLastCallAt = 0;
+
+function scheduleCoinGeckoCall() {
+  if (!COINGECKO_MIN_INTERVAL_MS) return Promise.resolve();
+  const run = async () => {
+    const now = Date.now();
+    const waitMs = Math.max(
+      0,
+      coingeckoLastCallAt + COINGECKO_MIN_INTERVAL_MS - now
+    );
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    coingeckoLastCallAt = Date.now();
+  };
+  const next = coingeckoQueue.then(run, run);
+  coingeckoQueue = next;
+  return next;
+}
+
 function formatCoinGeckoError(bodyText) {
   try {
     const payload = JSON.parse(bodyText);
@@ -233,6 +271,9 @@ async function fetchJson(url, options = {}, retries = 2) {
   }
   
   try {
+    if (requestUrl.startsWith(BASE_URL)) {
+      await scheduleCoinGeckoCall();
+    }
     const response = await fetch(requestUrl, { ...options, headers });
     if (!response.ok) {
       if (response.status === 429 && retries > 0) {

@@ -143,7 +143,7 @@ function labelClass(label) {
 function friendlyLabel(label) {
   switch (label) {
     case "KEEP":
-      return "Ready";
+      return "Keep";
     case "WATCH-ONLY":
       return "Watch";
     case "DROP":
@@ -285,6 +285,9 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
   const coins = layer1Report?.coins || [];
   const mainCoins = coins.filter(c => c.watchlist_source !== "staging");
   const stagingCoins = coins.filter(c => c.watchlist_source === "staging");
+  const keepPrefs = layer1Report?.preferences && typeof layer1Report.preferences === "object" ? layer1Report.preferences : {};
+  const keepTargetMin = Number.isFinite(num(keepPrefs.keep_target_min)) ? keepPrefs.keep_target_min : 15;
+  const keepTargetMax = Number.isFinite(num(keepPrefs.keep_target_max)) ? keepPrefs.keep_target_max : 20;
   
   // Market condition
   const marketCondition = layer1Report?.market_condition;
@@ -339,7 +342,7 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
     verdict = "MARKET OVERHEATED - Consider taking profits";
     verdictClass = "badge-warning";
   } else if (keepCount > 0) {
-    verdict = `${keepCount} coin${keepCount > 1 ? 's' : ''} look${keepCount === 1 ? 's' : ''} actionable`;
+    verdict = `${keepCount} coin${keepCount > 1 ? 's' : ''} meet core quality (KEEP)`;
     verdictClass = "badge-positive";
   } else if (criticalChanges > 0) {
     verdict = "Nothing actionable - check the warnings";
@@ -348,6 +351,17 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       verdict = "No strong entries today - keep watching";
     verdictClass = "badge-muted";
   }
+
+  const keepTargetNote = (() => {
+    const range = `Target: ${keepTargetMin}–${keepTargetMax} core holds`;
+    if (keepCount < keepTargetMin) {
+      return `${range}. You are below target (KEEP=${keepCount}). Consider promoting 1–2 strong candidates from staging/discovery.`;
+    }
+    if (keepCount > keepTargetMax) {
+      return `${range}. You are above target (KEEP=${keepCount}). Consider trimming the weakest KEEP names into WATCH-ONLY.`;
+    }
+    return `${range}. You are in range (KEEP=${keepCount}).`;
+  })();
   
   // Build highlights
   const highlights = [];
@@ -454,10 +468,11 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       <div class="verdict-box">
         <span class="badge ${verdictClass}" style="font-size: 14px; padding: 6px 12px;">${verdict}</span>
       </div>
+      <div class="muted small" style="margin-top: 6px;">${escapeHtml(keepTargetNote)}</div>
       <div class="summary-stats">
         <div class="stat">
           <div class="stat-value" style="color: var(--keep);">${keepCount}</div>
-          <div class="stat-label">Ready (KEEP)</div>
+          <div class="stat-label">Core list (KEEP) <span class="muted small">(target ${escapeHtml(String(keepTargetMin))}–${escapeHtml(String(keepTargetMax))})</span></div>
         </div>
         <div class="stat">
           <div class="stat-value" style="color: var(--watch);">${watchCount}</div>
@@ -476,7 +491,7 @@ function buildDailySummaryHtml({ layer1Report, diffReport, alertsReport, defiLat
       ${highlightsHtml}
       ${buildHowThisWorks([
         "Uses Fear and Greed plus BTC weekly momentum for market mood.",
-        "Counts come from your watchlist labels (Ready/Watch/Avoid) and staging list.",
+        "Counts come from your watchlist labels (KEEP/WATCH-ONLY/DROP) and staging list.",
         "Key Findings are pulled from outperformance vs BTC, catalysts, risks, discovery, and DeFi.",
         "Why it matters: it tells you if the market is friendly before you act.",
       ])}
@@ -1383,11 +1398,11 @@ function buildPortfolioGuidanceHtml(guidance) {
 
       <div style="display:flex; gap:18px; flex-wrap: wrap; margin-top: 12px;">
         <div>
-          <div class="muted small">Typical max size (Ready)</div>
+          <div class="muted small">Typical max size (KEEP)</div>
           <div id="keepCapValue" style="font-weight: 700; font-size: 18px;">${escapeHtml(keepCap)}</div>
         </div>
         <div>
-          <div class="muted small">Typical max size (Watch)</div>
+          <div class="muted small">Typical max size (WATCH-ONLY)</div>
           <div id="watchCapValue" style="font-weight: 700; font-size: 18px;">${escapeHtml(watchCap)}</div>
         </div>
         <div title="Liquidity targets scale down for smaller portfolios.">
@@ -1398,7 +1413,7 @@ function buildPortfolioGuidanceHtml(guidance) {
       ${notesHtml}
       ${buildHowThisWorks([
         "Base size uses your portfolio size and market phase.",
-        "Ready coins get a bigger cap; Watch coins get about half.",
+        "KEEP coins get a bigger cap; WATCH-ONLY coins get about half.",
         "Risk flags (low liquidity, unlocks, concentration) reduce size.",
         "A volume cap keeps size below about 0.1% of daily volume.",
         "Why it matters: sizing controls risk even when signals look good.",
@@ -2361,7 +2376,7 @@ function buildSupervisorHtml(supervisorResult) {
       ${buildHowThisWorks([
         "AI summarizes only the reports from this scan.",
         "Top plays are picked from the pre-built shortlist, not invented.",
-        "Action words are labels, not financial advice.",
+        "Words like 'Buy now' / 'Wait for dip' are labels, not financial advice.",
         "Use it as a fast briefing before you scroll deeper.",
       ])}
     </div>
@@ -2616,31 +2631,59 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
         coin.low_liquidity !== true &&
         !(Number.isFinite(num(coin.health_score)) && num(coin.health_score) < 40);
 
-      let timingText = null;
-      if (entrySignal === "strong_buy") timingText = "Great";
-      else if (entrySignal === "buy") timingText = "Good";
-      else if (entrySignal === "overbought" || entrySignal === "wait") timingText = "Wait";
-      else if (entrySignal) timingText = "Okay";
+      const dataConfidenceTier =
+        coin?.data_confidence_tier && typeof coin.data_confidence_tier === "string"
+          ? coin.data_confidence_tier
+          : "n/a";
+      const tradeabilityRaw = coin?.tradeability ? String(coin.tradeability) : "n/a";
+      const tradeabilityText =
+        tradeabilityRaw === "good"
+          ? "Good"
+          : tradeabilityRaw === "thin"
+            ? "Thin"
+            : tradeabilityRaw === "poor"
+              ? "Poor"
+              : "n/a";
 
-      let actionText = "Research";
-      let actionClass = "badge-muted";
+      const qualityText = label;
+      const qualityClass = labelClass(label);
+      const qualityHint =
+        label === "KEEP"
+          ? "Core hold candidate (weeks/months)"
+          : label === "WATCH-ONLY"
+            ? "Interesting, but blocked"
+            : label === "DROP"
+              ? "Avoid / not worth it"
+              : "n/a";
+
+      const qualityHtml =
+        badge(qualityText, qualityClass) +
+        `<div class="muted small">${escapeHtml(qualityHint)}</div>` +
+        `<div class="muted small">Data: ${escapeHtml(dataConfidenceTier)} | Trade: ${escapeHtml(tradeabilityText)}</div>`;
+
+      let timingActionText = "n/a";
+      let timingActionClass = "badge-muted";
+      let timingHint = "";
       if (label === "DROP") {
-        actionText = "Skip";
-        actionClass = "badge-drop";
+        timingActionText = "Skip";
+        timingActionClass = "badge-drop";
       } else if (!eligibleForAction) {
-        actionText = "Watch only";
-        actionClass = "badge-watch";
+        timingActionText = "Blocked";
+        timingActionClass = "badge-watch";
+        timingHint = "Fix the blockers first";
       } else if (entrySignal === "strong_buy" || entrySignal === "buy") {
-        actionText = "Buy now";
-        actionClass = "badge-keep";
+        timingActionText = "Buy now";
+        timingActionClass = "badge-keep";
+        timingHint = entrySignal === "strong_buy" ? "Timing looks great" : "Timing looks good";
       } else {
-        actionText = "Wait for dip";
-        actionClass = "badge-warning";
+        timingActionText = "Wait for dip";
+        timingActionClass = "badge-warning";
+        timingHint = "Quality is OK, timing not ideal";
       }
 
-      const actionHtml =
-        badge(actionText, actionClass) +
-        (eligibleForAction && timingText ? `<div class="muted small">Timing: ${escapeHtml(timingText)}</div>` : "");
+      const timingHtml =
+        badge(timingActionText, timingActionClass) +
+        (timingHint ? `<div class="muted small">${escapeHtml(timingHint)}</div>` : "");
       const price = formatUsd(num(coin.price));
       const ch7d = num(coin.price_change_7d);
       const ch7dDisplay = ch7d !== null 
@@ -2681,6 +2724,51 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
       const confidenceLevel = explain?.confidence?.level ? String(explain.confidence.level) : "n/a";
       const confidenceReason = explain?.confidence?.reason ? String(explain.confidence.reason) : "";
       const dataConfidence = explain?.data_confidence ? String(explain.data_confidence) : "n/a";
+      const dataConfidenceTierExplain = explain?.data_confidence_tier
+        ? String(explain.data_confidence_tier)
+        : dataConfidenceTier;
+      const supplyMeta = (() => {
+        const mcap = num(coin?.market_cap);
+        const fdv = num(coin?.fdv);
+        const mcapToFdv = num(coin?.marketcap_to_fdv);
+        const floatPct = num(coin?.float_percent);
+        const lockedPct = num(coin?.locked_percent);
+        const supplyParts = [];
+        if (mcap !== null) supplyParts.push(`MCap ${formatUsdCompact(mcap)}`);
+        if (fdv !== null) supplyParts.push(`FDV ${formatUsdCompact(fdv)}`);
+        if (mcapToFdv !== null) supplyParts.push(`MCap/FDV ${(mcapToFdv * 100).toFixed(0)}%`);
+        if (floatPct !== null) supplyParts.push(`Float ${floatPct.toFixed(0)}%`);
+        if (lockedPct !== null) supplyParts.push(`Locked ${lockedPct.toFixed(0)}%`);
+        const supplyLine = supplyParts.length > 0 ? supplyParts.join(" | ") : "n/a";
+
+        const unlockConf = coin?.unlock_confidence ? String(coin.unlock_confidence) : "UNKNOWN";
+        const unlockSource = coin?.unlock_source ? String(coin.unlock_source) : "";
+        const unlockPct = num(coin?.unlock_next_30d_percent);
+        const unlockValue = num(coin?.unlock_next_30d_value);
+        const unlockValueText = unlockValue !== null ? formatUsdCompact(unlockValue) : null;
+
+        let unlockLine = "";
+        if (unlockConf === "HIGH") {
+          const pctText = unlockPct !== null ? `${unlockPct.toFixed(2)}% of circulating` : "n/a";
+          const valueText = unlockValueText ? ` (~${unlockValueText})` : "";
+          unlockLine = `Next 30d unlock: ${pctText}${valueText}${unlockSource ? ` (source: ${unlockSource})` : ""}`;
+        } else if (unlockConf === "ESTIMATED") {
+          unlockLine = `Unlock schedule: estimated from supply ratio${lockedPct !== null ? ` (~${lockedPct.toFixed(0)}% locked)` : ""}.`;
+        } else if (unlockConf === "UNKNOWN") {
+          unlockLine = "Unlock schedule: unknown.";
+        } else {
+          unlockLine = "Unlock schedule: n/a.";
+        }
+
+        const vol24h = num(coin?.volume_24h);
+        const volText = vol24h !== null ? formatUsdCompact(vol24h) : "n/a";
+
+        return `
+          <div><strong>Supply:</strong> ${escapeHtml(supplyLine)}</div>
+          <div><strong>Unlocks:</strong> ${escapeHtml(unlockLine)}</div>
+          <div><strong>Tradeability:</strong> ${escapeHtml(tradeabilityText)} <span class="muted small">(24h vol ${escapeHtml(volText)})</span></div>
+        `;
+      })();
       const context = explain?.context || null;
       const contextSummary = context?.summary ? String(context.summary) : "";
       const contextHeadwinds = Array.isArray(context?.headwinds) ? context.headwinds.filter(Boolean) : [];
@@ -2864,7 +2952,8 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
                   <div><strong>Time horizon:</strong> ${escapeHtml(timeHorizon)}</div>
                   <div><strong>Invalidation:</strong> ${escapeHtml(invalidation)}</div>
                   <div><strong>Confidence:</strong> ${escapeHtml(confidenceLevel)}${confidenceReason ? ` <span class="muted small">(${escapeHtml(confidenceReason)})</span>` : ""}</div>
-                  <div><strong>Data confidence:</strong> ${escapeHtml(dataConfidence)}</div>
+                  <div><strong>Data confidence:</strong> ${escapeHtml(dataConfidenceTierExplain)} <span class="muted small">(${escapeHtml(dataConfidence)})</span></div>
+                  ${supplyMeta}
                   ${taMeta}
                   ${contextMeta}
                 </div>
@@ -2900,7 +2989,8 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
             <button class="paper-trade-btn paper-trade-mini" data-payload="${escapeHtml(JSON.stringify(paperTradePayload))}" title="Optional: adds a manual paper trade idea (copies text).">Manual paper trade</button>
           </td>
           <td class="col-symbol" data-label="Coin">${symbolHtml}<div class="muted small">${escapeHtml(coin.name || "")}</div></td>
-          <td data-label="Action">${actionHtml}</td>
+          <td data-label="Quality">${qualityHtml}</td>
+          <td data-label="Timing">${timingHtml}</td>
           <td class="num" data-label="Price">${escapeHtml(price)}</td>
           <td class="num" data-label="30d">${sparkCell}</td>
           <td class="num" data-label="Week">${ch7dDisplay}</td>
@@ -2915,11 +3005,11 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
 
   const actionLegend = `
     <div class="entry-legend muted small" style="margin-top: 10px; padding: 8px 12px; background: rgba(255,255,255,0.03); border-radius: 8px;">
-      <strong>Action guide:</strong>
-      <span style="color: var(--keep); margin-left: 8px;">Buy now</span> = passed checks + timing looks good
-      <span style="color: var(--warning); margin-left: 8px;">Wait for dip</span> = passed checks, but timing is not ideal
-      <span style="color: var(--watch); margin-left: 8px;">Watch only</span> = not ready (failed checks or warning flags)
-      <span style="color: var(--drop); margin-left: 8px;">Skip</span> = avoid (serious red flags)
+      <strong>Quality vs Timing:</strong>
+      <span style="color: var(--keep); margin-left: 8px;">KEEP</span> = good enough to hold for weeks/months (core list)
+      <span style="color: var(--watch); margin-left: 8px;">WATCH-ONLY</span> = interesting, but blocked right now
+      <span style="color: var(--drop); margin-left: 8px;">DROP</span> = avoid
+      <span style="color: var(--warning); margin-left: 8px;">Timing</span> (Buy now / Wait for dip) only matters when Quality is KEEP
     </div>
   `;
 
@@ -2932,7 +3022,8 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
             <tr>
               <th></th>
               <th>Coin</th>
-              <th title="One-line summary: quality first, then timing">Action</th>
+              <th title="Project quality for a weeks/months hold">Quality</th>
+              <th title="Entry timing (only relevant if Quality=KEEP)">Timing</th>
               <th class="num">Price</th>
               <th class="num">30d</th>
               <th class="num">Week</th>
@@ -2946,14 +3037,15 @@ function buildWatchlistTableHtml({ title, coins, rankBySymbol, defaultOpen = 0 }
         </table>
       </div>
       ${actionLegend}
-      <div class="muted small" style="margin-top: 6px;">Action is the single summary. Manual paper trade (optional) is in the first column.</div>
+      <div class="muted small" style="margin-top: 6px;">Quality is for your core list. Timing helps pick better entries. Manual paper trade (optional) is in the first column.</div>
       ${buildHowThisWorks([
-        "Action combines two ideas: coin quality (passes checks) and entry timing (how the chart looks today).",
-        "Coin quality checks: liquidity, unlock transparency, traction (TVL + dev activity), ownership, trend, health.",
+        "Quality answers: is this a good-enough project to hold for weeks/months? (KEEP/WATCH-ONLY/DROP)",
+        "Timing answers: if it's a KEEP, does the chart look like a good entry today? (Buy now / Wait for dip)",
+        "Quality checks: liquidity, unlock/dilution risk, traction (TVL + dev activity), ownership, trend, health.",
         "Developer activity uses GitHub commit recency/repo status or CoinGecko dev data.",
         "Entry timing uses a score from RSI, pullback size (30d high/low), trend, volume, and moving averages (average price over X days).",
         "Details show reasons, risks, sizing, news pressure, and manual paper trading.",
-        "Why it matters: it prevents mixed messages (good timing on a coin that is not ready).",
+        "Why it matters: it prevents mixed messages (great chart on a coin you should not hold).",
       ])}
     </div>
   `;
@@ -4445,12 +4537,12 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
         <h2>How to Read This Dashboard</h2>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 12px;">
           <div>
-            <h3 style="color: var(--keep);">Ready (KEEP)</h3>
-            <p class="small muted">These coins passed safety and quality checks, so they’re on your short list. KEEP does not mean “buy now” â€” it means “okay to consider” if timing is right.</p>
+            <h3 style="color: var(--keep);">Core list (KEEP)</h3>
+            <p class="small muted">These coins passed safety and quality checks and are good enough to hold for weeks/months. KEEP does not mean “buy now” - use Timing to decide entry.</p>
           </div>
           <div>
             <h3 style="color: var(--watch);">Watch-only (WATCH-ONLY)</h3>
-            <p class="small muted">Interesting, but something blocks action right now (example: unlock risk, dilution risk, negative news pressure, or weak price/volume structure). Keep an eye on them, but donâ€™t act without more proof.</p>
+            <p class="small muted">Interesting, but something blocks action right now (example: unlock risk, dilution risk, negative news pressure, or weak price/volume structure). Keep an eye on them, but do not act without more proof.</p>
           </div>
           <div>
             <h3 style="color: var(--drop);">Avoid (DROP)</h3>
@@ -4462,7 +4554,7 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
           </div>
         </div>
         <div class="muted small" style="margin-top: 10px;">
-          Action = the one-line summary. If a coin is not Ready (KEEP), Action says Watch only or Skip. If it is Ready, Action says Buy now or Wait for dip based on timing (price/volume + recent events).
+          Quality tells you if it belongs in your core list. Timing helps you decide whether to buy now or wait for a better entry.
         </div>
         ${buildHowThisWorks([
           "This is a quick glossary for the labels used on the page.",

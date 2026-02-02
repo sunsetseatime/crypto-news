@@ -6,7 +6,7 @@
   "ruleset_mode": "ab",
   "account_start_usd": 10000,
   "default_position_usd": 1000,
-  "default_style": "scalp_2pct",
+  "default_style": "position_weeks_months",
   "styles": {
     "scalp_2pct": {
       "label": "Short (2% target)",
@@ -16,6 +16,17 @@
         "take_profit_targets": [2],
         "trailing_stop_pct": 2,
         "time_stop_days": 3,
+        "score_decay_exit": true
+      }
+    },
+    "position_weeks_months": {
+      "label": "Position (weeks/months)",
+      "position_size_usd": 1000,
+      "fee_pct": 0,
+      "exit_strategy": {
+        "take_profit_targets": [25, 50, 80],
+        "trailing_stop_pct": 12,
+        "time_stop_days": 120,
         "score_decay_exit": true
       }
     },

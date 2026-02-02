@@ -190,6 +190,14 @@ const DEFI_STALE_HOURS = envNumber("DEFI_STALE_HOURS", 24);
 const PORTFOLIO_SIZE = Number(process.env.PORTFOLIO_SIZE || 5000);
 const PORTFOLIO_MULTIPLIER = Math.max(0.1, Math.min(1, PORTFOLIO_SIZE / 100000));
 
+// How many "KEEP" coins you want in your long-term core list.
+// KEEP = "good enough to hold for weeks/months" (not an automatic buy).
+const KEEP_TARGET_MIN = clamp(envNumber("KEEP_TARGET_MIN", 15), 0, 500);
+const KEEP_TARGET_MAX = (() => {
+  const raw = clamp(envNumber("KEEP_TARGET_MAX", 20), 0, 500);
+  return Math.max(raw, KEEP_TARGET_MIN);
+})();
+
 // Liquidity thresholds scale with portfolio size:
 // - $100K+ portfolio: $5M low, $1M drop (default, conservative)
 // - $50K portfolio: $2.5M low, $500K drop
@@ -257,6 +265,7 @@ const PAPER_TRADE_TRAILING_STOP_PCT = clamp(
   1,
   30
 );
+const PAPER_RECENT_WINDOW_DAYS = clamp(envNumber("PAPER_RECENT_WINDOW_DAYS", 60), 1, 365);
 const PAPER_TRADE_SCORE_EXIT_MIN = clamp(
   envNumber("PAPER_TRADE_SCORE_EXIT_MIN", 40),
   0,
@@ -432,6 +441,47 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ---------------------------------------------------------------------------
+// CoinGecko rate-limit protection
+// ---------------------------------------------------------------------------
+// CoinGecko demo keys are commonly limited to ~30 requests/minute.
+// This scanner can easily exceed that by fetching multiple endpoints per coin.
+// We throttle CoinGecko requests by default to avoid 429 errors.
+const COINGECKO_RPM = (() => {
+  const raw = process.env.COINGECKO_RPM;
+  if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n <= 0) return null; // allow disabling with 0/-1
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  if (COINGECKO_API_KEY && COINGECKO_API_KEY.startsWith("CG-")) return 25; // safe default under 30 RPM cap
+  if (COINGECKO_API_KEY) return 80; // conservative default for many Pro plans
+  return 20; // unauthenticated/IP-based usage is often stricter
+})();
+const COINGECKO_MIN_INTERVAL_MS = COINGECKO_RPM
+  ? Math.max(0, Math.ceil(60000 / COINGECKO_RPM))
+  : 0;
+let coingeckoQueue = Promise.resolve();
+let coingeckoLastCallAt = 0;
+
+function scheduleCoinGeckoCall() {
+  if (!COINGECKO_MIN_INTERVAL_MS) return Promise.resolve();
+  const run = async () => {
+    const now = Date.now();
+    const waitMs = Math.max(
+      0,
+      coingeckoLastCallAt + COINGECKO_MIN_INTERVAL_MS - now
+    );
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    coingeckoLastCallAt = Date.now();
+  };
+  const next = coingeckoQueue.then(run, run);
+  coingeckoQueue = next;
+  return next;
+}
+
 function formatCoinGeckoError(bodyText) {
   try {
     const payload = JSON.parse(bodyText);
@@ -480,6 +530,9 @@ async function fetchJson(url, options = {}, retries = 2) {
     }
   }
   try {
+    if (requestUrl.startsWith(BASE_URL)) {
+      await scheduleCoinGeckoCall();
+    }
     const response = await fetch(requestUrl, { ...options, headers });
     if (!response.ok) {
       if (response.status === 429 && retries > 0) {
@@ -2551,6 +2604,19 @@ function computeDataConfidence({ hasNews, hasOnchain, hasTvl }) {
   return "price-only";
 }
 
+function computeDataConfidenceTier({ hasNews, hasOnchain, hasTvl }) {
+  if (hasOnchain && hasNews && hasTvl) return "STRONG";
+  if (hasNews || hasOnchain || hasTvl) return "PARTIAL";
+  return "PRICE_ONLY";
+}
+
+function computeTradeabilityLabel({ volume24h, lowLiquidity, highSlippageRisk }) {
+  if (lowLiquidity) return "poor";
+  if (highSlippageRisk) return "thin";
+  if (volume24h !== null) return "good";
+  return "unknown";
+}
+
 function evaluateCorrelationGuardrail({ coin, portfolio }) {
   const hasBtc = Boolean(portfolio?.BTC);
   const hasEth = Boolean(portfolio?.ETH);
@@ -4493,7 +4559,9 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
       : coin?.trend_regime === "Sideways"
         ? "days"
         : "hours to days";
-  if (coin?.context_short_term_only) {
+  if (label === "KEEP" && !coin?.context_short_term_only) {
+    timeHorizon = "weeks to months";
+  } else if (coin?.context_short_term_only) {
     timeHorizon = "short-term only (hours to days)";
   }
 
@@ -4517,6 +4585,7 @@ function buildCoinExplain({ coin, marketPhase, ruleEffectiveness }) {
         }
       : null,
     data_confidence: coin?.data_confidence || null,
+    data_confidence_tier: coin?.data_confidence_tier || null,
     time_horizon: timeHorizon,
     invalidation_rule: invalidationRule,
     confidence: {
@@ -10130,6 +10199,7 @@ function inferPaperTradeStyleFromTimeHorizon(timeHorizon) {
   if (typeof timeHorizon !== "string") return null;
   const lower = timeHorizon.toLowerCase();
   if (!lower) return null;
+  if (lower.includes("month")) return "position_weeks_months";
   if (lower.includes("week")) return "swing_days_weeks";
   if (lower.includes("hour")) return "scalp_2pct";
   if (lower.includes("day")) return "scalp_2pct";
@@ -10161,10 +10231,16 @@ function inferPaperTradeStyleIdFromTrade(trade) {
     ? trade.exit_strategy.take_profit_targets
     : [];
   const finalTarget = targets.length > 0 ? Number(targets[targets.length - 1]) : null;
+  if (Number.isFinite(finalTarget) && finalTarget >= 60) {
+    return normalizePaperTradeStyleId("position_weeks_months") || resolvePaperTradeStyleId({ meta: {} });
+  }
   if (Number.isFinite(finalTarget) && finalTarget <= 5) {
     return normalizePaperTradeStyleId("scalp_2pct") || resolvePaperTradeStyleId({ meta: {} });
   }
   const timeStop = Number(trade?.exit_strategy?.time_stop_days);
+  if (Number.isFinite(timeStop) && timeStop >= 90) {
+    return normalizePaperTradeStyleId("position_weeks_months") || resolvePaperTradeStyleId({ meta: {} });
+  }
   if (Number.isFinite(timeStop) && timeStop <= 7) {
     return normalizePaperTradeStyleId("scalp_2pct") || resolvePaperTradeStyleId({ meta: {} });
   }
@@ -11331,7 +11407,7 @@ function computePaperReport({
       primary_driver: trade?.post_mortem?.primary_driver || null,
     }));
 
-  const recentWindowDays = 14;
+  const recentWindowDays = PAPER_RECENT_WINDOW_DAYS;
   const nowMs = Date.parse(nowIso || "");
   const recentFromMs = Number.isFinite(nowMs)
     ? nowMs - recentWindowDays * 24 * 60 * 60 * 1000
@@ -11407,6 +11483,21 @@ function computePaperReport({
     days_held: trade.days_held ?? null,
   }));
 
+  const defaultStyle =
+    (PAPER_TRADE_STYLES && PAPER_TRADE_STYLES[PAPER_TRADE_DEFAULT_STYLE]) ||
+    PAPER_TRADE_STYLES.swing_days_weeks ||
+    null;
+  const defaultExit = defaultStyle?.exit_strategy || {};
+  const strategyPositionUsd = num(defaultStyle?.position_size_usd) ?? PAPER_TRADE_POSITION_USD;
+  const strategyFeePct = num(defaultStyle?.fee_pct) ?? PAPER_TRADE_FEE_PCT;
+  const strategyTrailingStopPct =
+    num(defaultExit?.trailing_stop_pct) ?? PAPER_TRADE_TRAILING_STOP_PCT;
+  const strategyTimeStopDays = num(defaultExit?.time_stop_days) ?? PAPER_TRADE_TIME_STOP_DAYS;
+  const strategyTargets =
+    Array.isArray(defaultExit?.take_profit_targets) && defaultExit.take_profit_targets.length > 0
+      ? defaultExit.take_profit_targets
+      : [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3];
+
   return {
     generated_at: nowIso,
     signal_events_total: signalEvents.length,
@@ -11435,11 +11526,11 @@ function computePaperReport({
       closed_by_reason: closedThisRunByReason,
     },
     strategy: {
-      position_size_usd: PAPER_TRADE_POSITION_USD,
-      fee_pct: PAPER_TRADE_FEE_PCT,
-      trailing_stop_pct: PAPER_TRADE_TRAILING_STOP_PCT,
-      time_stop_days: PAPER_TRADE_TIME_STOP_DAYS,
-      take_profit_targets: [TAKE_PROFIT_TARGET_1, TAKE_PROFIT_TARGET_2, TAKE_PROFIT_TARGET_3],
+      position_size_usd: strategyPositionUsd,
+      fee_pct: strategyFeePct,
+      trailing_stop_pct: strategyTrailingStopPct,
+      time_stop_days: strategyTimeStopDays,
+      take_profit_targets: strategyTargets,
       exchange: PAPER_TRADE_EXCHANGE,
       default_style: PAPER_TRADE_DEFAULT_STYLE,
       cooldown_days: PAPER_TRADE_COOLDOWN_DAYS,
@@ -12958,6 +13049,16 @@ async function main() {
         hasOnchain: Boolean(holdersData || holderInfo?.onchain),
         hasTvl: Boolean(tvlData),
       }),
+      data_confidence_tier: computeDataConfidenceTier({
+        hasNews: Array.isArray(newsSummary.headlines) && newsSummary.headlines.length > 0,
+        hasOnchain: Boolean(holdersData || holderInfo?.onchain),
+        hasTvl: Boolean(tvlData),
+      }),
+      tradeability: computeTradeabilityLabel({
+        volume24h: volume24h,
+        lowLiquidity,
+        highSlippageRisk: highSlippage,
+      }),
       // News sentiment
       news_count_24h: newsSummary.news_count_24h || 0,
       news_count_7d: newsSummary.news_count_7d || 0,
@@ -13057,6 +13158,11 @@ async function main() {
 
   const layer1Report = {
     generated_at: dataFreshness.scan_generated_at,
+    preferences: {
+      keep_target_min: KEEP_TARGET_MIN,
+      keep_target_max: KEEP_TARGET_MAX,
+      holding_period: "weeks_to_months",
+    },
     data_sources: {
       ...dataSources,
       volume_note: "Total volume used as proxy for spot volume.",

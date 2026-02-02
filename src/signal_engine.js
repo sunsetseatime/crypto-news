@@ -51,6 +51,48 @@ const COINGECKO_BASE_URL =
       : DEFAULT_PRO_BASE_URL
     : DEFAULT_DEMO_BASE_URL);
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---------------------------------------------------------------------------
+// CoinGecko rate-limit protection
+// ---------------------------------------------------------------------------
+const COINGECKO_RPM = (() => {
+  const raw = process.env.COINGECKO_RPM;
+  if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n <= 0) return null; // allow disabling with 0/-1
+    if (Number.isFinite(n) && n > 0) return Math.round(n);
+  }
+  if (COINGECKO_API_KEY && COINGECKO_API_KEY.startsWith("CG-")) return 25;
+  if (COINGECKO_API_KEY) return 80;
+  return 20;
+})();
+const COINGECKO_MIN_INTERVAL_MS = COINGECKO_RPM
+  ? Math.max(0, Math.ceil(60000 / COINGECKO_RPM))
+  : 0;
+let coingeckoQueue = Promise.resolve();
+let coingeckoLastCallAt = 0;
+
+function scheduleCoinGeckoCall() {
+  if (!COINGECKO_MIN_INTERVAL_MS) return Promise.resolve();
+  const run = async () => {
+    const now = Date.now();
+    const waitMs = Math.max(
+      0,
+      coingeckoLastCallAt + COINGECKO_MIN_INTERVAL_MS - now
+    );
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    coingeckoLastCallAt = Date.now();
+  };
+  const next = coingeckoQueue.then(run, run);
+  coingeckoQueue = next;
+  return next;
+}
+
 const ROOT_DIR = path.join(__dirname, "..");
 const REPORTS_DIR = path.join(ROOT_DIR, "reports");
 const SIGNAL_ENGINE_DIR = path.join(REPORTS_DIR, "signal_engine");
@@ -216,6 +258,9 @@ async function fetchJson(url, { timeoutMs = 25_000, headers = {} } = {}) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    if (url.startsWith(COINGECKO_BASE_URL)) {
+      await scheduleCoinGeckoCall();
+    }
     const res = await fetch(url, {
       method: "GET",
       headers: { accept: "application/json", ...headers },

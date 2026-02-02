@@ -5,7 +5,8 @@ Full documentation: `readme/README.md`.
 ## Highlights
 
 - Better TA (volume + price structure): RVOL (today's volume vs 20-day average), trend regime (uptrend/downtrend/range), key range levels, event tags (breakout / reclaim / capitulation / distribution), and an Interest Score (0-100).
-- Paper Trading: recent 14-day activity, outlier/median stats, a simple pretend balance curve, and Ruleset A vs B learning (A/B test).
+- Watchlist clarity: Quality (KEEP/WATCH-ONLY/DROP) is shown separately from Timing (Buy now / Wait for dip), plus KEEP target guidance for a 15–20 coin core list.
+- Paper Trading: configurable recent activity window (default 60d), outlier/median stats, a simple pretend balance curve, and weeks/months trade styles for learning.
 - Signal Engine: shows a clear Usage proxy (fees when available, otherwise volume) + better niche suggestions; missing items show as "not tracked" when a data source is not available.
 
 ## Docs map (so you don't have to search)

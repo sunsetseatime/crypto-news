@@ -2,6 +2,8 @@
 
 Date: 2026-01-26
 
+Status update (2026-02-02): Quality (KEEP/WATCH-ONLY/DROP) and Timing (Buy now / Wait for dip) are now shown separately in the Watchlist, and coin details surface Supply/Unlocks + Data Confidence more clearly.
+
 ## Big picture (plain English)
 
 - This repo is a “daily crypto research scanner” that pulls data from a few sources, applies rules, and generates a dashboard (`reports/Dashboard.html`) that tries to answer: “What should I look at today, what’s risky, and what setups look real vs noisy?”
@@ -11,7 +13,7 @@ Date: 2026-01-26
 
 - **Watchlist scan (your chosen coins)**
   - Pulls market data, flags common retail traps (low liquidity, dilution risk, unlock risk, chasing), and produces a simple decision + explanation per coin.
-  - Splits “quality” from “timing” with: **KEEP/WATCH-ONLY/DROP** (quality) + **Action** (Buy now / Wait for dip / Watch only / Skip) (timing).
+  - Splits “quality” from “timing” with: **KEEP/WATCH-ONLY/DROP** (quality) + **Timing** (Buy now / Wait for dip) (timing).
 - **TA (technical analysis = chart-based signals)**
   - Adds “volume + price structure” signals: RVOL (relative volume), regime (uptrend/downtrend/range), key levels, and event tags (breakout, reclaim, hold, failed breakout, distribution, capitulation, relief rally).
   - Produces an “Interest Score” (0–100) + confidence.
@@ -58,7 +60,7 @@ Date: 2026-01-26
 - **The app mixes two jobs that fight each other**
   - Job A: “Is this a good project?” (fundamentals / tokenomics / long-term survivability)
   - Job B: “Is now a good time to buy?” (timing / chart structure / market phase)
-  - You have the split (KEEP vs Action), but humans still naturally merge them. That’s where bad decisions happen.
+  - You have the split (Quality vs Timing), but humans still naturally merge them. That’s where bad decisions happen.
 - **“Scores” can create false confidence**
   - A 78/100 looks precise, but it’s still built from incomplete data + chosen thresholds.
   - Best practice: show “why this score is uncertain” as prominently as the score itself.
@@ -84,7 +86,7 @@ Date: 2026-01-26
 
 ### 1) Make the “two-layer decision” impossible to confuse
 
-- What: Visually separate “Project Quality” (KEEP/WATCH/DROP) from “Entry Timing” (Action) with two distinct panels and an explicit decision rule (“Only consider Action if Quality is KEEP”).
+- What: Visually separate “Project Quality” (KEEP/WATCH/DROP) from “Entry Timing” (Timing) with two distinct panels and an explicit decision rule (“Only consider Timing if Quality is KEEP”).
 - Why: Prevents the #1 failure mode: great chart on a bad coin, or great project bought at awful timing.
 - Verify: In the dashboard, a user can explain the difference in 10 seconds and stops treating KEEP as “buy”.
 
@@ -151,4 +153,3 @@ Date: 2026-01-26
 ## One clarifying question (for a tailored roadmap)
 
 - Are you mostly trying to trade **short-term (hours/days)**, **swing (days/weeks)**, or **long-term (months)**?
-

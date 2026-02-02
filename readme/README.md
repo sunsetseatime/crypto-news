@@ -29,9 +29,13 @@ For each coin on your watchlist, the scanner:
 | **Catalyst Validation** | Is there a real, verifiable event within 14 days with a source link? |
 
 Each coin receives a hygiene label:
-- **KEEP (Ready)**: Passed the safety + quality checks, so it’s on your short list. This is **not** an automatic “buy” signal — use **Action** (Buy now / Wait for dip) for timing.
+- **KEEP (Core list)**: Passed safety + quality checks and is good enough to hold for **weeks/months**. This is **not** an automatic “buy now” signal — use **Timing** (Buy now / Wait for dip) for entry.
 - **WATCH-ONLY**: Interesting, but **something blocks action** right now (example: unlock risk, dilution risk, high ownership concentration, negative news pressure, or weak price/volume structure).
 - **DROP (Avoid)**: Fails basic checks (too hard to trade, missing critical data, or serious red flags). Best to skip/remove.
+
+In the dashboard watchlist table:
+- **Quality** shows the label (KEEP / WATCH-ONLY / DROP).
+- **Timing** helps you decide entry (Buy now / Wait for dip) and only matters when Quality is KEEP.
 
 ## TA outputs (volume + price structure)
 
@@ -54,6 +58,9 @@ Optional settings:
 - `SKIP_MARKET_OHLC=1` disables OHLC candles (less TA detail)
 - `MARKET_OHLC_DAYS=180` controls how far back candle history goes (allowed: 1, 7, 14, 30, 90, 180, 365)
 - `ENABLE_TA_CROSS_VENUE=1` enables a cross-venue sanity check (uses CoinGecko tickers; helps spot venue-specific spikes)
+- `COINGECKO_RPM=25` slows CoinGecko requests to avoid "429 Too Many Requests" (rate limits). Set lower if you still hit limits; set `0` to disable (not recommended).
+- `KEEP_TARGET_MIN=15` and `KEEP_TARGET_MAX=20` set your desired core list size (used for guidance in Today’s Summary).
+- `PAPER_RECENT_WINDOW_DAYS=60` controls how much recent paper-trade activity is shown on the dashboard/report.
 
 ## Quick Start
 
@@ -261,6 +268,7 @@ Edit `config/paper_trading.json`:
 - `cooldown_days`: how long to wait before re-entering the same coin after a trade closes (prevents one coin from dominating results).
 - `ruleset_mode`: `ab` to split new trades into **Ruleset A vs B** (A/B test), or `a` / `b` to force one ruleset.
 - `account_start_usd`: used for the **pretend balance** curve (closed trades only; not limited by cash).
+- `default_style`: your default holding style (example: `position_weeks_months` for weeks/months).
 - `styles`: trade styles (targets/stops/time limits).
 
 Note: Ruleset **B** is stricter and uses the TA signals (volume + structure) to avoid obvious “bad entries” like distribution / failed breakouts when data is available.
