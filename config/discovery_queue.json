@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-01-14T11:38:02.447Z",
+  "generated_at": "2026-02-24T06:40:32.843Z",
   "criteria": {
     "min_volume_24h": "$5M",
     "min_market_cap": "$10M",

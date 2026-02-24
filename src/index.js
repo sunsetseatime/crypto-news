@@ -180,8 +180,8 @@ const MARKET_OHLC_DAYS = (() => {
   return allowed.has(n) ? n : 180;
 })();
 
-// DeFi scan freshness handling (always auto-run on stale)
-const AUTO_RUN_DEFI = true;
+// DeFi scan freshness handling (enabled by default; set AUTO_RUN_DEFI=0 to save API calls)
+const AUTO_RUN_DEFI = process.env.AUTO_RUN_DEFI !== "0";
 const DEFI_STALE_HOURS = envNumber("DEFI_STALE_HOURS", 24);
 
 // Portfolio size setting - adjusts liquidity thresholds
@@ -7143,9 +7143,11 @@ function ensureDefiFreshness(preScanWarnings) {
   if (stillStale) {
     const ageNote =
       info.age_hours !== null ? `${info.age_hours.toFixed(1)}h` : "unknown age";
-    const autoRunNote = "Auto-run was attempted but data is still stale.";
+    const autoRunNote = AUTO_RUN_DEFI
+      ? "Auto-run was attempted but data is still stale."
+      : "Auto-run is disabled (AUTO_RUN_DEFI=0).";
     preScanWarnings.push(
-      `DeFi scan data is missing or stale (${ageNote}). ${autoRunNote} Run node src/defi_scan.js.`
+      `DeFi scan data is missing or stale (${ageNote}). ${autoRunNote} Run node src/defi_scan.js if you want fresh DeFi data.`
     );
   }
 

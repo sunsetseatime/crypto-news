@@ -8,8 +8,8 @@ on:
         type: boolean
         default: false
   schedule:
-    # GitHub Actions schedules are in UTC. 07:00/15:00/23:00 SAST (UTC+2) = 05:00/13:00/21:00 UTC.
-    - cron: "0 5,13,21 * * *"
+    # GitHub Actions schedules are in UTC. 07:00/19:00 SAST (UTC+2) = 05:00/17:00 UTC.
+    - cron: "0 5,17 * * *"
 
 concurrency:
   group: crypto-news-pages
@@ -23,6 +23,17 @@ permissions:
 env:
   # Match your locale for report timestamps (e.g., Summary.md uses toLocaleString()).
   TZ: Africa/Johannesburg
+  # API usage controls (CoinGecko quota)
+  CACHE_TTL_MINUTES: "1440"
+  SIGNAL_ENGINE_CACHE_TTL_MINUTES: "1440"
+  DEFI_CACHE_TTL_MINUTES: "1440"
+  DEFI_STALE_HOURS: "168"
+  AUTO_RUN_DEFI: "0"
+  SKIP_MARKET_OHLC: "1"
+  DISCOVER_MARKET_PAGES: "3"
+  DEFI_ENABLE_ONCHAIN: "0"
+  DEFI_TOP_DEV_FETCH_LIMIT: "5"
+  DEFI_TOP_ONCHAIN_FETCH_LIMIT: "0"
 
 jobs:
   build:
@@ -48,11 +59,26 @@ jobs:
         with:
           path: |
             config/discovery_queue.json
+            reports/Dashboard.html
+            reports/Summary.md
+            reports/Layer1Report.json
+            reports/Alerts.md
+            reports/Alerts.json
+            reports/DiffReport.json
+            reports/SupervisorSummary.json
+            reports/DiscoveryReport.md
+            reports/DiscoveryReport.json
             reports/backtest
+            reports/defi/Latest.md
+            reports/defi/Latest.json
             reports/defi/snapshots
             reports/history/watchlist
             reports/history/signal_engine
             reports/paper
+            reports/signal_engine/SignalEngine.md
+            reports/signal_engine/SignalEngine.json
+            reports/signal_engine/signal_engine_candidate_suggestions.json
+            reports/signal_engine/signal_engine_projects.pending.json
             reports/signal_engine/cache
           key: crypto-news-state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
@@ -66,17 +92,44 @@ jobs:
         run: node src/discover.js
 
       - name: Run Signal Engine (fundamentals)
-        run: node src/signal_engine.js
+        shell: bash
+        run: |
+          set +e
+          log_file="$(mktemp)"
+          node src/signal_engine.js 2>&1 | tee "$log_file"
+          code=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$code" -ne 0 ] && grep -q "CoinGecko error 10006" "$log_file"; then
+            echo "::warning title=Signal Engine skipped::CoinGecko monthly quota exhausted (10006). Reusing cached Signal Engine outputs if available."
+            exit 0
+          fi
+
+          exit "$code"
 
       - name: Run DeFi scan
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.skip_defi == 'true') }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.skip_defi != 'true' }}
+        shell: bash
         env:
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           COINGECKO_API_KEY_HEADER: ${{ secrets.COINGECKO_API_KEY_HEADER }}
           COINGECKO_BASE_URL: ${{ secrets.COINGECKO_BASE_URL }}
-        run: node src/defi_scan.js
+        run: |
+          set +e
+          log_file="$(mktemp)"
+          node src/defi_scan.js 2>&1 | tee "$log_file"
+          code=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$code" -ne 0 ] && grep -q "CoinGecko error 10006" "$log_file"; then
+            echo "::warning title=DeFi scan skipped::CoinGecko monthly quota exhausted (10006). Reusing cached DeFi outputs if available."
+            exit 0
+          fi
+
+          exit "$code"
 
       - name: Run watchlist scan
+        shell: bash
         env:
           COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
           COINGECKO_API_KEY_HEADER: ${{ secrets.COINGECKO_API_KEY_HEADER }}
@@ -91,7 +144,19 @@ jobs:
           OPTIMISM_API_KEY: ${{ secrets.OPTIMISM_API_KEY }}
           BASESCAN_API_KEY: ${{ secrets.BASESCAN_API_KEY }}
           COVALENT_API_KEY: ${{ secrets.COVALENT_API_KEY }}
-        run: node src/index.js
+        run: |
+          set +e
+          log_file="$(mktemp)"
+          node src/index.js 2>&1 | tee "$log_file"
+          code=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$code" -ne 0 ] && grep -q "CoinGecko error 10006" "$log_file"; then
+            echo "::warning title=Watchlist scan skipped::CoinGecko monthly quota exhausted (10006). Reusing cached watchlist outputs if available."
+            exit 0
+          fi
+
+          exit "$code"
 
       - name: Prune state (keep caches small)
         shell: bash
