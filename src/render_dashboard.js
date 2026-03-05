@@ -1185,6 +1185,134 @@ function buildSignalEngineSuggestionsHtml(suggestionsReport) {
   `;
 }
 
+function buildRevivalFrameworkHtml(revivalFramework) {
+  if (!revivalFramework || typeof revivalFramework !== "object") {
+    return "";
+  }
+
+  const generatedAt = revivalFramework.generated_at
+    ? formatUtc(revivalFramework.generated_at)
+    : "n/a";
+  const overview =
+    revivalFramework.overview && typeof revivalFramework.overview === "object"
+      ? revivalFramework.overview
+      : {};
+  const top = Array.isArray(revivalFramework.top_candidates)
+    ? revivalFramework.top_candidates
+    : [];
+
+  if (top.length === 0) {
+    return `
+      <div class="card" id="revival-framework">
+        <div class="row space-between">
+          <h2>Crypto Revival Candidates</h2>
+          <div class="muted small">${escapeHtml(generatedAt)}</div>
+        </div>
+        <p class="muted">No revival candidates yet. Run a scan to generate revival scores.</p>
+      </div>
+    `;
+  }
+
+  const bandBadgeClass = (band) => {
+    const text = String(band || "").toLowerCase();
+    if (text.includes("strong")) return "badge-keep";
+    if (text.includes("potential")) return "badge-info";
+    if (text.includes("speculative")) return "badge-warning";
+    return "badge-drop";
+  };
+
+  const rows = top
+    .slice(0, 10)
+    .map((item) => {
+      const sourceTag = item?.watchlist_source === "staging" ? " (testing)" : "";
+      const thesisBadge = item?.thesis_ready
+        ? `<span class="badge badge-positive">thesis-ready</span>`
+        : `<span class="badge badge-muted">still building</span>`;
+      const narratives = Array.isArray(item?.narrative_matches)
+        ? item.narrative_matches.slice(0, 2).join(", ")
+        : "";
+      const strengths = Array.isArray(item?.strengths)
+        ? item.strengths.slice(0, 2).join("; ")
+        : "";
+      return `
+        <tr>
+          <td data-label="Rank" class="num">${escapeHtml(String(item?.rank || ""))}</td>
+          <td data-label="Coin">
+            <div style="font-weight:700;">${escapeHtml(item?.symbol || "")}${escapeHtml(sourceTag)}</div>
+            <div class="muted small">${escapeHtml(item?.name || "")}</div>
+          </td>
+          <td data-label="Score" class="num">${escapeHtml(String(item?.revival_score || 0))}/35</td>
+          <td data-label="Band">
+            <span class="badge ${bandBadgeClass(item?.revival_band)}">${escapeHtml(item?.revival_band || "n/a")}</span>
+          </td>
+          <td data-label="Stage">${escapeHtml(item?.lifecycle_stage || "n/a")}</td>
+          <td data-label="Signals" class="num">${escapeHtml(String(item?.early_signals_active || 0))}/5</td>
+          <td data-label="Readiness">${thesisBadge}</td>
+          <td data-label="Narrative">${escapeHtml(narratives || "n/a")}</td>
+          <td data-label="Strongest">${escapeHtml(strengths || "n/a")}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="card" id="revival-framework">
+      <div class="row space-between">
+        <div>
+          <h2>Crypto Revival Candidates</h2>
+          <div class="muted small">Long-term comeback framework (7 categories + early signals).</div>
+        </div>
+        <div class="muted small">${escapeHtml(generatedAt)}</div>
+      </div>
+      <div class="summary-stats" style="margin-top: 10px;">
+        <div class="stat">
+          <div class="stat-value">${escapeHtml(String(num(overview?.coins_scored) || 0))}</div>
+          <div class="stat-label">Coins scored</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" style="color: var(--keep);">${escapeHtml(String(num(overview?.strong_candidates) || 0))}</div>
+          <div class="stat-label">Strong (29+)</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" style="color: #66a8ff;">${escapeHtml(String(num(overview?.potential_candidates) || 0))}</div>
+          <div class="stat-label">Potential (23-28)</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value">${escapeHtml(String(num(overview?.thesis_ready_count) || 0))}</div>
+          <div class="stat-label">Thesis-ready</div>
+        </div>
+      </div>
+      <div class="table-wrap" style="margin-top: 12px;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th class="num">#</th>
+              <th>Coin</th>
+              <th class="num">Score</th>
+              <th>Band</th>
+              <th>Stage</th>
+              <th class="num">Signals</th>
+              <th>Readiness</th>
+              <th>Narrative</th>
+              <th>Strongest categories</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="muted small" style="margin-top: 10px;">
+        Full report: <a href="RevivalFramework.md">RevivalFramework.md</a> and <a href="RevivalFramework.json">RevivalFramework.json</a>
+      </div>
+      ${buildHowThisWorks([
+        "Scores each coin from 1-5 across development, relevance, narrative, ecosystem, tokenomics, market structure, and team quality.",
+        "Adds 5 early comeback signals (developer acceleration, pivot, accumulation, narrative rediscovery, ecosystem activation).",
+        "Thesis-ready means at least 3 early signals are active.",
+        "Use this as a research shortlist; keep your existing risk gates for actual decisions.",
+      ])}
+    </div>
+  `;
+}
+
 function buildStoryCardsHtml(coins) {
   const items = Array.isArray(coins) ? coins : [];
   const withNews = items
@@ -4080,6 +4208,8 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
     { name: "Summary.md", href: "Summary.md" },
     { name: "MacroPulse.md", href: "MacroPulse.md" },
     { name: "Layer1Report.json", href: "Layer1Report.json" },
+    { name: "RevivalFramework.md", href: "RevivalFramework.md" },
+    { name: "RevivalFramework.json", href: "RevivalFramework.json" },
     { name: "Alerts.md", href: "Alerts.md" },
     { name: "Alerts.json", href: "Alerts.json" },
     { name: "DiffReport.json", href: "DiffReport.json" },
@@ -4453,6 +4583,10 @@ function renderDashboard({ layer1Report, diffReport, supervisorResult, defiLates
 
       <div style="margin-top:14px;">
         ${buildSignalEngineHtml(signalEngineReport)}
+      </div>
+
+      <div style="margin-top:14px;">
+        ${buildRevivalFrameworkHtml(layer1Report?.revival_framework)}
       </div>
 
       <!-- OPPORTUNITY BUCKETS -->

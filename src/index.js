@@ -95,6 +95,8 @@ const PAPER_REPORT_JSON_PATH = path.join(PAPER_DIR, "PaperReport.json");
 const MACRO_PULSE_JSON_PATH = path.join(REPORTS_DIR, "MacroPulse.json");
 const MACRO_PULSE_MD_PATH = path.join(REPORTS_DIR, "MacroPulse.md");
 const DASHBOARD_PATH = path.join(REPORTS_DIR, "Dashboard.html");
+const REVIVAL_FRAMEWORK_JSON_PATH = path.join(REPORTS_DIR, "RevivalFramework.json");
+const REVIVAL_FRAMEWORK_MD_PATH = path.join(REPORTS_DIR, "RevivalFramework.md");
 const ALERTS_JSON_PATH = path.join(REPORTS_DIR, "Alerts.json");
 const ALERTS_MD_PATH = path.join(REPORTS_DIR, "Alerts.md");
 const SIGNAL_ENGINE_JSON_PATH = path.join(
@@ -3962,6 +3964,587 @@ function labelHealthScore(score) {
   if (score >= 70) return "strong";
   if (score >= 45) return "mixed";
   return "weak";
+}
+
+const REVIVAL_NARRATIVES = [
+  {
+    label: "AI / compute",
+    terms: ["ai", "gpu", "compute", "depin", "inference", "machine learning"],
+  },
+  {
+    label: "Real-world assets",
+    terms: ["rwa", "real world asset", "tokenization", "treasury", "t-bill", "institutional"],
+  },
+  {
+    label: "Modular / L2",
+    terms: ["modular", "rollup", "layer 2", "l2", "scaling"],
+  },
+  {
+    label: "Privacy",
+    terms: ["privacy", "private", "zero-knowledge", "zk", "confidential"],
+  },
+  {
+    label: "Infra / interoperability",
+    terms: ["oracle", "data", "infra", "infrastructure", "middleware", "interoperability", "cross-chain"],
+  },
+  {
+    label: "Storage / cloud",
+    terms: ["storage", "cloud", "file", "decentralized storage"],
+  },
+];
+
+function clampRevivalScore(value) {
+  if (!Number.isFinite(value)) return 1;
+  return clamp(Math.round(value), 1, 5);
+}
+
+function revivalBandFromScore(totalScore) {
+  if (!Number.isFinite(totalScore)) return "Avoid";
+  if (totalScore >= 29) return "Strong revival candidate";
+  if (totalScore >= 23) return "Potential revival candidate";
+  if (totalScore >= 15) return "Speculative";
+  return "Avoid";
+}
+
+function detectRevivalNarratives(coin) {
+  const text = [
+    coin?.category,
+    coin?.name,
+    coin?.context_summary,
+    coin?.clean_catalyst,
+    coin?.catalyst_quality_label,
+    coin?.notes,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  const matches = [];
+  for (const narrative of REVIVAL_NARRATIVES) {
+    if (!narrative || !Array.isArray(narrative.terms)) continue;
+    const hit = narrative.terms.some((term) => text.includes(String(term).toLowerCase()));
+    if (hit) {
+      matches.push(narrative.label);
+    }
+  }
+  return Array.from(new Set(matches));
+}
+
+function inferRevivalLifecycleStage({ coin, categories, earlySignals }) {
+  const dev = num(categories?.development_activity?.score) || 0;
+  const narrative = num(categories?.narrative_alignment?.score) || 0;
+  const market = num(categories?.market_structure?.score) || 0;
+
+  if (
+    market >= 4 &&
+    (coin?.news_activity === "active" || coin?.news_activity === "very active")
+  ) {
+    return {
+      id: 5,
+      label: "Liquidity Return",
+      note: "Liquidity and attention are already returning.",
+    };
+  }
+
+  if (dev >= 4 && (earlySignals?.product_pivot?.active || coin?.has_clean_catalyst)) {
+    return {
+      id: 4,
+      label: "Development Breakout",
+      note: "Development and roadmap delivery are accelerating.",
+    };
+  }
+
+  if (earlySignals?.liquidity_stabilization?.active) {
+    return {
+      id: 3,
+      label: "Quiet Accumulation",
+      note: "Price/volume structure suggests accumulation.",
+    };
+  }
+
+  if (narrative >= 4) {
+    return {
+      id: 2,
+      label: "Narrative Alignment",
+      note: "Project narrative now matches current market themes.",
+    };
+  }
+
+  return {
+    id: 1,
+    label: "Graveyard Phase",
+    note: "Early stage: requires patience and ongoing monitoring.",
+  };
+}
+
+function buildRevivalAssessment(coin) {
+  const narrativeMatches = detectRevivalNarratives(coin);
+  const hasNarrativeMatch = narrativeMatches.length > 0;
+  const commits4w = num(coin?.developer_commits_4w);
+  const tvlCurrent = num(coin?.tvl_current);
+  const volumeToMcap = num(coin?.volume_to_mcap);
+  const floatPercent = num(coin?.float_percent);
+
+  let developmentRaw = 2.5;
+  const developmentNotes = [];
+  if (coin?.github_archived) {
+    developmentRaw = 1;
+    developmentNotes.push("Repository is archived.");
+  } else if (coin?.github_active) {
+    developmentRaw += 1.5;
+    developmentNotes.push("Recent GitHub activity (last 30 days).");
+  } else if (coin?.github_stale) {
+    developmentRaw -= 1;
+    developmentNotes.push("GitHub activity is stale (6+ months).");
+  }
+  if (commits4w !== null) {
+    if (commits4w >= 40) developmentRaw += 1;
+    else if (commits4w >= 15) developmentRaw += 0.5;
+    else if (commits4w <= 2) developmentRaw -= 0.5;
+    developmentNotes.push(`CoinGecko dev commits (4w): ${Math.round(commits4w)}.`);
+  } else {
+    developmentNotes.push("CoinGecko dev commit count is missing.");
+  }
+  const developmentScore = clampRevivalScore(developmentRaw);
+
+  let productRaw = 2.5;
+  const productNotes = [];
+  if (coin?.traction_status === "OK") {
+    productRaw += 1;
+    productNotes.push("Traction checks are positive.");
+  }
+  if (coin?.health_label === "strong") {
+    productRaw += 0.5;
+  } else if (coin?.health_label === "weak") {
+    productRaw -= 0.5;
+  }
+  if (hasNarrativeMatch) {
+    productRaw += 0.75;
+    productNotes.push(`Aligned themes: ${narrativeMatches.slice(0, 2).join(", ")}.`);
+  }
+  if (coin?.context_short_term_only) {
+    productRaw -= 1;
+    productNotes.push("Context says short-term only.");
+  }
+  if (
+    Array.isArray(coin?.context_structural_headwinds) &&
+    coin.context_structural_headwinds.length > 0
+  ) {
+    productRaw -= 0.5;
+    productNotes.push("Structural headwinds are present.");
+  }
+  const productScore = clampRevivalScore(productRaw);
+
+  let narrativeRaw = 1.5;
+  const narrativeNotes = [];
+  if (hasNarrativeMatch) {
+    narrativeRaw += 1.5;
+    narrativeNotes.push(`Matched narratives: ${narrativeMatches.slice(0, 3).join(", ")}.`);
+  } else {
+    narrativeNotes.push("No clear narrative match detected yet.");
+  }
+  if (coin?.news_activity === "very active") {
+    narrativeRaw += 1;
+  } else if (coin?.news_activity === "active") {
+    narrativeRaw += 0.75;
+  } else if (coin?.news_activity === "some") {
+    narrativeRaw += 0.25;
+  }
+  if (coin?.has_clean_catalyst) narrativeRaw += 0.5;
+  if (
+    coin?.news_sentiment === "bearish" &&
+    (coin?.news_activity === "active" || coin?.news_activity === "very active")
+  ) {
+    narrativeRaw -= 0.75;
+  }
+  const narrativeScore = clampRevivalScore(narrativeRaw);
+
+  let ecosystemRaw = 2;
+  const ecosystemNotes = [];
+  if (coin?.traction_status === "OK") {
+    ecosystemRaw += 1;
+    ecosystemNotes.push("Usage/traction checks are healthy.");
+  }
+  if (tvlCurrent !== null && tvlCurrent >= 1_000_000) {
+    ecosystemRaw += 0.75;
+    ecosystemNotes.push(`TVL proxy: ${formatUsdCompact(tvlCurrent)}.`);
+  } else if (tvlCurrent === null) {
+    ecosystemNotes.push("TVL proxy missing.");
+  }
+  if (volumeToMcap !== null && volumeToMcap >= MIN_VOLUME_TO_MCAP) {
+    ecosystemRaw += 0.5;
+  }
+  if (num(coin?.news_event_count) !== null && num(coin.news_event_count) >= 2) {
+    ecosystemRaw += 0.5;
+  }
+  if (coin?.missing_traction) {
+    ecosystemRaw -= 0.75;
+  }
+  const ecosystemScore = clampRevivalScore(ecosystemRaw);
+
+  let tokenomicsRaw = 3;
+  const tokenomicsNotes = [];
+  if (coin?.high_dilution_risk) {
+    tokenomicsRaw -= 1.5;
+    tokenomicsNotes.push("High dilution risk.");
+  }
+  if (coin?.low_float_risk) tokenomicsRaw -= 1;
+  if (coin?.unlock_risk_flag) {
+    tokenomicsRaw -= 1;
+    tokenomicsNotes.push("Unlock risk flagged.");
+  }
+  if (coin?.holder_concentration_level === "HIGH") {
+    tokenomicsRaw -= 0.75;
+    tokenomicsNotes.push("Ownership concentration is high.");
+  }
+  if (coin?.unlock_confidence === "UNKNOWN") {
+    tokenomicsRaw -= 0.5;
+  }
+  if (floatPercent !== null && floatPercent >= 50) {
+    tokenomicsRaw += 0.5;
+  }
+  if (!coin?.high_dilution_risk && !coin?.unlock_risk_flag) {
+    tokenomicsRaw += 0.5;
+  }
+  const tokenomicsScore = clampRevivalScore(tokenomicsRaw);
+
+  let marketRaw = 2;
+  const marketNotes = [];
+  if (!coin?.low_liquidity && num(coin?.volume_24h) !== null && coin.volume_24h >= VOLUME_LOW) {
+    marketRaw += 1.5;
+    marketNotes.push(`24h volume: ${formatUsdCompact(coin.volume_24h)}.`);
+  } else if (coin?.low_liquidity) {
+    marketRaw -= 1;
+    marketNotes.push("Liquidity is weak.");
+  }
+  if (!coin?.high_slippage_risk) marketRaw += 0.5;
+  else marketRaw -= 0.75;
+  if (volumeToMcap !== null && volumeToMcap >= MIN_VOLUME_TO_MCAP) marketRaw += 0.5;
+  if (coin?.tradeability === "good") marketRaw += 0.5;
+  if (coin?.tradeability === "poor") marketRaw -= 0.5;
+  const marketScore = clampRevivalScore(marketRaw);
+
+  let teamRaw = 2.5;
+  const teamNotes = [];
+  if (coin?.github_archived) {
+    teamRaw -= 2;
+    teamNotes.push("Archived repo lowers team confidence.");
+  } else if (coin?.github_stale) {
+    teamRaw -= 1;
+    teamNotes.push("No recent commits from the core repo.");
+  } else if (coin?.github_active) {
+    teamRaw += 1.25;
+    teamNotes.push("Team appears active in the repo.");
+  }
+  if (coin?.has_clean_catalyst) {
+    if (coin?.catalyst_confidence === "high") teamRaw += 0.75;
+    else if (coin?.catalyst_confidence === "medium") teamRaw += 0.5;
+    else teamRaw += 0.25;
+  }
+  if (num(coin?.github_stars) !== null && num(coin.github_stars) >= 1000) {
+    teamRaw += 0.5;
+  }
+  if (coin?.news_sentiment === "bearish" && coin?.news_activity === "very active") {
+    teamRaw -= 0.5;
+  }
+  const teamHeadwind = Array.isArray(coin?.context_structural_headwinds)
+    ? coin.context_structural_headwinds.some((item) =>
+        /(team|founder|leadership|governance)/i.test(String(item || ""))
+      )
+    : false;
+  if (teamHeadwind) {
+    teamRaw -= 0.5;
+    teamNotes.push("Context flagged possible team/governance issues.");
+  }
+  const teamScore = clampRevivalScore(teamRaw);
+
+  const categories = {
+    development_activity: {
+      label: "Development Activity",
+      score: developmentScore,
+      note: developmentNotes.join(" "),
+    },
+    product_relevance: {
+      label: "Product Relevance",
+      score: productScore,
+      note: productNotes.join(" "),
+    },
+    narrative_alignment: {
+      label: "Narrative Alignment",
+      score: narrativeScore,
+      note: narrativeNotes.join(" "),
+    },
+    ecosystem_growth: {
+      label: "Ecosystem Growth",
+      score: ecosystemScore,
+      note: ecosystemNotes.join(" "),
+    },
+    tokenomics_health: {
+      label: "Tokenomics Health",
+      score: tokenomicsScore,
+      note: tokenomicsNotes.join(" "),
+    },
+    market_structure: {
+      label: "Market Structure",
+      score: marketScore,
+      note: marketNotes.join(" "),
+    },
+    team_quality: {
+      label: "Team Quality",
+      score: teamScore,
+      note: teamNotes.join(" "),
+    },
+  };
+
+  const earlySignals = {
+    developer_acceleration: {
+      label: "Developer acceleration",
+      active:
+        developmentScore >= 4 ||
+        (coin?.github_active && commits4w !== null && commits4w >= 10),
+      note:
+        commits4w !== null
+          ? `Recent commits (4w): ${Math.round(commits4w)}.`
+          : "Using GitHub recency proxy.",
+    },
+    product_pivot: {
+      label: "Product pivot",
+      active:
+        coin?.has_clean_catalyst &&
+        ["upgrade", "release", "partnership", "funding", "governance"].includes(
+          String(coin?.catalyst_type || "")
+        ),
+      note: coin?.has_clean_catalyst
+        ? `Recent catalyst type: ${coin?.catalyst_type || "general"}.`
+        : "No recent catalyst detected.",
+    },
+    liquidity_stabilization: {
+      label: "Liquidity stabilization",
+      active:
+        !coin?.chasing &&
+        !coin?.low_liquidity &&
+        (coin?.trend_regime === "Sideways" || coin?.trend_regime === "Uptrend"),
+      note: `Trend: ${coin?.trend_regime || "unknown"}, low_liquidity=${coin?.low_liquidity ? "yes" : "no"}.`,
+    },
+    narrative_rediscovery: {
+      label: "Narrative rediscovery",
+      active:
+        hasNarrativeMatch &&
+        (coin?.news_activity === "active" ||
+          coin?.news_activity === "very active" ||
+          coin?.has_clean_catalyst),
+      note:
+        hasNarrativeMatch && narrativeMatches.length > 0
+          ? `Narratives: ${narrativeMatches.slice(0, 2).join(", ")}.`
+          : "No clear narrative momentum yet.",
+    },
+    ecosystem_activation: {
+      label: "Ecosystem activation",
+      active:
+        coin?.traction_status === "OK" &&
+        ((tvlCurrent !== null && tvlCurrent >= 1_000_000) ||
+          (num(coin?.news_event_count) !== null && num(coin.news_event_count) >= 2) ||
+          (volumeToMcap !== null && volumeToMcap >= 0.05)),
+      note: "Checks traction + TVL/news/turnover evidence.",
+    },
+  };
+
+  const totalScore = Object.values(categories).reduce(
+    (sum, category) => sum + (num(category?.score) || 0),
+    0
+  );
+  const signalsActiveCount = Object.values(earlySignals).filter((signal) => signal?.active).length;
+  const lifecycleStage = inferRevivalLifecycleStage({
+    coin,
+    categories,
+    earlySignals,
+  });
+
+  return {
+    framework_version: "1.0",
+    total_score: totalScore,
+    max_score: 35,
+    band: revivalBandFromScore(totalScore),
+    lifecycle_stage: lifecycleStage,
+    narrative_matches: narrativeMatches,
+    categories,
+    early_signals: earlySignals,
+    early_signals_active_count: signalsActiveCount,
+    thesis_validation: {
+      signals_required: 3,
+      signals_active: signalsActiveCount,
+      thesis_ready: signalsActiveCount >= 3,
+    },
+  };
+}
+
+function buildRevivalFrameworkReport({ coins, generatedAt }) {
+  const list = Array.isArray(coins) ? coins.filter((coin) => coin?.revival) : [];
+  const bandBreakdown = {
+    "Strong revival candidate": 0,
+    "Potential revival candidate": 0,
+    Speculative: 0,
+    Avoid: 0,
+  };
+  const stageBreakdown = {
+    "Graveyard Phase": 0,
+    "Narrative Alignment": 0,
+    "Quiet Accumulation": 0,
+    "Development Breakout": 0,
+    "Liquidity Return": 0,
+  };
+
+  for (const coin of list) {
+    const band = coin?.revival?.band || "Avoid";
+    if (bandBreakdown[band] !== undefined) {
+      bandBreakdown[band] += 1;
+    }
+    const stageLabel = coin?.revival?.lifecycle_stage?.label;
+    if (stageLabel && stageBreakdown[stageLabel] !== undefined) {
+      stageBreakdown[stageLabel] += 1;
+    }
+  }
+
+  const ranked = [...list].sort((a, b) => {
+    const scoreA = num(a?.revival?.total_score) || 0;
+    const scoreB = num(b?.revival?.total_score) || 0;
+    if (scoreA !== scoreB) return scoreB - scoreA;
+    const signalsA = num(a?.revival?.early_signals_active_count) || 0;
+    const signalsB = num(b?.revival?.early_signals_active_count) || 0;
+    if (signalsA !== signalsB) return signalsB - signalsA;
+    return (num(b?.health_score) || 0) - (num(a?.health_score) || 0);
+  });
+
+  const topCandidates = ranked.slice(0, 12).map((coin, idx) => {
+    const revival = coin.revival || {};
+    const categories = revival.categories || {};
+    const strengths = Object.values(categories)
+      .sort((a, b) => (num(b?.score) || 0) - (num(a?.score) || 0))
+      .slice(0, 2)
+      .map((item) => `${item?.label || "Category"} ${num(item?.score) || 0}/5`);
+
+    return {
+      rank: idx + 1,
+      symbol: coin.symbol,
+      name: coin.name || null,
+      watchlist_source: coin.watchlist_source || "main",
+      hygiene_label: coin.hygiene_label || "UNKNOWN",
+      revival_score: num(revival.total_score) || 0,
+      revival_band: revival.band || "Avoid",
+      lifecycle_stage: revival?.lifecycle_stage?.label || "n/a",
+      early_signals_active: num(revival.early_signals_active_count) || 0,
+      thesis_ready: Boolean(revival?.thesis_validation?.thesis_ready),
+      narrative_matches: Array.isArray(revival?.narrative_matches)
+        ? revival.narrative_matches
+        : [],
+      strengths,
+      category_scores: {
+        development_activity: num(categories?.development_activity?.score),
+        product_relevance: num(categories?.product_relevance?.score),
+        narrative_alignment: num(categories?.narrative_alignment?.score),
+        ecosystem_growth: num(categories?.ecosystem_growth?.score),
+        tokenomics_health: num(categories?.tokenomics_health?.score),
+        market_structure: num(categories?.market_structure?.score),
+        team_quality: num(categories?.team_quality?.score),
+      },
+    };
+  });
+
+  const thesisReadyCount = list.filter(
+    (coin) => coin?.revival?.thesis_validation?.thesis_ready
+  ).length;
+
+  return {
+    generated_at: generatedAt || new Date().toISOString(),
+    framework_version: "1.0",
+    overview: {
+      coins_scored: list.length,
+      thesis_ready_count: thesisReadyCount,
+      strong_candidates: bandBreakdown["Strong revival candidate"],
+      potential_candidates: bandBreakdown["Potential revival candidate"],
+    },
+    band_breakdown: bandBreakdown,
+    stage_breakdown: stageBreakdown,
+    top_candidates: topCandidates,
+    notes: [
+      "Scores are heuristic (1-5 per category) and should be treated as a research filter, not a buy signal.",
+      "Use this with your existing quality gates (KEEP/WATCH-ONLY/DROP).",
+      "Thesis-ready means 3 or more early comeback signals are active.",
+    ],
+  };
+}
+
+function renderRevivalFrameworkMarkdown(report) {
+  const lines = [];
+  lines.push("# Crypto Revival Framework Report");
+  lines.push("");
+  lines.push(`Generated: ${report?.generated_at || "n/a"}`);
+  lines.push(
+    "Method: 7-category score (1-5 each, total 35) + 5 early comeback signals."
+  );
+  lines.push("");
+
+  const overview = report?.overview || {};
+  lines.push("## Overview");
+  lines.push(`- Coins scored: ${num(overview.coins_scored) || 0}`);
+  lines.push(`- Thesis-ready (>=3 early signals): ${num(overview.thesis_ready_count) || 0}`);
+  lines.push(`- Strong revival candidates: ${num(overview.strong_candidates) || 0}`);
+  lines.push(`- Potential revival candidates: ${num(overview.potential_candidates) || 0}`);
+  lines.push("");
+
+  const band = report?.band_breakdown || {};
+  lines.push("## Score Bands");
+  lines.push(`- Strong revival candidate (29+): ${num(band["Strong revival candidate"]) || 0}`);
+  lines.push(`- Potential revival candidate (23-28): ${num(band["Potential revival candidate"]) || 0}`);
+  lines.push(`- Speculative (15-22): ${num(band.Speculative) || 0}`);
+  lines.push(`- Avoid (<15): ${num(band.Avoid) || 0}`);
+  lines.push("");
+
+  const top = Array.isArray(report?.top_candidates) ? report.top_candidates : [];
+  lines.push("## Top Candidates");
+  if (top.length === 0) {
+    lines.push("- None yet.");
+  } else {
+    lines.push("| Rank | Coin | Score | Band | Stage | Signals | Quality |");
+    lines.push("| --- | --- | --- | --- | --- | --- | --- |");
+    for (const item of top.slice(0, 12)) {
+      const tag = item.watchlist_source === "staging" ? " (staging)" : "";
+      lines.push(
+        `| ${item.rank} | ${item.symbol}${tag} | ${item.revival_score}/35 | ${item.revival_band} | ${item.lifecycle_stage} | ${item.early_signals_active}/5 | ${item.hygiene_label} |`
+      );
+    }
+  }
+  lines.push("");
+
+  if (top.length > 0) {
+    lines.push("## Candidate Details");
+    for (const item of top.slice(0, 8)) {
+      lines.push(`### ${item.rank}. ${item.symbol} - ${item.revival_score}/35 (${item.revival_band})`);
+      lines.push(`- Stage: ${item.lifecycle_stage}`);
+      lines.push(`- Early signals active: ${item.early_signals_active}/5`);
+      lines.push(`- Thesis ready: ${item.thesis_ready ? "yes" : "no"}`);
+      lines.push(`- Strongest categories: ${(item.strengths || []).join("; ") || "n/a"}`);
+      lines.push(
+        `- Narrative matches: ${
+          Array.isArray(item.narrative_matches) && item.narrative_matches.length > 0
+            ? item.narrative_matches.join(", ")
+            : "none"
+        }`
+      );
+      lines.push("");
+    }
+  }
+
+  const notes = Array.isArray(report?.notes) ? report.notes : [];
+  if (notes.length > 0) {
+    lines.push("## Notes");
+    for (const note of notes) {
+      lines.push(`- ${note}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
 }
 
 function evaluateGates(coin) {
@@ -12066,6 +12649,11 @@ function buildSummary(
     lines.push("");
   }
 
+  if (fs.existsSync(REVIVAL_FRAMEWORK_MD_PATH)) {
+    lines.push("Revival framework: [RevivalFramework.md](RevivalFramework.md)");
+    lines.push("");
+  }
+
   if (fs.existsSync(BACKTEST_REPORT_MD_PATH)) {
     lines.push(
       "Backtest report: [backtest/BacktestReport.md](backtest/BacktestReport.md)"
@@ -12238,6 +12826,33 @@ function buildSummary(
     }
   }
   lines.push("");
+
+  const revival = layer1Report?.revival_framework || null;
+  const revivalTop = Array.isArray(revival?.top_candidates)
+    ? revival.top_candidates
+    : [];
+  if (revival && revivalTop.length > 0) {
+    lines.push("## Revival Framework (Long-Term)");
+    lines.push(
+      `- Thesis-ready (>=3 early signals): ${num(revival?.overview?.thesis_ready_count) || 0}`
+    );
+    lines.push(
+      `- Strong candidates (score 29+): ${num(revival?.overview?.strong_candidates) || 0}`
+    );
+    lines.push(
+      `- Potential candidates (score 23-28): ${num(revival?.overview?.potential_candidates) || 0}`
+    );
+    lines.push("");
+    lines.push("| Rank | Coin | Revival Score | Band | Stage | Signals |");
+    lines.push("| --- | --- | --- | --- | --- | --- |");
+    for (const item of revivalTop.slice(0, 8)) {
+      const tag = item.watchlist_source === "staging" ? " (staging)" : "";
+      lines.push(
+        `| ${item.rank} | ${item.symbol}${tag} | ${item.revival_score}/35 | ${item.revival_band} | ${item.lifecycle_stage} | ${item.early_signals_active}/5 |`
+      );
+    }
+    lines.push("");
+  }
 
   // BTC reference
   if (layer1Report.btc_reference) {
@@ -12909,6 +13524,8 @@ async function main() {
     const coinReport = {
       symbol: coin.symbol,
       name: coin.name || null,
+      category: coin.category || null,
+      notes: coin.notes || "",
       watchlist_source: coin.watchlist_source || "main",
       coin_gecko_id: coin.coinGeckoId || null,
       price: num(market?.current_price),
@@ -13096,6 +13713,14 @@ async function main() {
     coinReport.health_score = computeHealthScore(coinReport);
     coinReport.health_label = labelHealthScore(coinReport.health_score);
     coinReport.score_breakdown = computeScoreBreakdown(coinReport);
+    coinReport.revival = buildRevivalAssessment(coinReport);
+    coinReport.revival_score = coinReport?.revival?.total_score ?? null;
+    coinReport.revival_band = coinReport?.revival?.band || null;
+    coinReport.revival_stage = coinReport?.revival?.lifecycle_stage?.label || null;
+    coinReport.revival_signals_active = coinReport?.revival?.early_signals_active_count ?? 0;
+    coinReport.revival_thesis_ready = Boolean(
+      coinReport?.revival?.thesis_validation?.thesis_ready
+    );
 
     const correlationGuardrail = evaluateCorrelationGuardrail({ coin: coinReport, portfolio });
     coinReport.correlation_guardrail = correlationGuardrail;
@@ -13158,6 +13783,11 @@ async function main() {
     cache_ttl_minutes: CACHE_TTL_MINUTES,
   };
 
+  const revivalFrameworkReport = buildRevivalFrameworkReport({
+    coins,
+    generatedAt: dataFreshness.scan_generated_at,
+  });
+
   const layer1Report = {
     generated_at: dataFreshness.scan_generated_at,
     preferences: {
@@ -13193,6 +13823,8 @@ async function main() {
     today_plays: todayPlays,
     // Category pulse (what sectors are moving and why)
     category_pulse: categoryPulse,
+    // Long-term revival framework summary
+    revival_framework: revivalFrameworkReport,
     warnings: warnings.length > 0 ? warnings : [],
     actionable_today: actionableToday,
     coins,
@@ -13221,6 +13853,21 @@ async function main() {
 
   const layer1Path = path.join(REPORTS_DIR, "Layer1Report.json");
   fs.writeFileSync(layer1Path, JSON.stringify(layer1Report, null, 2), "utf8");
+
+  try {
+    fs.writeFileSync(
+      REVIVAL_FRAMEWORK_JSON_PATH,
+      JSON.stringify(revivalFrameworkReport, null, 2),
+      "utf8"
+    );
+    fs.writeFileSync(
+      REVIVAL_FRAMEWORK_MD_PATH,
+      renderRevivalFrameworkMarkdown(revivalFrameworkReport),
+      "utf8"
+    );
+  } catch (err) {
+    console.warn(`Revival framework write failed: ${err.message}`);
+  }
 
   try {
     fs.writeFileSync(
@@ -13473,6 +14120,20 @@ async function main() {
       // ignore markdown render failures
     }
   }
+  if (fs.existsSync(REVIVAL_FRAMEWORK_JSON_PATH)) {
+    fs.writeFileSync(
+      path.join(historyDir, `${runId}_RevivalFramework.json`),
+      fs.readFileSync(REVIVAL_FRAMEWORK_JSON_PATH, "utf8"),
+      "utf8"
+    );
+  }
+  if (fs.existsSync(REVIVAL_FRAMEWORK_MD_PATH)) {
+    fs.writeFileSync(
+      path.join(historyDir, `${runId}_RevivalFramework.md`),
+      fs.readFileSync(REVIVAL_FRAMEWORK_MD_PATH, "utf8"),
+      "utf8"
+    );
+  }
 
   console.log(summary);
   console.log(`\nSaved: ${layer1Path}`);
@@ -13483,6 +14144,12 @@ async function main() {
   if (alertsReport) {
     console.log(`Saved: ${ALERTS_JSON_PATH}`);
     console.log(`Saved: ${ALERTS_MD_PATH}`);
+  }
+  if (fs.existsSync(REVIVAL_FRAMEWORK_JSON_PATH)) {
+    console.log(`Saved: ${REVIVAL_FRAMEWORK_JSON_PATH}`);
+  }
+  if (fs.existsSync(REVIVAL_FRAMEWORK_MD_PATH)) {
+    console.log(`Saved: ${REVIVAL_FRAMEWORK_MD_PATH}`);
   }
   if (diffReport) {
     console.log(`Saved: ${path.join(REPORTS_DIR, "DiffReport.json")}`);

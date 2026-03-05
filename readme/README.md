@@ -27,6 +27,7 @@ For each coin on your watchlist, the scanner:
 | **Dilution Risk** | Is float <20%? Is FDV >> Market Cap? Are unlocks imminent? |
 | **Liquidity Check** | Is there enough volume ($5M+) to actually trade without slippage? |
 | **Catalyst Validation** | Is there a real, verifiable event within 14 days with a source link? |
+| **Revival Framework** | Scores long-term comeback potential (7 categories, total 35) and tracks 5 early revival signals. |
 
 Each coin receives a hygiene label:
 - **KEEP (Core list)**: Passed safety + quality checks and is good enough to hold for **weeks/months**. This is **not** an automatic “buy now” signal — use **Timing** (Buy now / Wait for dip) for entry.
@@ -213,6 +214,8 @@ Notes:
 | `reports/Summary.md` | Human-readable summary table |
 | `reports/MacroPulse.md` | Daily macro pulse (ETF money flow, BTC leverage check, BTC share, alt headlines) |
 | `reports/Dashboard.html` | Local dashboard UI (opens in your browser) |
+| `reports/RevivalFramework.md` | Long-term revival candidates report (plain-English summary + top ranked projects) |
+| `reports/RevivalFramework.json` | Revival framework data (structured scores, category breakdown, early signals) |
 | `reports/signal_engine/SignalEngine.md` | Signal Engine fundamentals report (low-noise, niche-based) |
 | `reports/signal_engine/SignalEngine.json` | Signal Engine data (structured JSON) |
 | `reports/signal_engine/signal_engine_candidate_suggestions.json` | Signal Engine candidate suggestions (needs approval) |
@@ -230,6 +233,23 @@ Notes:
 | `reports/defi/Latest.md` | Latest DeFi protocol scan report |
 | `reports/defi/snapshots/*.json` | Historical DeFi scan snapshots |
 | `reports/MacroPulse.json` | Macro pulse data (flows, leverage, share, alt strength/news) |
+
+## Revival Framework (Long-Term)
+
+This is a research feature for finding older projects that may be setting up for a comeback.
+
+- Score model: 7 categories, each scored 1-5 (max 35)
+- Score bands:
+  - `<15` = Avoid
+  - `15-22` = Speculative
+  - `23-28` = Potential revival candidate
+  - `29+` = Strong revival candidate
+- Early signals: developer acceleration, product pivot, liquidity stabilization, narrative rediscovery, ecosystem activation
+- Thesis-ready rule: 3 or more early signals active at the same time
+
+You can view this in:
+- Dashboard section: **Crypto Revival Candidates**
+- Reports: `reports/RevivalFramework.md` and `reports/RevivalFramework.json`
 
 ## Configuration
 
@@ -419,6 +439,8 @@ The scanner now includes:
 | Alerts | ✅ **NEW!** | Local thresholds + Dashboard card (`reports/Alerts.md`) |
 | Signal Engine (Fundamentals) | ✅ **NEW!** | Usage proxy = DefiLlama fees (when available) or CoinGecko volume (fallback) + TVL (proxy) + manual config (`config/signal_engine_projects.json`) |
 | Signal Engine Candidate Suggestions | ✅ **NEW!** | Data-first suggestions + coverage scoring (`signal_engine_candidate_suggestions.json`) |
+
+| Revival Framework (Long-Term) | ✅ **NEW!** | 7-category revival score (35 max) + 5 early comeback signals (`reports/RevivalFramework.*`) |
 
 **Notes**: 
 - Some coins may show `unlock_confidence: UNKNOWN` if not listed on DefiLlama

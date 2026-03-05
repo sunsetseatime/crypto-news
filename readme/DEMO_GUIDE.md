@@ -8,8 +8,9 @@ This is a daily crypto scan dashboard. The data comes from the latest reports.
 3) In the Watchlist, check **Quality** (KEEP / WATCH-ONLY / DROP) and **Timing** (Buy now / Wait for dip).
 4) Click a coin row to open details and read the reasons and risks.
 5) Check **Suggested for Signal Engine** to see the top 5 candidates per niche (these need manual approval).
-6) Open the Paper Trading card and click the report link.
-7) Use Chat only for coins shown on the dashboard. It answers from the reports (and can optionally use Research mode to pull extra linked info from CoinGecko/GitHub/free RSS/blog feeds).
+6) Check **Crypto Revival Candidates** to review long-term comeback scores (out of 35) and early signal counts (out of 5).
+7) Open the Paper Trading card and click the report link.
+8) Use Chat only for coins shown on the dashboard. It answers from the reports (and can optionally use Research mode to pull extra linked info from CoinGecko/GitHub/free RSS/blog feeds).
 
 ## Feedback we want
 - Missing coins you expected to see

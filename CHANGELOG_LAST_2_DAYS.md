@@ -7,6 +7,32 @@
 
 ## 🎯 Major Features Added
 
+### 2026-03-05 Crypto Revival Framework
+
+- Added a long-term **Crypto Revival Framework** based on `docs/# Crypto Revival Analysis Framework.md`.
+- Each coin now gets a 7-category revival score (1-5 each, max 35):
+  - Development Activity
+  - Product Relevance
+  - Narrative Alignment
+  - Ecosystem Growth
+  - Tokenomics Health
+  - Market Structure
+  - Team Quality
+- Added 5 early comeback signals:
+  - Developer acceleration
+  - Product pivot
+  - Liquidity stabilization
+  - Narrative rediscovery
+  - Ecosystem activation
+- Added revival lifecycle stage labeling (Graveyard -> Narrative Alignment -> Quiet Accumulation -> Development Breakout -> Liquidity Return).
+- Added outputs:
+  - `reports/RevivalFramework.md`
+  - `reports/RevivalFramework.json`
+- Added a new **Crypto Revival Candidates** dashboard section and linked both revival files in **All Reports**.
+- `reports/Summary.md` now includes a **Revival Framework (Long-Term)** section with top candidates and score bands.
+
+---
+
 ### 1. Technical Entry Signals
 - **Entry timing score**: Uses RSI, pullback size (30d high/low), relative strength vs BTC, volume confirmation, and moving averages (MA20/50/200) when available
 - **Entry signal labels** (from `entry_score`, 0–100):
